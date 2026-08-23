@@ -6,7 +6,7 @@ pages are the internals.
 
 | Page | Answers |
 |---|---|
-| [../START-HERE.md](../START-HERE.md) | **The friendly tour.** What it is, how to set it up, and why it works the way it does. Start here if you are new. |
+| [../README.md](../README.md) | **The friendly tour.** What it is, how to set it up, and why it works the way it does. Start here if you are new. |
 | [rebuilding.md](rebuilding.md) | **The spec, in build order.** Hand this to an LLM to rebuild the project or to orient it before a fix. |
 | [architecture.md](architecture.md) | How a request becomes a number on screen. Module map, layering rules. |
 | [data-model.md](data-model.md) | Documents, indices, id schemes, the vocabulary, ageing. |
