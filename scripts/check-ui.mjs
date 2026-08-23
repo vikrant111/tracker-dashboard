@@ -36,7 +36,7 @@ import {
   visibleXRange,
 } from "../src/lib/sky.ts";
 import { currentWeather, skyForCode } from "../src/lib/weather.ts";
-import { AGEING, AZURE, EXPORT, LIMITS, PAGE, TIMING, UPLOAD } from "../src/lib/constants.ts";
+import { AGEING, AZURE, EXPORT, LIMITS, PAGE, SCENE, TIMING, UPLOAD } from "../src/lib/constants.ts";
 import { mergeRoster } from "../src/lib/roster.ts";
 import { MIN_PASSWORD, isEmail, validateTeam, validateUser } from "../src/lib/validation.ts";
 import { detectSheet, isLegacyXls, isZip, whyNotReadable } from "../src/lib/spreadsheet.ts";
@@ -241,9 +241,17 @@ section("greeting sky — the flyers");
   const src = greetingSource();
   const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
 
-  const bats = [...src.matchAll(/cross: "(\d+)s"/g)].map((m) => Number(m[1]));
-  const flaps = [...src.matchAll(/flap: "([\d.]+)s"/g)].map((m) => Number(m[1]));
-  const scales = [...src.matchAll(/scale: ([\d.]+)/g)].map((m) => Number(m[1]));
+  // Scoped to each table, or one flyer's rules end up measuring another's.
+  const tableOf = (name) => src.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\n\\];`))?.[1] ?? "";
+  const numbers = (block, key, pattern) => [...block.matchAll(new RegExp(`${key}: ${pattern}`, "g"))].map((m) => Number(m[1]));
+  const batTable = tableOf("CHOREOGRAPHY");
+  const gullTable = tableOf("GULL_PATHS");
+  const bats = numbers(batTable, "cross", '"(\\d+)s"');
+  const flaps = numbers(batTable, "flap", '"([\\d.]+)s"');
+  const scales = numbers(batTable, "scale", "([\\d.]+)");
+  const gullCross = numbers(gullTable, "cross", '"(\\d+)s"');
+  const gullFlaps = numbers(gullTable, "flap", '"([\\d.]+)s"');
+  const gullScales = numbers(gullTable, "scale", "([\\d.]+)");
   const clouds = [...src.matchAll(/dur: "(\d+)s"/g)].map((m) => Number(m[1]));
 
   // Clouds: a silhouette with humps, not a row of ellipses in a line.
@@ -256,24 +264,54 @@ section("greeting sky — the flyers");
   check("@keyframes sky-drift exists", css.includes("@keyframes sky-drift"));
   // Drift is slower than anything that flies, or the sky reads as moving backwards.
   const cloudDurs = [...src.matchAll(/dur: "(\d+)s"/g)].map((m) => Number(m[1]));
-  check("clouds drift slower than the flyers", Math.min(...cloudDurs) > Math.max(...bats), `${Math.min(...cloudDurs)} vs ${Math.max(...bats)}`);
+  const flyers = [...bats, ...gullCross];
+  check("clouds drift slower than the flyers", Math.min(...cloudDurs) > Math.max(...flyers), `${Math.min(...cloudDurs)} vs ${Math.max(...flyers)}`);
   check("no two clouds drift in lockstep", new Set(cloudDurs).size === cloudDurs.length, cloudDurs.join(","));
   // With no weather provider there is nothing to be truthful about, so the sky
   // gets scenery. A provider that *says* clear still gets one wisp.
-  check("an unconfigured sky still has clouds", /const CLOUDS_UNKNOWN = (\d+)/.test(src) && Number(src.match(/const CLOUDS_UNKNOWN = (\d+)/)[1]) >= 3);
-  check("a reported clear sky stays clear", /clear: 1/.test(src));
+  check("an unconfigured sky still has clouds", SCENE.clouds.unknown >= 3, `${SCENE.clouds.unknown}`);
+  check("a reported clear sky stays clear", SCENE.clouds.clear === 1, `${SCENE.clouds.clear}`);
+  check("every condition has a cloud count", ["clear", "cloudy", "overcast", "rain", "snow", "storm", "fog"].every((k) => Number.isInteger(SCENE.clouds[k]) && SCENE.clouds[k] >= 0));
+  check("worse weather is not clearer", SCENE.clouds.overcast >= SCENE.clouds.cloudy && SCENE.clouds.cloudy >= SCENE.clouds.clear);
   check("real weather still drives the count", src.includes("weather ? (CLOUD_COUNT[weather.sky]"));
 
   // Removed animals stay removed. Each of these was drawn once and taken out
   // again; without a standing guard the next scene edit quietly brings it back.
-  check("no gulls remain", !/const BIRDS|function Bird\(/.test(src));
-  check("no gull keyframes remain", !css.includes("@keyframes sky-wing-left"));
+  // Gulls were removed once and are back on purpose, so the old guard is gone.
+  // What must not come back is the *first* implementation, which flapped with a
+  // single rigid wing and read as a paper aeroplane.
+  check("the old gull implementation stays gone", !/const BIRDS|function Bird\(/.test(src));
+  check("its keyframes stay gone too", !css.includes("@keyframes sky-wing-left"));
   check("no swan remains", !/function Swan\(/.test(src));
   check("no swan is cast", !/swan:/.test(src));
   check("no swan is drawn", !/<Swan\b/.test(src));
   check("no swan keyframes remain", !css.includes("@keyframes sky-swan-neck") && !css.includes("@keyframes sky-ripple"));
 
-  check("three bats at three distances", bats.length === 3 && scales.length === 3, `${bats.length} bats`);
+  check("the bat choreography defines three distances", bats.length === 3 && scales.length === 3, `${bats.length} defined`);
+
+  /*
+   * The gulls follow the same perspective rule as the bats: further away is
+   * smaller, slower to cross and slower to beat. Getting one of the three
+   * backwards is what makes a scene feel wrong without anyone being able to say
+   * why.
+   */
+  check("the gull choreography defines more than one", gullCross.length >= 2, `${gullCross.length} defined`);
+  check("the scene asks for a sane number of gulls", Number.isInteger(SCENE.gulls) && SCENE.gulls >= 0 && SCENE.gulls <= gullCross.length, `${SCENE.gulls}`);
+  check("the gull count is clamped to its choreography", /GULL_PATHS\.slice\(0, Math\.max\(0, Math\.min\(SCENE\.gulls, GULL_PATHS\.length\)\)\)/.test(src));
+  check("gulls are ordered near to far", gullScales.join() === [...gullScales].sort((a, b) => b - a).join(), gullScales.join(", "));
+  check("further gulls cross more slowly", gullCross.every((c, i) => i === 0 || c > gullCross[i - 1]), gullCross.join(", "));
+  check("further gulls beat more slowly", gullFlaps.every((f, i) => i === 0 || f > gullFlaps[i - 1]), gullFlaps.join(", "));
+
+  /*
+   * A gull soars and a bat does not. If their beats converge the two stop being
+   * distinguishable in the air, which is most of what identifies them at this
+   * size.
+   */
+  check("gulls beat more slowly than bats", Math.min(...gullFlaps) > Math.min(...flaps), `gull ${Math.min(...gullFlaps)}s vs bat ${Math.min(...flaps)}s`);
+  check("gulls glide, with a long hold", /38%,\n  100% \{\n    transform: rotate\(-4deg\)/.test(css));
+  check("the gull's outer wing is hinged", css.includes("@keyframes sky-gull-tip-left") && css.includes("@keyframes sky-gull-tip-right"));
+  check("the scene asks for a sane number of bats", Number.isInteger(SCENE.bats) && SCENE.bats >= 0 && SCENE.bats <= bats.length, `${SCENE.bats}`);
+  check("the count is clamped to the choreography", /CHOREOGRAPHY\.slice\(0, Math\.max\(0, Math\.min\(SCENE\.bats, CHOREOGRAPHY\.length\)\)\)/.test(src));
 
   // Slow was the explicit ask: anything under a minute reads as darting.
   check("every bat takes at least 60s to cross", bats.every((b) => b >= 60), bats.join("s, ") + "s");
@@ -300,7 +338,9 @@ section("greeting sky — the flyers");
 
   // With motion off, every flyer needs somewhere sensible to rest.
   const rests = [...src.matchAll(/restX: (\d+)/g)].map((m) => Number(m[1]));
-  check("each bat has a resting position", rests.length === bats.length);
+  check("each bat has a resting position", rests.length === bats.length, `${rests.length} rests for ${bats.length} bats`);
+  // Motion off has to park the gulls somewhere too, or they pile up at x=0.
+  check("gulls rest somewhere with motion off", src.includes("180 + i * 90"));
   check("resting positions are spread out", new Set(rests).size === rests.length, rests.join(", "));
 
   // The walkers must stand on the ground, inside the frame.
@@ -505,8 +545,8 @@ section("greeting sky — the grass");
   const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   check("the field is not randomised", !/Math\.random/.test(code));
   check("tufts vary by index, not by chance", /const n = i \* 7 \+ seed \* 13/.test(src));
-  const backCount = Number(src.match(/GRASS_BACK = tufts\((\d+)/)?.[1] ?? 0);
-  const frontCount = Number(src.match(/GRASS_FRONT = tufts\((\d+)/)?.[1] ?? 0);
+  const backCount = SCENE.grass.back;
+  const frontCount = SCENE.grass.front;
   check("there is enough grass to read as a field", backCount >= 12 && frontCount >= 8, `${backCount}/${frontCount}`);
   // One animation per tuft, not per blade — three times the cost for no gain.
   check("the field stays under 50 animations", backCount + frontCount <= 50, `${backCount + frontCount}`);
@@ -524,12 +564,11 @@ section("greeting sky — the cast by hour");
   const src = greetingSource();
   const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
 
-  const table = src.match(/const CAST[\s\S]*?\n};/)?.[0] ?? "";
-  const rowFor = (p) => table.match(new RegExp(p + ": \\{([^}]*)\\}"))?.[1] ?? "";
-  const has = (p, who) => new RegExp(who + ": true").test(rowFor(p));
+  const rowFor = (p) => SCENE.cast[p] ?? null;
+  const has = (p, who) => rowFor(p)?.[who] === true;
 
   for (const p of ["morning", "afternoon", "evening", "night"]) {
-    check(`${p} has a cast row`, rowFor(p).length > 0);
+    check(`${p} has a cast row`, !!rowFor(p) && Object.keys(rowFor(p)).length > 0);
   }
 
   // Every phase keeps at least one companion, or the card reads as empty.
@@ -1456,6 +1495,8 @@ section("constants — the hardcoded values live in one place");
     ["../src/lib/types.ts", "AGEING"],
     ["../src/app/api/upload/route.ts", "UPLOAD"],
     ["../src/app/admin/admin-client.tsx", "TIMING"],
+    ["../src/components/greeting.tsx", "SCENE"],
+    ["../src/components/greeting-scene.tsx", "SCENE"],
   ];
   for (const [file, group] of users) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -2276,6 +2317,37 @@ section("health is the share of the board that is closed");
 }
 
 
+section("the scene's counts are tunable from one file");
+{
+  /*
+   * A constant nothing reads is worse than no constant: it looks like a knob,
+   * turning it does nothing, and the next person trusts it. Checking the value
+   * is sane is only half the job — these check the component actually *asks*.
+   */
+  const card = readFileSync(new URL("../src/components/greeting.tsx", import.meta.url), "utf8");
+  const world = readFileSync(new URL("../src/components/greeting-scene.tsx", import.meta.url), "utf8");
+
+  check("the cast comes from the constant", /const CAST[^=]*= SCENE\.cast;/.test(card));
+  check("the cloud counts come from the constant", /const CLOUD_COUNT[^=]*= SCENE\.clouds;/.test(card));
+  check("the unconfigured count comes from it too", /CLOUDS_UNKNOWN = SCENE\.clouds\.unknown/.test(card));
+  check("the bat count comes from the constant", /SCENE\.bats/.test(card));
+  check("the grass counts come from the constant", /tufts\(SCENE\.grass\.back/.test(world) && /tufts\(SCENE\.grass\.front/.test(world));
+
+  /*
+   * And that the old hardcoded tables did not quietly come back beside them.
+   * A literal cast row or cloud table in the component would keep every value
+   * check passing while the knob in `constants.ts` did nothing at all.
+   */
+  check("no cast table is hardcoded in the card", !/morning: \{ crane:/.test(card));
+  check("no cloud table is hardcoded in the card", !/\{ clear: \d/.test(card));
+  check("no tuft count is hardcoded in the world", !/tufts\(\d+,/.test(world));
+
+  // The knobs are reachable together, in the group that documents them.
+  check("every scene knob lives in one group", ["cast", "bats", "grass", "clouds"].every((k) => k in SCENE), Object.keys(SCENE).join(", "));
+  check("the cast covers every phase", ["morning", "afternoon", "evening", "night"].every((p) => SCENE.cast[p]));
+  check("the grass counts are whole numbers", Number.isInteger(SCENE.grass.back) && Number.isInteger(SCENE.grass.front));
+}
+
 section("a Numbers file is read, not refused");
 {
   /*
@@ -2543,7 +2615,7 @@ section("the greeting is three files, each with one job");
   }
 
   // The card composes them; it does not redefine them.
-  check("the card imports its cast", /import \{ Bat, Cat, Crane, Squirrel \} from "\.\/greeting-cast"/.test(card));
+  check("the card imports its cast", /import \{ Bat, Cat, Crane, Gull, Squirrel \} from "\.\/greeting-cast"/.test(card));
   check("the card imports its scene", /from "\.\/greeting-scene"/.test(card));
   check("who appears when stays with the card", /const CAST: Record<Phase,/.test(card));
 

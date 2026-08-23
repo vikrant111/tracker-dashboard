@@ -19,7 +19,8 @@ import {
   type Body,
 } from "@/lib/sky";
 import type { Weather } from "@/lib/weather";
-import { Bat, Cat, Crane, Squirrel } from "./greeting-cast";
+import { SCENE } from "@/lib/constants";
+import { Bat, Cat, Crane, Gull, Squirrel } from "./greeting-cast";
 import { Cloud, Meadow, Moon, Sun, type Box } from "./greeting-scene";
 
 // Scene geometry lives in lib/sky.ts, re-exported here for the scene itself.
@@ -118,40 +119,48 @@ function caption(phase: Phase | null, weather: Weather | null, now: Date): strin
   return "Here is where the board stands today.";
 }
 
-/**
- * Who is out at which hour. Each keeps to one part of the day, which is what
- * makes the scene feel observed rather than decorated.
- */
-const CAST: Record<Phase, { crane: boolean; squirrel: boolean; cat: boolean; bat: boolean }> = {
-  morning: { crane: true, squirrel: false, cat: false, bat: false },
-  afternoon: { crane: false, squirrel: true, cat: false, bat: false },
-  evening: { crane: false, squirrel: false, cat: true, bat: true },
-  night: { crane: false, squirrel: false, cat: true, bat: true },
-};
+/** Who is out at which hour — tune it in `SCENE.cast`, not here. */
+const CAST: Record<Phase, { crane: boolean; gull: boolean; squirrel: boolean; cat: boolean; bat: boolean }> = SCENE.cast;
 
 /**
- * Bats, at three distances. Slow crossings and a continuous, unhurried beat —
- * no glide holds, because a bat does not soar.
+ * The bats' choreography: three distances, slow crossings, and a continuous
+ * unhurried beat — no glide holds, because a bat does not soar.
+ *
+ * This is animation, not a number anybody tunes; **how many** of these to use
+ * is `SCENE.bats`. Clamped to what is defined here, so raising that past the
+ * choreography draws fewer bats rather than crashing on an undefined entry.
  */
-const BATS = [
+const CHOREOGRAPHY = [
   { y: 30, scale: 1, cross: "72s", delay: "-6s", flap: "2.2s", opacity: 0.92, restX: 110, depth: 0.7 },
   { y: 50, scale: 0.76, cross: "88s", delay: "-38s", flap: "2.7s", opacity: 0.76, restX: 232, depth: 0.6 },
   { y: 20, scale: 0.58, cross: "104s", delay: "-70s", flap: "3.2s", opacity: 0.6, restX: 318, depth: 0.8 },
 ];
 
+const BATS = CHOREOGRAPHY.slice(0, Math.max(0, Math.min(SCENE.bats, CHOREOGRAPHY.length)));
+
+/**
+ * The gulls' choreography: distance, crossing time and wingbeat.
+ *
+ * Two of them at different depths, crossing at different speeds, because a
+ * single bird in an empty sky reads as a mistake and two read as weather. The
+ * further one is smaller, slower to cross and slower to beat — the same
+ * perspective rule the bats follow.
+ *
+ * **How many** of these to use is `SCENE.gulls`.
+ */
+const GULL_PATHS = [
+  { y: 30, scale: 0.62, cross: "94s", delay: "-12s", flap: "3.4s", opacity: 0.95, depth: 0.74 },
+  { y: 20, scale: 0.46, cross: "106s", delay: "-64s", flap: "4.1s", opacity: 0.8, depth: 0.82 },
+];
+
+const GULLS = GULL_PATHS.slice(0, Math.max(0, Math.min(SCENE.gulls, GULL_PATHS.length)));
+
 /** How high the crane rides in a frame that gained open sky. */
 const CRANE_DEPTH = 0.72;
 
-/**
- * How much cloud each condition puts in the sky.
- *
- * `clear` means the provider said the sky is clear, so one wisp is honest.
- * With **no** provider configured there is nothing to be honest or dishonest
- * about — the cloud count is scenery, not a reading. The factual channel is the
- * caption under the name, and that stays empty unless there is real weather.
- */
-const CLOUD_COUNT: Record<string, number> = { clear: 1, cloudy: 3, overcast: 5, rain: 4, snow: 4, storm: 5, fog: 4 };
-const CLOUDS_UNKNOWN = 4;
+/** How much cloud each condition puts in the sky — tune it in `SCENE.clouds`. */
+const CLOUD_COUNT: Record<string, number> = SCENE.clouds;
+const CLOUDS_UNKNOWN = SCENE.clouds.unknown;
 
 /**
  * Measures an element, so the scene knows how much of itself is actually on
@@ -356,6 +365,27 @@ export function Sky({
           >
             <g style={{ transform: `translate(0px, ${liftBy(b.y, above, b.depth)}px) scale(${b.scale})` }}>
               <Bat flap={b.flap} reduced={reduced} />
+            </g>
+          </g>
+        ))}
+
+      {cast &&
+        phase &&
+        CAST[phase].gull &&
+        GULLS.map((g, i) => (
+          <g
+            key={`gull-${i}`}
+            style={
+              reduced
+                ? { transform: `translateX(${180 + i * 90}px)` }
+                : { animation: `sky-fly ${g.cross} linear ${g.delay} infinite` }
+            }
+            opacity={g.opacity}
+          >
+            <g style={{ transform: `translate(0px, ${liftBy(g.y, above, g.depth)}px) scale(${g.scale})` }}>
+              <g style={{ animation: reduced ? undefined : `sky-bob ${g.flap} ease-in-out infinite` }}>
+                <Gull reduced={reduced} flap={g.flap} />
+              </g>
             </g>
           </g>
         ))}

@@ -545,7 +545,7 @@ what's actually outside:
 | Hour | Sky | Who's out |
 |---|---|---|
 | 🌅 Morning | Blue, warm horizon | 🕊️ A crane, flying |
-| ☀️ Afternoon | Bright blue | 🐿️ A squirrel |
+| ☀️ Afternoon | Bright blue | 🕊️ Gulls, soaring · 🐿️ a squirrel |
 | 🌆 Evening | Dusk, peach horizon | 🐈 A cat · 🦇 bats |
 | 🌙 Night | Near-black, stars | 🐈 A cat · 🦇 bats |
 

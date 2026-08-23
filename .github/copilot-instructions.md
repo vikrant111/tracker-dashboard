@@ -143,7 +143,7 @@ pnpm exec tsc --noEmit          # must be clean
 pnpm build             # must pass  (stop `pnpm dev` first — it overwrites .next)
 pnpm check             # 316 end-to-end checks against a running dev server
 pnpm check:theme       # 183 static checks on the light/dark token system
-pnpm check:ui        # 1166 checks on client-side pure logic
+pnpm check:ui        # 1213 checks on client-side pure logic
 pnpm check:docs        # docs still match the code (links, hexes, modules)
 ```
 

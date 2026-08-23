@@ -232,3 +232,54 @@ export function Cat({ reduced }: { reduced: boolean }) {
     </g>
   );
 }
+
+/**
+ * A gull, soaring.
+ *
+ * Told apart from the crane by what it *lacks*: no extended neck reaching
+ * forward, no legs trailing past the tail. A gull tucks both away and becomes
+ * an angular silhouette — the shallow "M" everyone draws when they draw a bird.
+ *
+ * Its wings are pointed rather than broad, and hinged at the wrist so the outer
+ * half lags the inner one. The flap is a short burst followed by a **long
+ * glide**: a gull spends most of its time not flapping at all, which is the
+ * behaviour that makes it read as a gull rather than as a pigeon.
+ */
+export function Gull({ reduced, flap }: { reduced: boolean; flap: string }) {
+  const wing = (dir: 1 | -1) => {
+    const side = dir === 1 ? "right" : "left";
+    return (
+      <g style={{ transformOrigin: "0px 0px", animation: reduced ? undefined : `sky-gull-${side} ${flap} ease-in-out infinite` }}>
+        {/* Inner wing: shoulder to wrist, rising. */}
+        <path d={`M 0 -0.3 C ${3 * dir} -2.4 ${6 * dir} -3.1 ${9 * dir} -2.9 C ${6 * dir} -1.1 ${3 * dir} 0.2 0 1 Z`} fill="var(--sky-bird)" />
+        {/* Outer wing: wrist to a point, angling back down. Hinged, and lagging. */}
+        <g
+          style={{
+            transformOrigin: `${9 * dir}px -2.9px`,
+            animation: reduced ? undefined : `sky-gull-tip-${side} ${flap} ease-in-out -0.3s infinite`,
+          }}
+        >
+          <path
+            d={`M ${9 * dir} -2.9 L ${18 * dir} -0.9 C ${14 * dir} -0.7 ${11 * dir} -0.6 ${8.6 * dir} -0.7 Z`}
+            fill="var(--sky-bird)"
+          />
+        </g>
+      </g>
+    );
+  };
+
+  return (
+    <g>
+      {wing(-1)}
+      {wing(1)}
+      {/* Body: a short, blunt spindle. No neck out front, no legs behind — that
+          absence is the whole identification. */}
+      <path d="M 3.4 0 C 1.6 -1.3 -2 -1.2 -4.2 0.1 C -2 1.4 1.6 1.3 3.4 0 Z" fill="var(--sky-bird)" />
+      {/* Head tucked close, and the small hooked bill gulls are known for. */}
+      <circle cx="4" cy="-0.3" r="1.05" fill="var(--sky-bird)" />
+      <path d="M 5 -0.4 L 6.6 -0.1 L 5 0.3 Z" fill="var(--sky-bird)" />
+      {/* A short wedge tail, so the silhouette closes rather than just stopping. */}
+      <path d="M -4 0.1 L -6.6 -0.8 L -6.6 1 Z" fill="var(--sky-bird)" />
+    </g>
+  );
+}

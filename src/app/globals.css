@@ -647,6 +647,76 @@ body {
   }
 }
 
+/*
+ * A gull soars: a short burst of flapping, then a long glide.
+ *
+ * The hold is the point. The beats are packed into the first third of the cycle
+ * and the wings then sit near level for the remaining two thirds — which is why
+ * a gull reads as a gull and not as a pigeon, which never stops working.
+ */
+@keyframes sky-gull-left {
+  0% {
+    transform: rotate(-26deg);
+  }
+  9% {
+    transform: rotate(16deg);
+  }
+  20% {
+    transform: rotate(-22deg);
+  }
+  30% {
+    transform: rotate(10deg);
+  }
+  38%,
+  100% {
+    transform: rotate(-4deg);
+  }
+}
+@keyframes sky-gull-right {
+  0% {
+    transform: rotate(26deg);
+  }
+  9% {
+    transform: rotate(-16deg);
+  }
+  20% {
+    transform: rotate(22deg);
+  }
+  30% {
+    transform: rotate(-10deg);
+  }
+  38%,
+  100% {
+    transform: rotate(4deg);
+  }
+}
+/* The outer half is hinged at the wrist and lags the inner half, so the wing
+   bends through the beat instead of swinging as one rigid board. */
+@keyframes sky-gull-tip-left {
+  0%,
+  100% {
+    transform: rotate(-6deg);
+  }
+  20% {
+    transform: rotate(11deg);
+  }
+  38% {
+    transform: rotate(-2deg);
+  }
+}
+@keyframes sky-gull-tip-right {
+  0%,
+  100% {
+    transform: rotate(6deg);
+  }
+  20% {
+    transform: rotate(-11deg);
+  }
+  38% {
+    transform: rotate(2deg);
+  }
+}
+
 /* A squirrel hops, then sits up and flicks its tail. */
 @keyframes sky-hop {
   0%,

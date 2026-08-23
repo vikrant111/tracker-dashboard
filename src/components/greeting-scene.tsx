@@ -28,6 +28,7 @@ import {
   type Body,
 } from "@/lib/sky";
 import type { Phase } from "@/lib/greeting";
+import { SCENE } from "@/lib/constants";
 
 /** The measured pixel size of the box a scene is drawn into, when known. */
 export type Box = { width: number; height: number } | null;
@@ -57,8 +58,9 @@ function tufts(count: number, seed: number) {
 }
 
 /** Behind the cast, tall; in front of it, short — so nothing hides the legs. */
-const GRASS_BACK = tufts(22, 0);
-const GRASS_FRONT = tufts(16, 3);
+// How many is `SCENE.grass`; the second argument only varies the shapes.
+const GRASS_BACK = tufts(SCENE.grass.back, 0);
+const GRASS_FRONT = tufts(SCENE.grass.front, 3);
 
 /**
  * The three depth bands of the meadow, far to near.

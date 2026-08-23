@@ -21,7 +21,7 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass (stop `pnpm dev` first)
 pnpm check         # 316 end-to-end checks
 pnpm check:theme   # 183 static checks on the light/dark token system
-pnpm check:ui    # 1166 checks on client-side pure logic
+pnpm check:ui    # 1213 checks on client-side pure logic
 pnpm check:docs    # the knowledgebase still matches the code
 ```
 

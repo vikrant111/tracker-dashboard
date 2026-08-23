@@ -283,14 +283,23 @@ then clipped the score ring away entirely on a narrow screen. It carries
 ### The cast
 
 Each animal keeps to one part of the day, which is what makes the scene feel
-observed rather than decorated:
+observed rather than decorated — and the whole schedule is `SCENE.cast` in
+[`lib/constants.ts`](../src/lib/constants.ts), not a table buried in the component:
 
 | | Morning | Afternoon | Evening | Night |
 |---|---|---|---|---|
 | Crane | ● | | | |
+| Gull | | ● | | |
 | Squirrel | | ● | | |
 | Cat | | | ● | ● |
 | Bat | | | ● | ● |
+
+**How many of each is tunable from one place.** `SCENE` in `lib/constants.ts`
+holds the cast schedule, the bat count, the grass tuft counts and the cloud
+count per weather condition. The *choreography* — which bat flies how fast at
+what distance — stays with the scene, because it is animation rather than a
+number anyone tunes; `SCENE.bats` picks how many of it to use and is clamped to
+what is defined, so asking for nine draws three rather than crashing.
 
 Bats cross in 72s, 88s and 104s, the slowest thing in the sky bar the clouds.
 Every phase has at least one companion, and each animal is confined to its own

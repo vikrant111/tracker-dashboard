@@ -99,7 +99,7 @@ scripts/
   seed.mjs        indices + admin + demo data
   check.mjs       316 end-to-end checks against a running server
   check-theme.mjs 183 static checks: theme tokens, contrast, source rules
-  check-ui.mjs    1166 checks on client-side pure logic — it imports the real
+  check-ui.mjs    1213 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-docs.mjs  these pages still match the code
