@@ -1,0 +1,442 @@
+/**
+ * Static checks on the theme token system in src/app/globals.css.
+ *
+ *   pnpm check:theme
+ *
+ * Catches the failure modes a running page hides:
+ *  - a token defined in one theme but not the other, which silently falls back
+ *    to the light value and only looks wrong in dark mode;
+ *  - the two dark blocks (the prefers-color-scheme media query and the
+ *    [data-theme="dark"] override) drifting apart;
+ *  - text and chart colours dropping below their contrast floor on either surface.
+ */
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+/**
+ * The greeting, as one string.
+ *
+ * It lives in three files — the card, the world it looks out on, and the
+ * animals in it — because one 880-line file held all three and a reader
+ * looking for the grass had to scroll past a cat's leg joints. The checks do
+ * not care which file a rule lands in, only that the scene as a whole obeys it.
+ */
+const GREETING_FILES = [
+  "../src/components/greeting.tsx",
+  "../src/components/greeting-scene.tsx",
+  "../src/components/greeting-cast.tsx",
+];
+const greetingSource = () =>
+  GREETING_FILES.map((f) => readFileSync(new URL(f, import.meta.url), "utf8")).join("\n");
+
+const here = dirname(fileURLToPath(import.meta.url));
+const css = readFileSync(join(here, "../src/app/globals.css"), "utf8");
+
+let failures = 0;
+let checks = 0;
+function check(label, pass, detail = "") {
+  checks++;
+  if (!pass) {
+    failures++;
+    console.log(`  ✗ ${label}  ${detail}`);
+  } else if (process.env.VERBOSE) {
+    console.log(`  ✓ ${label}  ${detail}`);
+  }
+}
+const section = (t) => console.log("\n" + t);
+
+/** Pull a `--token: value;` map out of a block, given the text that opens it. */
+function block(startMarker) {
+  const at = css.indexOf(startMarker);
+  if (at === -1) throw new Error(`Could not find block: ${startMarker}`);
+  let depth = 0;
+  let i = css.indexOf("{", at);
+  const from = i;
+  for (; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}" && --depth === 0) break;
+  }
+  const body = css.slice(from, i);
+  const out = {};
+  // Collapse whitespace: a multi-line value is indented differently inside the
+  // nested media block than at the top level, and that is not a real difference.
+  for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) out[m[1]] = m[2].trim().replace(/\s+/g, " ");
+  return out;
+}
+
+const light = block(":root {\n  color-scheme: light;");
+const darkMedia = block(':root:where(:not([data-theme="light"]))');
+const darkAttr = block(':root[data-theme="dark"]');
+
+section("token coverage");
+const lightKeys = Object.keys(light);
+check("light theme defines tokens", lightKeys.length > 20, `${lightKeys.length} tokens`);
+
+for (const [name, dark] of [
+  ["prefers-color-scheme block", darkMedia],
+  ["[data-theme=dark] block", darkAttr],
+]) {
+  const missing = lightKeys.filter((k) => !(k in dark));
+  check(`${name} covers every light token`, missing.length === 0, missing.join(", "));
+  const extra = Object.keys(dark).filter((k) => !(k in light));
+  check(`${name} adds no orphan tokens`, extra.length === 0, extra.join(", "));
+}
+
+section("the scene does not follow the theme");
+/*
+ * The greeting card is a window. What it shows depends on the time of day, not
+ * on which app theme is showing — a dashboard in dark mode at two in the
+ * afternoon still looks out on an afternoon.
+ *
+ * These tokens used to live in all three theme blocks, dimmed for dark, which
+ * put a blazing sun in a navy night sky at 2pm. They are now defined once,
+ * outside every theme block, and this keeps them there.
+ */
+{
+  const inTheme = (name, tokens) => Object.keys(tokens).filter((k) => k.startsWith("--sky-"));
+  for (const [name, tokens] of [
+    ["light", light],
+    ["prefers-color-scheme dark", darkMedia],
+    ["[data-theme=dark]", darkAttr],
+  ]) {
+    const found = inTheme(name, tokens);
+    check(`the ${name} block defines no scene colours`, found.length === 0, found.join(", "));
+  }
+
+  // Defined once somewhere, or the scene would render unstyled.
+  const defined = [...css.matchAll(/(--sky-[a-z0-9-]+)\s*:/g)].map((m) => m[1]);
+  const unique = new Set(defined);
+  check("the scene is defined", unique.size >= 20, `${unique.size} tokens`);
+  check("each scene colour is defined exactly once", defined.length === unique.size, `${defined.length} definitions for ${unique.size} tokens`);
+
+  /*
+   * Every scene colour the components actually ask for must exist.
+   *
+   * Derived from the source rather than listed here: a hand-written list goes
+   * stale the moment the scene changes, and a count-based check passed happily
+   * while a phase colour was missing — the card would have rendered that
+   * gradient as transparent.
+   */
+  {
+    const PHASES = ["morning", "afternoon", "evening", "night"];
+    const sources = [...GREETING_FILES, "../src/components/sky-backdrop.tsx"]
+      .map((f) => readFileSync(new URL(f, import.meta.url), "utf8"))
+      .join("\n");
+
+    const wanted = new Set();
+    // Literal references: var(--sky-cloud), var(--sky-meadow-1)…
+    for (const m of sources.matchAll(/var\((--sky-[a-z0-9-]+)\)/g)) wanted.add(m[1]);
+    // Templated by phase: var(--sky-${phase}-1) stands for all four phases.
+    for (const m of sources.matchAll(/var\(--sky-\$\{[^}]+\}-(\d)\)/g)) {
+      for (const p of PHASES) wanted.add(`--sky-${p}-${m[1]}`);
+    }
+
+    check("the card asks for scene colours", wanted.size >= 12, `${wanted.size} referenced`);
+    const undefinedTokens = [...wanted].filter((t) => !unique.has(t));
+    check("every scene colour the card uses is defined", undefinedTokens.length === 0, undefinedTokens.join(", "));
+
+    // Both stops of every phase, or a gradient renders half-transparent.
+    const gaps = PHASES.flatMap((p) => [1, 2].map((n) => `--sky-${p}-${n}`)).filter((t) => !unique.has(t));
+    check("every phase has both gradient stops", gaps.length === 0, gaps.join(", "));
+  }
+
+  // Night is the one phase dark enough to need pale text over it.
+  check("night has its own ink", unique.has("--sky-ink-night") && unique.has("--sky-ink-night-2"));
+  check("daytime ink is the default pair", unique.has("--sky-ink") && unique.has("--sky-ink-2"));
+
+  // The card must pick ink by phase; reading it from the theme is the bug.
+  const greeting = greetingSource();
+  check("card text follows the phase", /phase === "night" \? "var\(--sky-ink-night\)"/.test(greeting));
+  check("the secondary text follows it too", /phase === "night" \? "var\(--sky-ink-night-2\)"/.test(greeting));
+  check("no card text is hardcoded to a theme ink", !/color: "var\(--sky-ink(-2)?\)"/.test(greeting));
+}
+
+section("the two dark blocks must not drift");
+const drift = Object.keys(darkAttr).filter((k) => darkMedia[k] !== darkAttr[k]);
+check("media-query and data-theme dark values are identical", drift.length === 0, drift.join(", "));
+
+section("theme selection wiring");
+check("light is the default :root", /:root \{\s*\n\s*color-scheme: light;/.test(css));
+check("OS dark is honoured", css.includes("@media (prefers-color-scheme: dark)"));
+check("a light stamp beats OS dark", css.includes(':root:where(:not([data-theme="light"]))'));
+check("an explicit dark stamp wins", css.includes(':root[data-theme="dark"]'));
+check("color-scheme is set per theme", (css.match(/color-scheme:/g) || []).length >= 3);
+
+// ---------------------------------------------------------------- contrast
+
+const hex = (v) => {
+  const m = /#([0-9a-f]{6})/i.exec(v);
+  return m ? m[1] : null;
+};
+const srgb = (c) => {
+  const n = c / 255;
+  return n <= 0.03928 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4;
+};
+function luminance(h) {
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return 0.2126 * srgb(r) + 0.7152 * srgb(g) + 0.0722 * srgb(b);
+}
+function contrast(a, b) {
+  const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m);
+  return (x + 0.05) / (y + 0.05);
+}
+
+/** Chart marks need 3:1 against their own surface; body text needs 4.5:1. */
+const FLOORS = [
+  ["--ink", 7, "primary text"],
+  ["--ink-2", 4.5, "secondary text"],
+  ["--ink-muted", 4.5, "muted text — used for small labels"],
+];
+
+/** Composite `fg` at alpha `a` over `bg`, both hex. */
+function over(fg, a, bg) {
+  const mix = (i) =>
+    Math.round(a * parseInt(fg.slice(i, i + 2), 16) + (1 - a) * parseInt(bg.slice(i, i + 2), 16));
+  return [0, 2, 4].map((i) => mix(i).toString(16).padStart(2, "0")).join("");
+}
+
+/** rgba(r,g,b,a) -> [hex, alpha] */
+function rgba(v) {
+  const m = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?/.exec(v || "");
+  if (!m) return null;
+  const h = [1, 2, 3].map((i) => Number(m[i]).toString(16).padStart(2, "0")).join("");
+  return [h, m[4] === undefined ? 1 : Number(m[4])];
+}
+
+/**
+ * A panel is a gradient, so the surface text actually sits on spans a range.
+ * Checking only the declared --surface misses the darker stop — which is where
+ * muted text first drops under its floor.
+ */
+function surfaceRange(tokens) {
+  const plane = hex(tokens["--plane"]);
+  const a = rgba(tokens["--glass-a"]);
+  const b = rgba(tokens["--glass-b"]);
+  const stops = [hex(tokens["--surface"])];
+  if (plane && a) stops.push(over(a[0], a[1], plane));
+  if (plane && b) stops.push(over(b[0], b[1], plane));
+  return stops.filter(Boolean);
+}
+
+for (const [themeName, tokens] of [
+  ["light", light],
+  ["dark", darkAttr],
+]) {
+  section(`contrast — ${themeName}`);
+  const surface = hex(tokens["--surface"]);
+  const stops = surfaceRange(tokens);
+  for (const [token, floor, what] of FLOORS) {
+    const c = hex(tokens[token]);
+    if (!c) {
+      check(`${token} is a literal hex`, false, tokens[token]);
+      continue;
+    }
+    // Worst stop of the panel gradient, not just the declared surface.
+    const worst = Math.min(...stops.map((s) => contrast(c, s)));
+    check(`${token} >= ${floor}:1 across the panel gradient (${what})`, worst >= floor, `${worst.toFixed(2)}:1`);
+  }
+
+  // Series slots carry meaning, so each must clear 3:1 — except where the
+  // documented relief rule applies (visible labels), which light mode relies on.
+  const relief = themeName === "light";
+  for (let i = 1; i <= 5; i++) {
+    const c = hex(tokens[`--series-${i}`]);
+    const ratio = contrast(c, surface);
+    check(
+      `--series-${i} contrast on ${themeName} surface`,
+      relief ? ratio >= 2 : ratio >= 3,
+      `${ratio.toFixed(2)}:1${relief && ratio < 3 ? " (below 3:1 — relief rule: visible labels required)" : ""}`,
+    );
+  }
+
+  // The ordinal ageing ramp must be monotonic, or "older" stops reading as a direction.
+  const ramp = [1, 2, 3, 4, 5].map((i) => luminance(hex(tokens[`--age-${i}`])));
+  const rising = ramp.every((v, i) => i === 0 || v > ramp[i - 1]);
+  const falling = ramp.every((v, i) => i === 0 || v < ramp[i - 1]);
+  check(`ageing ramp is monotonic in ${themeName}`, rising || falling, ramp.map((v) => v.toFixed(3)).join(" "));
+
+  const lightestStep = Math.max(...[1, 2, 3, 4, 5].map((i) => contrast(hex(tokens[`--age-${i}`]), surface)));
+  const faintestStep = Math.min(...[1, 2, 3, 4, 5].map((i) => contrast(hex(tokens[`--age-${i}`]), surface)));
+  check(`ageing ramp's faintest step clears 2:1 in ${themeName}`, faintestStep >= 2, `${faintestStep.toFixed(2)}:1`);
+  check(`ageing ramp has range in ${themeName}`, lightestStep / faintestStep > 1.5, `${faintestStep.toFixed(2)}..${lightestStep.toFixed(2)}`);
+}
+
+// ------------------------------------------------- source rules the CSS relies on
+
+section("component source obeys the documented rules");
+{
+  const dir = join(here, "../src");
+  const files = [];
+  (function walk(d) {
+    for (const name of readdirSync(d)) {
+      const full = join(d, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.tsx$/.test(full)) files.push(full);
+    }
+  })(dir);
+
+  // Comments explain these rules, so they must not be scanned for breaking them.
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const src = files.map((f) => [f.replace(/.*\/src\//, "src/"), strip(readFileSync(f, "utf8"))]);
+
+  // Dark-mode assumptions. Right in one theme, wrong in the other.
+  for (const [name, text] of src) {
+    const bad = text.match(/\b(?:bg|border|text|from|to)-(?:white|black)\/\d+/g);
+    check(`${name} uses no white/N or black/N`, !bad, (bad || []).slice(0, 3).join(", "));
+  }
+
+  // Raw hex belongs in globals.css, not scattered through components.
+  for (const [name, text] of src) {
+    if (name.endsWith("layout.tsx")) continue; // viewport themeColor needs literals
+    const bad = text.match(/#[0-9a-fA-F]{6}\b/g);
+    check(`${name} has no raw hex`, !bad, (bad || []).slice(0, 3).join(", "));
+  }
+
+  // A blurred solid halo is clipped by the panel's overflow and shows a hard edge.
+  for (const [name, text] of src) {
+    const blurred = /filter:\s*blur\(|\bblur-(?:2xl|3xl|\[)/.test(text) && !/backdrop-blur/.test(text.match(/.*blur.*/)?.[0] ?? "");
+    check(`${name} has no solid-colour blurred halo`, !blurred, "use a radial gradient");
+  }
+
+  // Anything with a hard minimum width must be able to scroll, or it pushes
+  // the whole page sideways on a phone.
+  for (const [name, text] of src) {
+    if (!/min-w-\[\d{3,}px\]/.test(text)) continue;
+    check(`${name} lets its wide content scroll`, text.includes("overflow-x-auto"), "min-w without an overflow-x-auto wrapper");
+  }
+
+  // A fixed pixel width outside a breakpoint prefix cannot fit a 320px screen.
+  for (const [name, text] of src) {
+    const bad = (text.match(/(?<![a-z:-])w-\[\d{3,}px\]/g) || []).filter((m) => !text.includes("max-" + m));
+    check(`${name} has no unbreakpointed fixed width`, bad.length === 0, bad.slice(0, 3).join(", "));
+  }
+
+  // The score ring must scale with the viewport, not sit at a fixed 200px.
+  const dial = src.find(([n]) => n.endsWith("health-dial.tsx"))[1];
+  check("the health dial is fluid", /w-\[min\(/.test(dial), "expected a min() width");
+  check("the dial's dead zone is proportional", dial.includes("DEAD_ZONE_RATIO"));
+
+  // Panel headings collapse to one word per line without both of these.
+  const ui = src.find(([n]) => n.endsWith("components/ui.tsx"))[1];
+  check("panel headers wrap", /flex-wrap/.test(ui));
+  check("panel titles can shrink", /min-w-0/.test(ui));
+
+  // The header must stay pinned, or content shows through the gap above it.
+  const topbar = src.find(([n]) => n.endsWith("topbar.tsx"))[1];
+  check("topbar is pinned to the top", /sticky top-0/.test(topbar));
+  check("topbar backdrop covers the gap above it", /maskImage/.test(topbar));
+  // The bar lives inside a max-width container. At `inset-0` its backdrop stops
+  // at that width and ends in two hard vertical seams on any wider screen — the
+  // most visible thing on the page, and invisible to anyone testing at 1280px.
+  check("topbar backdrop is full-bleed, not container-width", !/absolute inset-0 backdrop-blur/.test(topbar));
+  check("topbar backdrop reaches past both viewport edges", /-left-\[50vw\][^"]*-right-\[50vw\]/.test(topbar));
+  check("topbar backdrop still spans the bar vertically", /absolute inset-y-0/.test(topbar));
+
+  // Any full-bleed decoration must be clipped rather than widening the page.
+  const globals = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  check("the page clips horizontal overflow, so full-bleed adds no scrollbar", /overflow-x:\s*hidden/.test(globals));
+}
+
+section("status palette is theme-invariant");
+for (const t of ["--st-good", "--st-warning", "--st-serious", "--st-critical"]) {
+  check(`${t} is defined once, outside a theme block`, !(t in light) && !(t in darkAttr), "must not be themed");
+  check(`${t} exists`, css.includes(`${t}:`));
+}
+
+section("the glass recipe does not fight positioning utilities");
+{
+  // `.glass` and Tailwind's `.absolute` are both single-class selectors, and
+  // this stylesheet loads after the utilities — so a plain
+  // `.glass { position: relative }` silently wins. The "For you" panel was
+  // therefore in flow rather than absolute, and an in-flow panel grows its
+  // parent: opening the menu stretched the entire header to contain it.
+  //
+  // Nothing errors, nothing warns. It just looks broken.
+  // Only rules targeting the glass box *itself*. `.glass::before` is the rim and
+  // `.glass > *` are its children — different boxes, and positioning those is
+  // exactly what they are for.
+  const onTheBox = (selector) => /^\.glass[a-z0-9_:-]*$/i.test(selector) && !selector.includes("::");
+  const blocks = [...css.matchAll(/(^|\n)(\.glass[^\n{]*?)\s*\{([\s\S]*?)\n\}/g)].filter(([, , s]) =>
+    onTheBox(s.trim()),
+  );
+  const offenders = blocks
+    .filter(([, , , body]) => /(^|\n)\s*position:/.test(body))
+    .map(([, , selector]) => selector.trim());
+  check("no plain .glass rule sets position", offenders.length === 0, offenders.join(" | "));
+
+  // ...but glass still needs a containing block for its rim and bloom, so the
+  // declaration has to exist — inside `@layer components`.
+  //
+  // The layer is the whole point, and it is *not* about specificity. Tailwind
+  // declares `@layer theme, base, components, utilities`, and an **unlayered**
+  // rule beats every layered one however weak its selector. A `:where(.glass)`
+  // at zero specificity, sitting outside any layer, still won — which is why
+  // the first attempt at this fix changed nothing.
+  const layered = css.match(/@layer components \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  check("glass establishes a containing block", /\.glass\s*\{[^}]*position:\s*relative/.test(layered), "not in @layer components");
+  check("that rule is inside a layer utilities can beat", layered.length > 0);
+  // An unlayered rule would win again, so the position must not appear outside.
+  const unlayered = css.replace(/@layer [\w\s,]*\{[\s\S]*?\n\}/g, "");
+  check("no unlayered rule positions glass", !/(^|\n)\.glass\s*\{[^}]*position:/.test(unlayered));
+
+  // The same trap, generalised: any utility-named property this file redeclares
+  // at full specificity will beat the utility of the same name.
+  for (const [prop, utility] of [
+    ["position", "absolute / fixed / sticky"],
+    ["display", "flex / grid / hidden"],
+  ]) {
+    const risky = blocks
+      .filter(([, , , body]) => new RegExp(`(^|\\n)\\s*${prop}:`).test(body))
+      .map(([, , s]) => s.trim());
+    check(`.glass does not override the ${utility} utilities`, risky.length === 0, risky.join(" | "));
+  }
+}
+
+section("the fixed backdrops are not buried under the page background");
+{
+  // This one is worth the words. A negative-z-index child paints *before* the
+  // in-flow block backgrounds of its stacking context, so an opaque `body`
+  // background covers every `-z-` layer — the parallax mesh and the whole sky
+  // takeover vanish, with no error anywhere. The root element is the exception:
+  // its background is propagated to the canvas and painted first.
+  //
+  // It failed silently for as long as it existed, which is exactly why it needs
+  // a check rather than a comment.
+  const block = (sel) => css.match(new RegExp(`(?:^|\\n)${sel}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? "";
+  const htmlBlock = block("html");
+  const bodyBlock = block("body");
+
+  check("the page background is declared on html", /background:/.test(htmlBlock));
+  check("html carries the full plane gradient", htmlBlock.includes("linear-gradient(180deg, var(--plane)"));
+  check(
+    "body declares no background of its own",
+    !/(?:^|\s)background(?:-color|-image)?:/.test(bodyBlock),
+    bodyBlock.match(/background[^;]*/)?.[0] ?? "",
+  );
+
+  // And the layers themselves must stay behind the content but above the canvas.
+  // Read the depth out of each file rather than asserting a literal, so the
+  // ordering below compares what actually ships.
+  const depthOf = (file) => {
+    const src = readFileSync(new URL(file, import.meta.url), "utf8");
+    const m = src.match(/fixed inset-0 -z-(?:\[(\d+)\]|(\d+))/);
+    return { src, z: m ? -Number(m[1] ?? m[2]) : NaN };
+  };
+  const mesh = depthOf("../src/components/parallax-backdrop.tsx");
+  const sky = depthOf("../src/components/sky-backdrop.tsx");
+
+  check("the parallax mesh is a fixed negative layer", Number.isFinite(mesh.z), String(mesh.z));
+  check("the sky takeover is a fixed negative layer", Number.isFinite(sky.z), String(sky.z));
+  // Negative, or the content is buried instead.
+  check("both layers stay behind the content", mesh.z < 0 && sky.z < 0, `${mesh.z}, ${sky.z}`);
+  // The sky grew out of the card; the mesh is the plane behind everything.
+  check("the sky paints above the parallax mesh", sky.z > mesh.z, `sky ${sky.z} vs mesh ${mesh.z}`);
+  check("neither layer intercepts a pointer", [mesh.src, sky.src].every((s) => s.includes("pointer-events-none")));
+}
+
+console.log("\n" + "─".repeat(60));
+console.log(failures === 0 ? `All ${checks} theme checks passed.` : `${failures} of ${checks} theme checks FAILED.`);
+process.exit(failures ? 1 : 0);

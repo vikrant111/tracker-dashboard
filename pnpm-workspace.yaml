@@ -1,0 +1,8 @@
+# Build scripts pnpm may run at install time. Anything not listed here is
+# refused, so a dependency cannot silently execute code on install.
+#
+# sharp is Next's image optimiser. This app renders no <Image>, so its native
+# build is dead weight — declined deliberately rather than left as an unresolved
+# warning, which pnpm exits non-zero on and which then blocks every script.
+allowBuilds:
+  sharp: false

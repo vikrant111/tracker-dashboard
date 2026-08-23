@@ -1,0 +1,1045 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: var(--font-bricolage), system-ui, sans-serif;
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+/*
+ * Palette inspired by Bajaj Finserv: a blue-and-white identity anchored on the
+ * brand blue #0071BB, with a teal companion. The blue ramp below is that hue
+ * held constant in OKLCH and stepped by lightness — the brand blue itself lands
+ * on step 450.
+ *
+ * Two themes, each selected rather than derived. The data colours are not a tint
+ * of one another: both sets were run through the dataviz validator against their
+ * own surface (--surface) for lightness band, chroma floor, colour-vision-
+ * deficiency separation and contrast. Changing --surface means re-running that
+ * validation. See docs/design-system.md.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Chrome — white-leaning, the way the brand presents itself */
+  --plane: #dee9f6;
+  --plane-2: #c7dcf2;
+  --surface: #f6f9fc; /* effective colour behind a glass panel — charts validate against this */
+  --panel: #ffffff; /* solid popovers, drawers, select menus */
+
+  --ink: #0e1a26;
+  --ink-2: #3d5266;
+  --ink-muted: #5a6d80;
+
+  --hairline: rgba(14, 26, 38, 0.11);
+  --grid: rgba(14, 26, 38, 0.07);
+
+  /* Translucent fills, the light-mode counterpart of white/5, /10, /14 */
+  --wash: rgba(14, 26, 38, 0.04);
+  --wash-2: rgba(14, 26, 38, 0.075);
+  --wash-3: rgba(14, 26, 38, 0.11);
+
+  /*
+   * Glass stays opaque enough that --surface holds, which is what the palette
+   * was validated against. What makes it read as glass is the backdrop behind
+   * it, not extra transparency here.
+   */
+  --glass-a: rgba(255, 255, 255, 0.8);
+  --glass-b: rgba(238, 246, 255, 0.52);
+  --glass-border: rgba(14, 26, 38, 0.08);
+  --glass-inset: rgba(255, 255, 255, 0.95);
+  --glass-shadow:
+    0 1px 2px rgba(6, 40, 72, 0.05), 0 8px 18px -10px rgba(6, 40, 72, 0.14),
+    0 28px 60px -32px rgba(0, 74, 128, 0.42);
+  --glass-rim: rgba(0, 113, 187, 0.14); /* specular edge, top-left */
+
+  /* Backdrop mesh — saturated enough to actually show through the glass. */
+  --mesh-1: rgba(0, 113, 187, 0.62);
+  --mesh-2: rgba(13, 154, 168, 0.55);
+  --mesh-3: rgba(94, 132, 255, 0.46);
+  --mesh-4: rgba(255, 150, 70, 0.3);
+  --grain: 0.035;
+
+  /*
+   * Glow. On the dark surface this is a luminance bloom centred on the element;
+   * on light there is no headroom above white, so the same idea is expressed as
+   * a saturated coloured shadow cast downward. Same tokens, different physics.
+   */
+  --glow-y: 8px;
+  --glow-blur: 24px;
+  --glow-spread: -8px;
+  --glow-strength: 0.55;
+  --bloom-opacity: 0.42;
+
+  --accent: #0071bb; /* the brand blue, used as-is for chrome */
+  --accent-2: #0d9aa8; /* teal companion */
+  --accent-deep: #005a96; /* second stop on solid buttons, so they stay one hue */
+  --accent-tint: rgba(0, 113, 187, 0.12);
+  --accent-line: rgba(0, 113, 187, 0.38);
+  --accent-ink: #005a96;
+  --accent-glow: rgba(0, 113, 187, 0.45);
+  --mark-ink: #ffffff; /* letter inside the logo mark, over the accent gradient */
+  --scrim: rgba(8, 26, 44, 0.44);
+
+  /* Leaderboard podium. Metals, not data — never used to encode a value. */
+  --rank-1: #b8860b;
+  --rank-2: #7c8496;
+  --rank-3: #b06a3d;
+
+  --danger: #c0392f;
+  --danger-tint: rgba(192, 57, 47, 0.1);
+  --danger-tint-2: rgba(192, 57, 47, 0.18);
+  --danger-line: rgba(192, 57, 47, 0.4);
+  --danger-ink: #a32f26;
+
+  --orb-1: #0071bb;
+  --orb-2: #0d9aa8;
+  --orb-3: #6f8dff;
+  --orb-4: #ff9d5c;
+  --orb-opacity: 0.62;
+  --veil: rgba(0, 113, 187, 0.14);
+
+
+
+
+  /* Categorical slots — fixed order, light steps. Slot 1 is the brand blue.
+     Never reorder: the order is the colourblind-safety mechanism. */
+  --series-1: #0c70b6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+
+  /* Ordinal ageing ramp: the brand blue hue, darkening with age. */
+  --age-1: #38a4fd;
+  --age-2: #0f80d0;
+  --age-3: #08609d;
+  --age-4: #04426f;
+  --age-5: #012847;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+
+    /* Deep navy rather than neutral black — dark mode stays in the brand family. */
+    --plane: #061524;
+    --plane-2: #030d18;
+    --surface: #172533;
+    --panel: #0d1b2b;
+
+    --ink: #eef4fa;
+    --ink-2: #a3b4c6;
+    --ink-muted: #8496ab;
+
+    --hairline: rgba(255, 255, 255, 0.09);
+    --grid: rgba(255, 255, 255, 0.06);
+
+    --wash: rgba(255, 255, 255, 0.05);
+    --wash-2: rgba(255, 255, 255, 0.1);
+    --wash-3: rgba(255, 255, 255, 0.14);
+
+    --glass-a: rgba(148, 190, 240, 0.11);
+    --glass-b: rgba(120, 170, 230, 0.045);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-inset: rgba(255, 255, 255, 0.1);
+    --glass-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 24px -12px rgba(0, 0, 0, 0.55),
+      0 30px 66px -34px rgba(0, 0, 0, 0.95);
+    --glass-rim: rgba(147, 202, 254, 0.24);
+    --mesh-1: rgba(19, 147, 237, 0.55);
+    --mesh-2: rgba(43, 192, 208, 0.42);
+    --mesh-3: rgba(120, 110, 255, 0.4);
+    --mesh-4: rgba(255, 140, 70, 0.2);
+    --grain: 0.05;
+
+    /* Dark has luminance headroom, so glow is a centred bloom, not a shadow. */
+    --glow-y: 0px;
+    --glow-blur: 34px;
+    --glow-spread: -6px;
+    --glow-strength: 0.75;
+    --bloom-opacity: 0.32;
+
+    --accent: #1393ed;
+    --accent-2: #2bc0d0;
+    --accent-deep: #0c70b6;
+    --accent-tint: rgba(19, 147, 237, 0.18);
+    --accent-line: rgba(19, 147, 237, 0.42);
+    --accent-ink: #93cafe;
+    --accent-glow: rgba(19, 147, 237, 0.55);
+    --mark-ink: #04182a;
+    --scrim: rgba(1, 8, 16, 0.6);
+
+    --rank-1: #d5a021;
+    --rank-2: #a3b4c6;
+    --rank-3: #d98452;
+
+    --danger: #e0605c;
+    --danger-tint: rgba(224, 96, 92, 0.14);
+    --danger-tint-2: rgba(224, 96, 92, 0.24);
+    --danger-line: rgba(224, 96, 92, 0.4);
+    --danger-ink: #f3aeab;
+
+    --orb-1: #1393ed;
+    --orb-2: #2bc0d0;
+    --orb-3: #786eff;
+    --orb-4: #ff8c46;
+    --orb-opacity: 0.42;
+    --veil: rgba(19, 147, 237, 0.2);
+
+
+    /* The greeting sky, after dark: deep navy, moon rather than sun. */
+
+
+    --series-1: #1393ed;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+
+    /* Dark ramp brightens with age — the oldest bucket carries the most presence. */
+    --age-1: #08609d;
+    --age-2: #0f80d0;
+    --age-3: #38a4fd;
+    --age-4: #93cafe;
+    --age-5: #d0e8ff;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --plane: #061524;
+  --plane-2: #030d18;
+  --surface: #172533;
+  --panel: #0d1b2b;
+
+  --ink: #eef4fa;
+  --ink-2: #a3b4c6;
+  --ink-muted: #8496ab;
+
+  --hairline: rgba(255, 255, 255, 0.09);
+  --grid: rgba(255, 255, 255, 0.06);
+
+  --wash: rgba(255, 255, 255, 0.05);
+  --wash-2: rgba(255, 255, 255, 0.1);
+  --wash-3: rgba(255, 255, 255, 0.14);
+
+  --glass-a: rgba(148, 190, 240, 0.11);
+  --glass-b: rgba(120, 170, 230, 0.045);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-inset: rgba(255, 255, 255, 0.1);
+  --glass-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 24px -12px rgba(0, 0, 0, 0.55),
+    0 30px 66px -34px rgba(0, 0, 0, 0.95);
+  --glass-rim: rgba(147, 202, 254, 0.24);
+  --mesh-1: rgba(19, 147, 237, 0.55);
+  --mesh-2: rgba(43, 192, 208, 0.42);
+  --mesh-3: rgba(120, 110, 255, 0.4);
+  --mesh-4: rgba(255, 140, 70, 0.2);
+  --grain: 0.05;
+
+  /* Dark has luminance headroom, so glow is a centred bloom, not a shadow. */
+  --glow-y: 0px;
+  --glow-blur: 34px;
+  --glow-spread: -6px;
+  --glow-strength: 0.75;
+  --bloom-opacity: 0.32;
+
+  --accent: #1393ed;
+  --accent-2: #2bc0d0;
+  --accent-deep: #0c70b6;
+  --accent-tint: rgba(19, 147, 237, 0.18);
+  --accent-line: rgba(19, 147, 237, 0.42);
+  --accent-ink: #93cafe;
+  --accent-glow: rgba(19, 147, 237, 0.55);
+  --mark-ink: #04182a;
+  --scrim: rgba(1, 8, 16, 0.6);
+
+  --rank-1: #d5a021;
+  --rank-2: #a3b4c6;
+  --rank-3: #d98452;
+
+  --danger: #e0605c;
+  --danger-tint: rgba(224, 96, 92, 0.14);
+  --danger-tint-2: rgba(224, 96, 92, 0.24);
+  --danger-line: rgba(224, 96, 92, 0.4);
+  --danger-ink: #f3aeab;
+
+  --orb-1: #1393ed;
+  --orb-2: #2bc0d0;
+  --orb-3: #786eff;
+  --orb-4: #ff8c46;
+  --orb-opacity: 0.42;
+  --veil: rgba(19, 147, 237, 0.2);
+
+
+
+
+  --series-1: #1393ed;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+
+  --age-1: #08609d;
+  --age-2: #0f80d0;
+  --age-3: #38a4fd;
+  --age-4: #93cafe;
+  --age-5: #d0e8ff;
+}
+
+/* ---------------------------------------------------------------- the scene
+ *
+ * The greeting card is a **window**, so what it shows does not change with the
+ * app theme. A dashboard in dark mode at two in the afternoon still looks out
+ * on an afternoon: blue sky, green meadow, white cloud.
+ *
+ * These used to be redefined in all three theme blocks, dimmed for dark. The
+ * result was a sun blazing in a navy night sky at 2pm — the scene contradicted
+ * its own clock. Theme belongs to the chrome around the card; the sky belongs
+ * to the time of day.
+ *
+ * Defined once, outside every theme block, so there is nowhere to dim them
+ * from. `pnpm check:theme` asserts they stay out.
+ */
+:root {
+  --sky-morning-1: #bfe0fb;
+  --sky-morning-2: #f2e7d8;
+  --sky-afternoon-1: #a9d4f7;
+  --sky-afternoon-2: #e9f3fd;
+  --sky-evening-1: #6f8fc4;
+  --sky-evening-2: #f6c69a;
+  --sky-night-1: #14243d;
+  --sky-night-2: #0a1524;
+  --sky-ink: #0e1a26;
+  --sky-ink-2: #4a6076;
+  --sky-sun: #f7a52b;
+  --sky-sun-low: #ea6f3c;
+  --sky-moon: #f3efe2;
+  --sky-moon-crater: #cfc7b2;
+  --sky-moon-shadow: #33405c;
+  --sky-star: #fdfbf2;
+  --sky-rain: #7fa9d6;
+  --sky-cloud: #ffffff;
+  --sky-bird: #3d5266;
+  --sky-membrane: #7d92a6;
+  --sky-meadow-1: #86c94e;
+  --sky-meadow-2: #5faf37;
+  --sky-meadow-3: #3f8f28;
+  --sky-haze: #dff0ff;
+  --sky-grass: #6d8f63;
+  --sky-grass-2: #86a97a;
+
+  /*
+   * Card text over the sky follows the **sky**, not the theme — the only phase
+   * dark enough to need pale ink is night. `--sky-ink` above is the daytime
+   * pair; these two are night's.
+   */
+  --sky-ink-night: #eef4fa;
+  --sky-ink-night-2: #9db0c4;
+}
+
+
+/*
+ * Status palette — reserved, and identical in both themes so a state never
+ * changes meaning with the lights. On the light surface, warning and serious
+ * fall under 3:1 by design: they always ship with a label, never colour alone.
+ */
+:root {
+  --st-good: #0ca30c;
+  --st-warning: #fab219;
+  --st-serious: #ec835a;
+  --st-critical: #d03b3b;
+
+  --sev-critical: var(--st-critical);
+  --sev-major: var(--st-serious);
+  --sev-minor: var(--st-warning);
+  --sev-unknown: var(--ink-muted);
+}
+
+/*
+ * The page background lives HERE, on the root — not on `body`.
+ *
+ * The root element's background is propagated to the canvas and painted before
+ * everything else, so the fixed `-z-` layers (the parallax mesh and the sky
+ * takeover) sit above it and are visible. On `body` it is an ordinary element
+ * background, and an ordinary background paints **after** negative-z-index
+ * children — which buried both layers completely. Moving it back to `body`
+ * makes the sky invisible again; `pnpm check:theme` fails if it does.
+ */
+html {
+  background:
+    radial-gradient(ellipse 90% 60% at 50% -10%, var(--veil), transparent 65%),
+    linear-gradient(180deg, var(--plane), var(--plane-2));
+  background-attachment: fixed;
+  scroll-behavior: smooth;
+  /* One easing curve for the whole product, so nothing feels out of step. */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/*
+ * Default transition for interactive chrome. Named properties only — a blanket
+ * `transition: all` would animate layout and make scrolling feel heavy.
+ */
+:where(button, a, select, input, [role="button"]) {
+  transition:
+    color 200ms var(--ease),
+    background-color 200ms var(--ease),
+    border-color 200ms var(--ease),
+    box-shadow 240ms var(--ease),
+    transform 240ms var(--ease),
+    opacity 200ms var(--ease);
+}
+
+/* Keeps the glass from repainting jaggedly while orbs drift behind it. */
+.glass {
+  will-change: transform;
+  transform: translateZ(0);
+}
+
+/* Deliberately no background — see the note on `html` above. */
+body {
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/*
+ * The glass primitive. One place, so every panel matches in both themes.
+ * Three layers make it read as glass rather than as a white box: a tinted
+ * translucent fill, a blurred backdrop, and a specular rim that catches light
+ * along the top-left the way a real bevel would.
+ */
+.glass {
+  background: linear-gradient(150deg, var(--glass-a), var(--glass-b));
+  backdrop-filter: blur(26px) saturate(180%);
+  -webkit-backdrop-filter: blur(26px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  box-shadow:
+    0 1px 0 0 var(--glass-inset) inset,
+    var(--glass-shadow);
+  isolation: isolate;
+}
+
+/*
+ * The rim and the corner bloom are positioned against the panel, so glass needs
+ * a containing block — but it must not *insist* on one.
+ *
+ * This has to live in `@layer components`, and the reason is cascade **layers**,
+ * not specificity. Tailwind declares `@layer theme, base, components, utilities`
+ * and puts `.absolute` in `utilities`; an **unlayered** rule beats every layered
+ * one no matter how weak its selector. A first attempt at `:where(.glass)` —
+ * zero specificity, but unlayered — therefore still won, and the "For you" panel
+ * stayed in flow. An in-flow panel grows its parent, which is why opening the
+ * menu stretched the whole header.
+ *
+ * In `components` it loses to `utilities`, so `absolute` on the panel wins while
+ * every other glass surface still gets its containing block.
+ */
+@layer components {
+  .glass {
+    position: relative;
+  }
+}
+
+/* The rim. A masked gradient border, so it fades away from the light source. */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(140deg, var(--glass-rim), transparent 45%, transparent 70%, var(--glass-rim));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+.glass-hover {
+  transition:
+    border-color 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.glass-hover:hover {
+  border-color: var(--accent-line);
+  box-shadow:
+    0 1px 0 0 var(--glass-inset) inset,
+    var(--glass-shadow),
+    0 0 0 1px var(--accent-tint),
+    0 0 34px -6px var(--accent-glow);
+}
+
+/* A sweep of light that crosses a panel once when it first appears. */
+@keyframes sheen {
+  0% {
+    transform: translateX(-120%) skewX(-18deg);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.7;
+  }
+  60%,
+  100% {
+    transform: translateX(320%) skewX(-18deg);
+    opacity: 0;
+  }
+}
+
+.sheen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  background: linear-gradient(90deg, transparent, var(--glass-inset), transparent);
+  width: 34%;
+  animation: sheen 2.6s cubic-bezier(0.22, 1, 0.36, 1) 0.35s 1 both;
+  pointer-events: none;
+  z-index: 2;
+  mix-blend-mode: overlay;
+}
+
+/* Slow autonomous drift, so the backdrop is alive even when nothing is happening. */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  33% {
+    transform: translate3d(3%, -4%, 0) scale(1.08);
+  }
+  66% {
+    transform: translate3d(-3%, 3%, 0) scale(0.95);
+  }
+}
+
+/* The greeting sky. Transform and opacity only, so it composites on the GPU. */
+@keyframes sky-fly {
+  from {
+    transform: translate(-70px, 6px);
+  }
+  45% {
+    transform: translate(173px, -5px);
+  }
+  to {
+    transform: translate(470px, 4px);
+  }
+}
+@keyframes sky-drift {
+  from {
+    transform: translateX(420px);
+  }
+  to {
+    transform: translateX(-140px);
+  }
+}
+/* Lift on the downstroke, sink through the glide. Same period as the wings. */
+@keyframes sky-bob {
+  0% {
+    transform: translateY(1.5px);
+  }
+  10% {
+    transform: translateY(-2.5px);
+  }
+  48% {
+    transform: translateY(-1px);
+  }
+  100% {
+    transform: translateY(2px);
+  }
+}
+/*
+ * A bat's beat is continuous — it has no soaring phase, so unlike a gull there
+ * is no glide hold in the cycle. One smooth sweep each way, eased at both ends.
+ */
+@keyframes sky-bat-left {
+  0%,
+  100% {
+    transform: rotate(-30deg);
+  }
+  50% {
+    transform: rotate(24deg);
+  }
+}
+@keyframes sky-bat-right {
+  0%,
+  100% {
+    transform: rotate(30deg);
+  }
+  50% {
+    transform: rotate(-24deg);
+  }
+}
+
+/*
+ * A long, gently undulating crossing. Constant horizontal speed with the rise
+ * and fall carried entirely in y, which is what keeps it reading as smooth
+ * rather than as something being flung across the card.
+ */
+@keyframes sky-bat-path {
+  0% {
+    transform: translate(-60px, 7px);
+  }
+  25% {
+    transform: translate(68px, -6px);
+  }
+  50% {
+    transform: translate(196px, 5px);
+  }
+  75% {
+    transform: translate(324px, -7px);
+  }
+  100% {
+    transform: translate(452px, 4px);
+  }
+}
+
+/* A crane's wings are long and slow — two beats and a long soar. */
+@keyframes sky-crane-left {
+  0% {
+    transform: rotate(-32deg);
+  }
+  12% {
+    transform: rotate(18deg);
+  }
+  28% {
+    transform: rotate(-26deg);
+  }
+  40% {
+    transform: rotate(12deg);
+  }
+  55%,
+  100% {
+    transform: rotate(-5deg);
+  }
+}
+@keyframes sky-crane-right {
+  0% {
+    transform: rotate(32deg);
+  }
+  12% {
+    transform: rotate(-18deg);
+  }
+  28% {
+    transform: rotate(26deg);
+  }
+  40% {
+    transform: rotate(-12deg);
+  }
+  55%,
+  100% {
+    transform: rotate(5deg);
+  }
+}
+
+/* A squirrel hops, then sits up and flicks its tail. */
+@keyframes sky-hop {
+  0%,
+  62%,
+  100% {
+    transform: translateY(0);
+  }
+  68% {
+    transform: translateY(-7px);
+  }
+  74% {
+    transform: translateY(0);
+  }
+  80% {
+    transform: translateY(-4px);
+  }
+  86% {
+    transform: translateY(0);
+  }
+}
+@keyframes sky-tail-flick {
+  0%,
+  55%,
+  100% {
+    transform: rotate(0deg);
+  }
+  20% {
+    transform: rotate(-16deg);
+  }
+  35% {
+    transform: rotate(10deg);
+  }
+}
+
+/* A cat's tail sways continuously; its walk is a slow crossing. */
+@keyframes sky-tail-sway {
+  0%,
+  100% {
+    transform: rotate(-13deg);
+  }
+  50% {
+    transform: rotate(15deg);
+  }
+}
+@keyframes sky-walk {
+  from {
+    transform: translateX(-40px);
+  }
+  to {
+    transform: translateX(440px);
+  }
+}
+/* A walking leg is not a pendulum.
+   The foot is planted for most of the stride while the body travels over it
+   (stance), then swings forward quickly to catch up (swing). Equal time each
+   way — which is what `sky-step` did — reads as a marionette. */
+@keyframes sky-thigh {
+  0% {
+    transform: rotate(20deg);
+  }
+  62% {
+    transform: rotate(-17deg);
+  }
+  78% {
+    transform: rotate(-2deg);
+  }
+  100% {
+    transform: rotate(20deg);
+  }
+}
+
+/* The shank stays straight while it bears weight, then folds to clear the
+   ground on the way forward. Without this the paw scrapes through the floor. */
+@keyframes sky-shank {
+  0%,
+  62% {
+    transform: rotate(0deg);
+  }
+  74% {
+    transform: rotate(36deg);
+  }
+  90% {
+    transform: rotate(11deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+/* A cat's hock bends the opposite way to its knee. */
+@keyframes sky-shank-hind {
+  0%,
+  62% {
+    transform: rotate(0deg);
+  }
+  74% {
+    transform: rotate(-36deg);
+  }
+  90% {
+    transform: rotate(-11deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+/* Twice per stride: the body lifts as each diagonal pair passes beneath it.
+   Under a pixel on purpose — more than that and the cat is bouncing, not walking. */
+@keyframes sky-gait-bob {
+  0%,
+  50%,
+  100% {
+    transform: translateY(0);
+  }
+  25%,
+  75% {
+    transform: translateY(-0.7px);
+  }
+}
+
+/* The outer wing is hinged at the wrist and lags the inner half through the
+   beat, so the wing ripples along its length instead of swinging as one board. */
+@keyframes sky-crane-tip-right {
+  0% {
+    transform: rotate(18deg);
+  }
+  12% {
+    transform: rotate(-12deg);
+  }
+  28% {
+    transform: rotate(15deg);
+  }
+  46% {
+    transform: rotate(-8deg);
+  }
+  62%,
+  100% {
+    transform: rotate(6deg);
+  }
+}
+@keyframes sky-crane-tip-left {
+  0% {
+    transform: rotate(-18deg);
+  }
+  12% {
+    transform: rotate(12deg);
+  }
+  28% {
+    transform: rotate(-15deg);
+  }
+  46% {
+    transform: rotate(8deg);
+  }
+  62%,
+  100% {
+    transform: rotate(-6deg);
+  }
+}
+
+/*
+ * Grass in the wind.
+ *
+ * Asymmetric on purpose: wind has a direction, so the tuft leans further one
+ * way than the other and springs back rather than swinging like a pendulum.
+ * The rotation is around the base of the tuft, which is what keeps the roots
+ * planted while the tips travel.
+ */
+@keyframes sky-grass-sway {
+  0%,
+  100% {
+    transform: rotate(-1.8deg);
+  }
+  35% {
+    transform: rotate(2.4deg);
+  }
+  55% {
+    transform: rotate(3.6deg);
+  }
+}
+
+/* Rain and snow fall through the frame; snow is slower and drifts. */
+@keyframes sky-fall {
+  from {
+    transform: translateY(-12px);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(130px);
+    opacity: 0;
+  }
+}
+
+/* Stars breathe rather than blink — a hard flicker reads as a rendering fault. */
+@keyframes sky-twinkle {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes sky-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes sky-pulse {
+  0%,
+  100% {
+    opacity: 0.75;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes pulse-ring {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.15;
+    transform: scale(1.28);
+  }
+}
+
+/*
+ * Radiance utilities. Set `--hue` inline and the theme decides the physics:
+ * a centred bloom on dark, a saturated coloured shadow on light.
+ */
+.glow {
+  box-shadow: 0 var(--glow-y) var(--glow-blur) var(--glow-spread)
+    color-mix(in srgb, var(--hue, var(--accent)) calc(var(--glow-strength) * 100%), transparent);
+}
+.glow-sm {
+  box-shadow: 0 calc(var(--glow-y) / 2) calc(var(--glow-blur) * 0.55) var(--glow-spread)
+    color-mix(in srgb, var(--hue, var(--accent)) calc(var(--glow-strength) * 80%), transparent);
+}
+.glow-lg {
+  box-shadow: 0 calc(var(--glow-y) * 1.6) calc(var(--glow-blur) * 1.5) var(--glow-spread)
+    color-mix(in srgb, var(--hue, var(--accent)) calc(var(--glow-strength) * 100%), transparent);
+}
+
+/*
+ * A soft tinted halo — the "lamp" the panels sit under.
+ *
+ * Built from a radial-gradient rather than a solid colour with `filter: blur()`.
+ * A blurred element is clipped hard by the panel's `overflow: hidden`, which
+ * left a visible straight edge partway across the card. A gradient's alpha
+ * reaches zero inside its own box, so there is no edge to clip.
+ */
+.bloom {
+  position: absolute;
+  border-radius: 9999px;
+  opacity: var(--bloom-opacity);
+  background: radial-gradient(
+    circle at center,
+    var(--hue, var(--accent)) 0%,
+    color-mix(in srgb, var(--hue, var(--accent)) 55%, transparent) 32%,
+    color-mix(in srgb, var(--hue, var(--accent)) 18%, transparent) 55%,
+    transparent 72%
+  );
+  pointer-events: none;
+  will-change: opacity, transform;
+  animation: bloom-breathe 7s ease-in-out infinite;
+  animation-delay: var(--bloom-delay, 0s);
+}
+
+/*
+ * Slow breathing. Opacity and transform only, so it composites on the GPU and
+ * costs nothing per frame — animating the blur or the shadow would repaint.
+ */
+@keyframes bloom-breathe {
+  0%,
+  100% {
+    opacity: calc(var(--bloom-opacity) * 0.72);
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: calc(var(--bloom-opacity) * 1.18);
+    transform: scale(1.07);
+  }
+}
+
+/* Same idea for a lit element: a gentle pulse on its own halo. */
+@keyframes lit-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.97);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+.breathe {
+  animation: lit-breathe 6.5s ease-in-out infinite;
+  animation-delay: var(--bloom-delay, 0s);
+  will-change: opacity, transform;
+}
+
+/* Text that carries its own light. Reads as ink on light, as neon on dark. */
+.lit {
+  color: var(--hue, var(--accent));
+  text-shadow: 0 0 calc(var(--glow-blur) * 0.5) color-mix(in srgb, var(--hue, var(--accent)) 30%, transparent);
+}
+
+/* Numbers that sit in columns must align; standalone figures keep proportional. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* Keyboard focus stays visible everywhere — glass eats default outlines. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--wash-3);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input,
+select,
+textarea {
+  background: var(--wash);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 8px 12px;
+  color: var(--ink);
+  font-size: 14px;
+  width: 100%;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-muted);
+}
+select option {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /*
+   * Blanket duration-zeroing would leave these parked on their first keyframe,
+   * which is deliberately dimmer than resting. Stop them instead, at full value.
+   */
+  .bloom,
+  .breathe {
+    animation: none !important;
+    opacity: var(--bloom-opacity);
+    transform: none;
+  }
+  .sheen::after {
+    display: none;
+  }
+}

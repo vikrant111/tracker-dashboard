@@ -1,0 +1,58 @@
+{
+  "items": {
+    "properties": {
+      "id": { "type": "keyword" },
+      "workItemId": { "type": "keyword" },
+      "teamId": { "type": "keyword" },
+      "source": { "type": "keyword" },
+      "kind": { "type": "keyword" },
+      "type": { "type": "keyword" },
+      "title": { "type": "text", "fields": { "raw": { "type": "keyword" } } },
+      "url": { "type": "keyword", "index": false },
+      "assignee": { "type": "keyword" },
+      "assigneeEmail": { "type": "keyword" },
+      "severity": { "type": "keyword" },
+      "environment": { "type": "keyword" },
+      "status": { "type": "keyword" },
+      "state": { "type": "keyword" },
+      "priority": { "type": "integer" },
+      "tags": { "type": "keyword" },
+      "createdDate": { "type": "date" },
+      "changedDate": { "type": "date" },
+      "closedDate": { "type": "date" },
+      "isActive": { "type": "boolean" }
+    }
+  },
+  "teams": {
+    "properties": {
+      "id": { "type": "keyword" },
+      "name": { "type": "text", "fields": { "raw": { "type": "keyword" } } },
+      "description": { "type": "text" },
+      "members": { "type": "object", "enabled": false },
+      "azure": { "type": "object", "enabled": false },
+      "fieldMap": { "type": "object", "enabled": false },
+      "valueMap": { "type": "object", "enabled": false },
+      "ageingThresholdDays": { "type": "integer" },
+      "createdAt": { "type": "date" }
+    }
+  },
+  "users": {
+    "properties": {
+      "id": { "type": "keyword" },
+      "email": { "type": "keyword" },
+      "name": { "type": "keyword" },
+      "passwordHash": { "type": "keyword", "index": false },
+      "role": { "type": "keyword" },
+      "teamIds": { "type": "keyword" },
+      "createdAt": { "type": "date" }
+    }
+  },
+  "sync": {
+    "properties": {
+      "teamId": { "type": "keyword" },
+      "lastChangedDate": { "type": "date" },
+      "lastRunAt": { "type": "date" },
+      "lastResult": { "type": "text", "index": false }
+    }
+  }
+}
