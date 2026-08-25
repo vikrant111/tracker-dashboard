@@ -12,7 +12,9 @@
     "check": "node --env-file=.env.local scripts/check.mjs",
     "check:theme": "node scripts/check-theme.mjs",
     "check:ui": "node scripts/check-ui.mjs",
-    "check:docs": "node scripts/check-docs.mjs"
+    "check:docs": "node scripts/check-docs.mjs",
+    "fonts:vendor": "node scripts/vendor-fonts.mjs",
+    "check:env": "node scripts/check-env.mjs"
   },
   "dependencies": {
     "@opensearch-project/opensearch": "^3.5.1",

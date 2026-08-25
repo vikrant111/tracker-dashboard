@@ -18,6 +18,7 @@ pages are the internals.
 | [operations.md](operations.md) | Environment variables, running, seeding, deploying. |
 | [excel-upload.md](excel-upload.md) | The spreadsheet format, column by column — and the download that round-trips through it. |
 | [troubleshooting.md](troubleshooting.md) | Symptoms → causes, including bugs already fixed here. |
+| [restricted-environments.md](restricted-environments.md) | A corporate laptop: TLS interception, no Docker, no internet. Start with `pnpm check:env`. |
 | [decisions.md](decisions.md) | Why the non-obvious choices were made, and what would change them. |
 
 ## The 60-second version
@@ -97,7 +98,6 @@ src/lib/          domain and data. No React, server-only
                                                          (client-safe, pure)
   health.ts       the board score: the share of tracked items that are closed
                                                          (client-safe, pure)
-                                                         (client-safe, pure)
   constants.ts    a barrel over constants/ — every tunable literal that is
                   not an environment variable
   constants/
@@ -110,6 +110,16 @@ src/lib/          domain and data. No React, server-only
   roster.ts       folds a POD's roster into the leaderboard, so an onboarded
                   person with no items shows as a zero rather than vanishing
                                                          (client-safe, pure)
+
+src/fonts/    which typefaces the build uses, picked by FONT_SOURCE in
+                  next.config.ts — the switch lives in the bundler because
+                  next/font/google downloads at compile time
+  google          fetched from Google at build time (the default)
+  local           the .woff2 files in files/ — no network, for a machine
+                  behind a TLS-inspecting proxy
+  system          no web fonts at all; the CSS fallbacks take over
+  files/          the vendored latin subset, ~140 KB, refreshed by
+                  pnpm fonts:vendor
 
 src/app/admin/
   admin-client    the screen: state, toasts, and which POD is being edited
@@ -180,12 +190,21 @@ src/components/   client components, dashboard-client.tsx orchestrates
     tooltip       a label that escapes the panel through a portal
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       343 end-to-end checks against a running server
-  check-theme.mjs 627 static checks: theme tokens, contrast, source rules
+  check.mjs       356 end-to-end checks against a running server
+  check-theme.mjs 668 static checks: theme tokens, contrast, source rules,
+                  and the font switch
   check-ui.mjs    1626 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-docs.mjs  these pages still match the code
+  check-env.mjs   `pnpm check:env` — what is broken on THIS machine, and how to
+                  fix it: certificates, registry, fonts, OpenSearch, config.
+                  Written for a corporate laptop; changes nothing
+  probe.mjs       reaching a host and saying why it failed — a TLS error and a
+                  blocked host need completely different fixes
+  vendor-fonts.mjs
+                  `pnpm fonts:vendor` — downloads the typefaces into
+                  src/fonts/files/ so a build never needs Google
   test.mjs        runs every suite, managing the dev server itself
   lib/
     numbers-fixture.mjs

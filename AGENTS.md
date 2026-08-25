@@ -19,6 +19,7 @@ right and were not. VS Code Copilot loads it automatically.
 | Touching anything visual | [design-system.md](docs/design-system.md) |
 | Deploying or debugging | [operations.md](docs/operations.md) · [troubleshooting.md](docs/troubleshooting.md) |
 | Wondering why something is the way it is | [decisions.md](docs/decisions.md) |
+| Setting it up on a locked-down machine | [restricted-environments.md](docs/restricted-environments.md) — certificates, no Docker, offline |
 | Rebuilding this from scratch | [rebuilding.md](docs/rebuilding.md) |
 
 Path-scoped rules in [`.github/instructions/`](.github/instructions/) load

@@ -1,27 +1,13 @@
 import type { Metadata, Viewport } from "next";
-import { Bricolage_Grotesque, IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { THEME_SCRIPT } from "@/components/theme-toggle";
+/*
+ * Resolved by `next.config.ts` from `FONT_SOURCE` — google (default), local or
+ * system. The indirection exists because `next/font/google` downloads at
+ * *compile* time, so choosing with an `if` here would still trigger the fetch.
+ * See `docs/restricted-environments.md`.
+ */
+import { fontClassName } from "@/fonts";
 import "./globals.css";
-
-const bricolage = Bricolage_Grotesque({
-  subsets: ["latin"],
-  variable: "--font-bricolage",
-  display: "swap",
-});
-
-const plexSans = IBM_Plex_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-plex-sans",
-  display: "swap",
-});
-
-const plexMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-plex-mono",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "POD Tracker — bug and ticket ageing",
@@ -41,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${bricolage.variable} ${plexSans.variable} ${plexMono.variable}`}
+      className={fontClassName}
     >
       <head>
         {/* Applies the stored theme before first paint, so there is no flash. */}

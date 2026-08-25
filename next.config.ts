@@ -1,4 +1,42 @@
+import path from "node:path";
 import type { NextConfig } from "next";
+
+/**
+ * Where the three typefaces come from, set by `FONT_SOURCE`.
+ *
+ * | Value | Fetches at build | Ships font files |
+ * |---|---|---|
+ * | `google` (default) | yes, from Google | yes, self-hosted after download |
+ * | `local` | **no** | yes, from `src/fonts/files/` |
+ * | `system` | **no** | no — the reader's own fonts |
+ *
+ * The choice has to be made here rather than in application code, because
+ * `next/font/google` downloads whatever it can see at compile time. A runtime
+ * `if` would compile all three branches and fetch anyway.
+ *
+ * **The modules live in `src/fonts/`, deliberately not under `src/app/`.** Next
+ * processes font loaders for every file in the app tree, whether or not the
+ * module graph reaches it — so while they sat in `src/app/fonts/`, the Google
+ * branch was compiled and fetched in *all three* modes. Moving them one
+ * directory out is what actually makes `local` and `system` offline. Do not
+ * move them back.
+ *
+ * Those two are the modes for a machine behind a TLS-inspecting proxy, where
+ * the build otherwise dies on `unable to get local issuer certificate`. See
+ * `docs/restricted-environments.md`.
+ */
+const FONT_SOURCES = ["google", "local", "system"] as const;
+const requested = process.env.FONT_SOURCE?.trim().toLowerCase() || "google";
+
+if (!FONT_SOURCES.includes(requested as (typeof FONT_SOURCES)[number])) {
+  // Loudly, at config load — a typo here would otherwise silently ship Google.
+  throw new Error(
+    `FONT_SOURCE is "${requested}". Use one of: ${FONT_SOURCES.join(", ")}. ` +
+      `"local" and "system" need no network at build time.`,
+  );
+}
+
+const fontModule = path.resolve(process.cwd(), `src/fonts/${requested}.ts`);
 
 /**
  * Response headers every page and route carries.
@@ -100,6 +138,31 @@ const nextConfig: NextConfig = {
   /* The version is useful in a footer and in a support conversation. */
   env: {
     NEXT_PUBLIC_APP_VERSION: process.env.npm_package_version ?? "0.0.0",
+  },
+
+  /*
+   * The font switch, for Turbopack (`next dev`) and webpack (`next build`).
+   * Both are declared because which one runs depends on the command and the
+   * flags, and a switch that only works in dev would be found at deploy time.
+   */
+  turbopack: {
+    resolveAlias: { "@/fonts": `./src/fonts/${requested}.ts` },
+  },
+
+  /*
+   * Replacement rather than `resolve.alias`, because Next resolves the `@/*`
+   * tsconfig path first — an alias keyed on `@/fonts` is simply never
+   * consulted, and the Google branch compiles and fetches anyway. This matches
+   * on the *resolved* file instead, which nothing gets in front of.
+   */
+  webpack: (config, { webpack }) => {
+    config.plugins.push(
+      new webpack.NormalModuleReplacementPlugin(
+        /[\\/]src[\\/]fonts[\\/]index\.ts$/,
+        fontModule,
+      ),
+    );
+    return config;
   },
 
   async headers() {

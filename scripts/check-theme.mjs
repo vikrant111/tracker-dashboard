@@ -512,6 +512,135 @@ section("the fixed backdrops are not buried under the page background");
   check("neither layer intercepts a pointer", [mesh.src, sky.src].every((s) => s.includes("pointer-events-none")));
 }
 
+section("the font switch survives a machine with no network");
+/*
+ * FONT_SOURCE picks which module the config compiles. The failure mode these
+ * guard against is quiet: a mode that silently falls back to Google still looks
+ * fine on a connected machine, and only fails on the locked-down one it exists
+ * for. See docs/restricted-environments.md.
+ */
+{
+  const fontsDir = join(here, "../src/fonts");
+  const MODES = ["google", "local", "system"];
+
+  /*
+   * The single most important rule here, and the least obvious.
+   *
+   * Next runs font loaders over every file in the app tree whether or not the
+   * module graph reaches it. While these modules lived in `src/app/fonts/`, the
+   * Google branch was compiled and fetched in *all three* modes — so `local`
+   * and `system` still died behind a proxy, which is the one thing they exist
+   * to survive. Living one directory outside `src/app/` is the fix.
+   */
+  let strayInApp = [];
+  try {
+    strayInApp = readdirSync(join(here, "../src/app/fonts"));
+  } catch {
+    /* absent, which is the point */
+  }
+  check("the font modules are NOT under src/app/", strayInApp.length === 0, strayInApp.join(" "));
+
+  for (const mode of MODES) {
+    let src = "";
+    try {
+      src = readFileSync(join(fontsDir, mode + ".ts"), "utf8");
+    } catch {
+      /* the check below reports it */
+    }
+    check("fonts/" + mode + ".ts exists", Boolean(src));
+    // Every mode must present the same surface, or swapping one breaks layout.
+    check("fonts/" + mode + ".ts exports fontClassName", /export const fontClassName/.test(src));
+  }
+
+  /*
+   * The two offline modes must not reach Google — which is the whole point of
+   * them, and exactly the sort of thing a well-meaning edit undoes.
+   */
+  for (const mode of ["local", "system"]) {
+    const src = readFileSync(join(fontsDir, mode + ".ts"), "utf8");
+    check("fonts/" + mode + ".ts imports nothing from next/font/google", !/from ["']next\/font\/google["']/.test(src));
+  }
+
+  // Only the layout picks fonts, and only through the switch.
+  const layoutRaw = readFileSync(join(here, "../src/app/layout.tsx"), "utf8");
+  /*
+   * Comments stripped first. The comment in layout.tsx explains *why* the
+   * import is indirect, and naming the thing it forbids made this check fail on
+   * its own explanation the first time it ran.
+   */
+  const layout = layoutRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("layout imports the font switch", /from ["']@\/fonts["']/.test(layout));
+  check(
+    "layout does not import the Google loader directly",
+    !/next\/font\/google/.test(layout),
+    "that would bypass FONT_SOURCE and fetch on every build",
+  );
+
+  /*
+   * The replacement pattern has to match the real path of the index module. A
+   * typo there fails open: the build succeeds, still fetching from Google, and
+   * nobody finds out until it runs somewhere without access.
+   */
+  const config = readFileSync(join(here, "../next.config.ts"), "utf8");
+  const pattern = config.match(/NormalModuleReplacementPlugin\(\s*(\/[^,\n]+\/),/)?.[1];
+  check("the config declares a font module replacement", Boolean(pattern));
+  if (pattern) {
+    const cut = pattern.lastIndexOf("/");
+    const re = new RegExp(pattern.slice(1, cut), pattern.slice(cut + 1));
+    // The path the bundler actually resolves, on both separators.
+    check(
+      "...and it matches src/fonts/index.ts",
+      re.test("/somewhere/src/fonts/index.ts") && re.test("C:\\x\\src\\fonts\\index.ts"),
+      pattern,
+    );
+    check("...without also matching a sibling mode module", !re.test("/somewhere/src/fonts/google.ts"));
+  }
+
+  /*
+   * FONT_SOURCE=local is only real if the files are committed. Checking magic
+   * bytes rather than the extension: a proxy that intercepted the vendor script
+   * writes an HTML block page, and ".woff2" on the end of that fails much later
+   * and far more confusingly.
+   */
+  const filesDir = join(fontsDir, "files");
+  const woff2 = readdirSync(filesDir).filter((f) => f.endsWith(".woff2"));
+  check("vendored font files are committed", woff2.length >= 5, woff2.length + " files");
+  for (const f of woff2) {
+    const head = readFileSync(join(filesDir, f)).subarray(0, 4).toString("latin1");
+    check(f + " is a real woff2", head === "wOF2", head);
+  }
+
+  /*
+   * local.ts must name files that exist, or a rename in files/ becomes a build
+   * error in the one mode nobody builds by default.
+   */
+  const localSrc = readFileSync(join(fontsDir, "local.ts"), "utf8");
+  const referenced = [...localSrc.matchAll(/path:\s*["']\.\/files\/([^"']+)["']/g)].map((m) => m[1]);
+  check("local.ts references the font files", referenced.length >= 5, referenced.length + " paths");
+  const missing = [...new Set(referenced)].filter((f) => !woff2.includes(f));
+  check("every file local.ts names is present", missing.length === 0, missing.join(" "));
+
+  /*
+   * The vendor script and the Google module must ask for the same families. If
+   * they drift, `fonts:vendor` downloads one set and the build declares
+   * another, and local renders differently from google for a reason nobody
+   * would think to look for.
+   */
+  const googleSrc = readFileSync(join(fontsDir, "google.ts"), "utf8");
+  const vendorSrc = readFileSync(join(here, "../scripts/vendor-fonts.mjs"), "utf8");
+  const squash = (t) => t.replace(/[ _+]/g, "");
+  for (const family of ["Bricolage", "IBM Plex Sans", "IBM Plex Mono"]) {
+    const key = squash(family);
+    const inGoogle = squash(googleSrc).includes(key);
+    const inVendor = squash(vendorSrc).includes(key);
+    check(
+      family + " is named in both google.ts and the vendor script",
+      inGoogle && inVendor,
+      "google=" + inGoogle + " vendor=" + inVendor,
+    );
+  }
+}
+
 console.log("\n" + "─".repeat(60));
 console.log(failures === 0 ? `All ${checks} theme checks passed.` : `${failures} of ${checks} theme checks FAILED.`);
 process.exit(failures ? 1 : 0);
