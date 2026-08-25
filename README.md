@@ -145,7 +145,7 @@ still works.** 🎉
 | `OPENSEARCH_URL` | `http://localhost:9200` | 😴 No |
 | `OPENSEARCH_INDEX_PREFIX` | `tracker` | 😴 No — until two environments share a cluster |
 | `AUTH_MODE` | `password` | 😴 No |
-| `AUTH_SECRET` | — | ⚠️ **Yes.** `openssl rand -base64 32` |
+| `AUTH_SECRET` | — | 🚨 **Yes, really.** `openssl rand -base64 32`. Production **refuses to start** without it |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@example.com` / `changeme` | 🤔 Change the password before anyone else can reach it |
 | `AZDO_ORG_URL` / `AZDO_PROJECT` / `AZDO_PAT` | — | 🌟 Only for real Azure data |
 | `WEATHER_LAT` / `WEATHER_LON` | blank | 🎨 Pure joy. See below. |
@@ -522,6 +522,38 @@ access*.
 With SSO, the first person to sign in becomes admin; everyone after joins as a
 member with no PODs until an admin grants them one.
 
+### 🔑 Changing a password
+
+**Yourself:** *For you* menu → **Change password**. Your current password is
+required — being signed in is not proof it is you at the keyboard. ✋
+
+**Somebody else forgot theirs:** Admin → the 🔑 beside their row → type a new
+one. There is no email reset in this product, so this is the recovery path; it
+keeps their role and their PODs, unlike deleting and recreating the account.
+
+> ⚠️ Nobody is notified. Tell them what you set it to yourself.
+
+> 🔒 **A password change signs you out everywhere**, including the session that
+> made it. That is the point — if you are changing it because it leaked, the
+> intruder goes too.
+
+### ⏱️ Sessions expire
+
+| | How long | Renewed by using it? |
+|---|---|---|
+| **Idle** | 12 hours | ✅ yes |
+| **Absolute** | 7 days | ❌ **no** |
+
+Two clocks, because one is not enough: the idle clock is renewed by activity, so
+a *stolen* token that gets used regularly would never expire under it. Tune both
+in `SESSION` in `src/lib/constants.ts`.
+
+A deleted account loses its session immediately, and eight wrong passwords locks
+an account for 15 minutes. 🔐
+
+> 🏢 SSO accounts have no password here — theirs lives with the identity
+> provider, and both routes refuse rather than quietly creating a second way in.
+
 ---
 
 ## 👥 Onboarding a POD
@@ -636,6 +668,7 @@ Full symptom → cause table, including every bug already fixed here:
 | I want to… | Read |
 |---|---|
 | 🏗️ **Rebuild this from scratch** (or brief an LLM) | [`docs/rebuilding.md`](docs/rebuilding.md) |
+| 🔧 **Change what is fetched, mapped or shown** | [`docs/changing-the-data.md`](docs/changing-the-data.md) |
 | 🧭 Understand the architecture | [`docs/architecture.md`](docs/architecture.md) |
 | 🗄️ Know the data model | [`docs/data-model.md`](docs/data-model.md) |
 | 📊 See every chart's aggregation | [`docs/metrics.md`](docs/metrics.md) |
@@ -669,10 +702,11 @@ src/
                     users · webhooks/azure
   components/       dashboard-client, health-ring, stat-rail, leaderboard,
                     breakdown-card, trend-chart, team-rollup, drill-drawer,
-                    greeting (+ scene + cast 🐿️), sky-backdrop,
+                    greeting (+ scene + cast 🐿️), sky-backdrop, change-password,
                     parallax-backdrop (the drifting orbs behind the glass),
                     search-box, theme-toggle, footer, topbar, ui
 scripts/            seed + four check suites
+Dockerfile          multi-stage, non-root, standalone output
 ```
 
 ---

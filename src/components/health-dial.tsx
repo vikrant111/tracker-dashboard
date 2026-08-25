@@ -4,32 +4,11 @@ import { motion, useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { STATUS } from "@/lib/palette";
 import { CountUp } from "./ui";
+import { BANDS, C, R, SIZE, STROKE, bandFor } from "./health-dial-bands";
+import { useDialScrub } from "./use-dial-scrub";
 
-export const SIZE = 200;
-const STROKE = 16;
-const R = (SIZE - STROKE) / 2;
-const C = 2 * Math.PI * R;
-
-/**
- * Ignore pointer maths within this fraction of the radius — the angle near the
- * centre is pure noise. A fraction rather than a pixel count, because the dial
- * is fluid and a fixed 28px would swallow most of it on a phone.
- */
-const DEAD_ZONE_RATIO = 0.28;
-
-export type Band = { min: number; label: string; color: string };
-
-/** Worst first, so the first match wins. */
-export const BANDS: Band[] = [
-  { min: 85, label: "Holding steady", color: STATUS.good },
-  { min: 65, label: "Some drag", color: STATUS.warning },
-  { min: 40, label: "Falling behind", color: STATUS.serious },
-  { min: 0, label: "Needs a triage day", color: STATUS.critical },
-];
-
-export const bandFor = (score: number): Band => BANDS.find((b) => score >= b.min)!;
-
-const clamp = (n: number) => (Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0);
+export { SIZE, BANDS, bandFor };
+export type { Band } from "./health-dial-bands";
 
 /**
  * The board's score, and a way to interrogate it.
@@ -51,87 +30,11 @@ export function HealthDial({
 }) {
   const reduced = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const [explored, setExplored] = useState<number | null>(null);
+  const { dragging, explored, report, begin, move, end, onKeyDown } = useDialScrub(ref, value, onExplore);
 
   const shown = explored ?? value;
   const band = bandFor(shown);
   const offset = C * (1 - shown / 100);
-
-  const report = useCallback(
-    (v: number | null) => {
-      setExplored(v);
-      onExplore(v);
-    },
-    [onExplore],
-  );
-
-  /** Pointer position → 0..100, measured clockwise from the top of the ring. */
-  const valueAt = useCallback((clientX: number, clientY: number): number | null => {
-    const el = ref.current;
-    if (!el) return null;
-    // Non-finite coordinates would survive the dead-zone test (NaN < 28 is
-    // false) and end up rendered as the board health. Refuse them outright.
-    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
-    const r = el.getBoundingClientRect();
-    const dx = clientX - (r.left + r.width / 2);
-    const dy = clientY - (r.top + r.height / 2);
-    const dist = Math.hypot(dx, dy);
-    const dead = (Math.min(r.width, r.height) / 2) * DEAD_ZONE_RATIO;
-    if (!Number.isFinite(dist) || dist < dead) return null;
-    const deg = (Math.atan2(dy, dx) * 180) / Math.PI;
-    const v = clamp(Math.round(((((deg + 90) % 360) + 360) % 360) / 3.6));
-    return Number.isFinite(v) ? v : null;
-  }, []);
-
-  const begin = (e: React.PointerEvent) => {
-    // Left button / touch / pen only, so a right-click never starts a scrub.
-    if (e.button !== 0) return;
-    const v = valueAt(e.clientX, e.clientY);
-    if (v === null) return;
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    setDragging(true);
-    report(v);
-  };
-
-  const move = (e: React.PointerEvent) => {
-    if (!dragging) return;
-    const v = valueAt(e.clientX, e.clientY);
-    if (v !== null) report(v);
-  };
-
-  const end = useCallback(() => {
-    setDragging(false);
-    report(null);
-  }, [report]);
-
-  // A pointer released outside the element, or a cancelled gesture, must still
-  // snap back — otherwise the dial is left showing a number that is not real.
-  useEffect(() => {
-    if (!dragging) return;
-    window.addEventListener("pointerup", end);
-    window.addEventListener("pointercancel", end);
-    window.addEventListener("blur", end);
-    return () => {
-      window.removeEventListener("pointerup", end);
-      window.removeEventListener("pointercancel", end);
-      window.removeEventListener("blur", end);
-    };
-  }, [dragging, end]);
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const step = e.shiftKey ? 10 : 1;
-    if (e.key === "ArrowRight" || e.key === "ArrowUp") {
-      e.preventDefault();
-      report(clamp((explored ?? value) + step));
-    } else if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
-      e.preventDefault();
-      report(clamp((explored ?? value) - step));
-    } else if (e.key === "Escape" || e.key === "Home") {
-      e.preventDefault();
-      report(null);
-    }
-  };
 
   const knobAngle = (shown / 100) * 360 - 90;
   const knob = {

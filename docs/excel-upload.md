@@ -83,9 +83,13 @@ unrecognised becomes `Unknown` rather than being invented into a category.
 | Status | `Open`, `Commented`, `For QA Validation`, `Not a Bug`, `Closed`, `Unknown` | your board's own state names |
 
 Matching runs in three passes: an exact match on your POD's own overrides, then
-on the shipped table above, then a **substring** pass with the longest key
+on the shipped table above, then a **whole-word** pass with the longest key
 first — so `3 - Medium (UI)` lands on `Minor`, `Deployed to Prod` on
 `Production`, and `Not a Bug` beats `Bug`.
+
+Whole-word means a key only matches when it stands alone: `uat` matches
+`BIZ-UAT` but not `evaluate`. Without that, the two-letter key `it` matched
+inside a board's "microsites" and labelled the lot IT-UAT.
 
 If your board uses words none of these cover, add them under **Value mapping**
 on the POD in Admin rather than editing the spreadsheet. Those overrides win over

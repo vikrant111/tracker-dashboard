@@ -9,8 +9,9 @@ import { useDrill } from "./drill-drawer";
 import { Greeting } from "./greeting";
 import type { Weather } from "@/lib/weather";
 import { HealthDial, bandFor } from "./health-dial";
+import { healthDrivers } from "./health-drivers";
 import { Tooltip } from "./ui";
-
+import { AgeingSpine } from "./ageing-spine";
 
 export function HealthRing({
   data,
@@ -45,45 +46,7 @@ export function HealthRing({
    * is left has become. Framing all three as the score's ingredients described
    * the old weighted heuristic and would misdescribe this one.
    */
-  const drivers: {
-    label: string;
-    value: string;
-    /** Shown beside the value, so a count that is really a share reads as one. */
-    of?: string;
-    hue: string;
-    query: Record<string, string>;
-    hint: string;
-  }[] = [
-    {
-      label: "Critical aged",
-      value: String(data.totals.criticalAged),
-      hue: STATUS.critical,
-      query: { severity: "Critical", agedOnly: "true" },
-      hint: `open past ${data.thresholdDays} days`,
-    },
-    {
-      label: "Average age",
-      value: `${data.totals.avgAgeDays}d`,
-      hue: STATUS.warning,
-      query: { activeOnly: "true" },
-      hint: "across open items",
-    },
-    {
-      label: "Still open",
-      value: String(data.totals.active),
-      /*
-       * The denominator is the point. `2` next to a score of 55 reads as
-       * unexplained; `2 of 360` reads as a board that is nearly clear and
-       * losing its points somewhere else — which is what the score means. The
-       * share is also what health docks on, so showing one without the other
-       * hides the arithmetic.
-       */
-      of: data.totals.total > 0 ? `of ${data.totals.total}` : undefined,
-      hue: "var(--accent-2)",
-      query: { activeOnly: "true" },
-      hint: `of ${data.totals.total} tracked`,
-    },
-  ];
+  const drivers = healthDrivers(data);
 
   return (
     <motion.section
@@ -197,75 +160,5 @@ export function HealthRing({
 
       <AgeingSpine data={data} />
     </motion.section>
-  );
-}
-
-/**
- * How the open work is distributed across the ageing buckets, as one bar.
- * Fills what was dead space at the bottom of the card with the thing the whole
- * board is about, and every segment drills.
- */
-function AgeingSpine({ data }: { data: Dashboard }) {
-  const drill = useDrill();
-  const rows = data.ageing.filter((b) => b.count > 0);
-  const total = rows.reduce((n, b) => n + b.count, 0);
-  if (!total) return null;
-
-  const QUERY: Record<string, Record<string, string>> = {
-    "0-3 days": { activeOnly: "true", maxAgeDays: "3" },
-    "4-7 days": { activeOnly: "true", minAgeDays: "3", maxAgeDays: "7" },
-    "8-14 days": { activeOnly: "true", minAgeDays: "7", maxAgeDays: "14" },
-    "15-30 days": { activeOnly: "true", minAgeDays: "14", maxAgeDays: "30" },
-    "30+ days": { activeOnly: "true", minAgeDays: "30" },
-  };
-
-  return (
-    <div className="mt-auto border-t border-[var(--hairline)] pt-4">
-      <div className="mb-2.5 flex items-baseline justify-between">
-        <p className="eyebrow">How long the open work has waited</p>
-        <span className="font-[family-name:var(--font-mono)] text-[11px] tnum text-[var(--ink-muted)]">
-          {total} open
-        </span>
-      </div>
-
-      <div className="flex h-3 w-full items-stretch gap-[2px] overflow-hidden rounded-full">
-        {rows.map((b, i) => (
-          <Tooltip key={b.key} label={`${b.count} open item${b.count === 1 ? "" : "s"} aged ${b.key}. Click to list them.`}>
-          <motion.button
-            initial={{ flexGrow: 0, opacity: 0 }}
-            animate={{ flexGrow: b.count, opacity: 1 }}
-            transition={{ type: "spring", stiffness: 110, damping: 20, delay: 0.5 + i * 0.06 }}
-            onClick={() => drill({ title: b.key, subtitle: "open items by age", query: QUERY[b.key] })}
-            aria-label={`${b.key}, ${b.count} open items`}
-            className="glow-sm block min-w-[6px] rounded-[3px] transition-transform duration-200 hover:scale-y-150"
-            style={
-              {
-                background: AGEING_COLOR[b.key] ?? "var(--ink-muted)",
-                "--hue": AGEING_COLOR[b.key] ?? "var(--ink-muted)",
-              } as React.CSSProperties
-            }
-          />
-          </Tooltip>
-        ))}
-      </div>
-
-      <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1">
-        {rows.map((b) => (
-          <button
-            key={b.key}
-            onClick={() => drill({ title: b.key, subtitle: "open items by age", query: QUERY[b.key] })}
-            className="group inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[11px] transition-colors hover:bg-[var(--wash)]"
-          >
-            <span
-              aria-hidden
-              className="h-2 w-2 rounded-full"
-              style={{ background: AGEING_COLOR[b.key] ?? "var(--ink-muted)" }}
-            />
-            <span className="text-[var(--ink-muted)] transition-colors group-hover:text-[var(--ink-2)]">{b.key}</span>
-            <span className="font-[family-name:var(--font-mono)] font-semibold tnum text-[var(--ink-2)]">{b.count}</span>
-          </button>
-        ))}
-      </div>
-    </div>
   );
 }

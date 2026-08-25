@@ -1,5 +1,5 @@
 ---
-applyTo: "src/lib/{azure,normalize,sync,poller}.ts,src/app/api/webhooks/**,src/app/api/sync/**,src/app/api/upload/**"
+applyTo: "src/lib/{azure,normalize,sync,poller,value-map,spreadsheet,numbers}.ts,src/lib/normalize/**,src/lib/numbers/**,src/app/api/webhooks/**,src/app/api/sync/**,src/app/api/upload/**,src/app/api/export/**"
 description: Azure DevOps REST, field mapping and spreadsheet import
 ---
 
@@ -29,18 +29,44 @@ credentials throw `AzureError` with a sentence naming the team.
 
 ## Field mapping
 
-Boards differ, so severity / environment / status are resolved per team in
-`normalize.ts`:
+Boards differ, so severity / environment / status are resolved per team.
+`normalize.ts` orchestrates; the matching itself lives in
+`normalize/vocabulary.ts`, and the shipped word table in `value-map.ts`.
+`resolve()` runs four passes:
 
 1. the team's own `valueMap` override,
 2. `DEFAULT_VALUE_MAP` exact match (keys are lowercase),
 3. a direct match against the allowed values,
-4. longest-substring match, so `3 - Medium (UI)` still lands on `Minor`.
+4. **longest word-bounded match**, so `3 - Medium (UI)` still lands on `Minor`.
 
 Longest-first matters: `not a bug` must beat `bug`, `biz-uat` must beat `uat`.
 
+### Word-bounded, not `includes`
+
+Pass 4 uses `wordMatch()`, which requires a non-alphanumeric character (or the
+end of the string) on both sides of the key. **Never replace it with
+`includes()`.** That is what shipped first, and a real board broke it: the key
+`it` matched inside "microsites", so every item under an area path named
+"…Investment Mall and microsites" was labelled IT-UAT. `monitoring`, `credit`,
+`editor` and `digital` all matched the same key. A two-letter key is a substring
+of an enormous number of ordinary words.
+
+`\b` is not used because the keys themselves contain punctuation — `biz-uat`,
+`cug(stage)`, `not a bug` — and `\b` around those is hard to predict.
+
+`kindOf()` has the same shape of bug in its history: `tags.includes("cr")` made
+anything tagged **critical** a change request. The CR tag is now matched
+exactly (`n === "cr"`), with `wordMatch` for the spelled-out forms.
+
 **Environment falls back** to tags, then to the area path, because most boards
 have no environment field and teams record it in one of those instead.
+
+### Growing the table
+
+A new board's vocabulary goes in `src/lib/value-map.ts` (shipped defaults, all
+lowercase keys) if it is common, or in that POD's own `valueMap` in Admin if it
+is not. Unrecognised values become `Unknown` — **never guess at which real value
+was meant.** `docs/changing-the-data.md` has the walkthrough.
 
 ### Closing an item
 
@@ -84,3 +110,23 @@ A `Title` column is required; anything else is optional.
   everything else is read as `cell.text`.
 - Rows without a title are counted as `skipped`, not failed.
 - Unknown headers are returned as `ignoredHeaders` and shown to the user.
+
+### Apple Numbers
+
+`.numbers` files are read by `src/lib/numbers.ts` — hand-written, because there
+is no maintained JS library and Apple publishes no schema. The format is a zip
+of IWA archives: Snappy-framed chunks of length-delimited protobuf messages.
+`numbers/` holds the four layers (`zip`, `snappy`, `protobuf`, `cells`).
+
+Two rules, both learned the hard way:
+
+- **Resolve references by what they point at, never by field number.** Apple
+  renumbers fields between versions. Filter the candidate ids by the *type* of
+  object they resolve to:
+  ```ts
+  const tiles = pairs.filter((pair) => byId.get(pair.id)?.type === TILE)
+  ```
+- **Content decides the format; the filename is only a hint.** `spreadsheet.ts`
+  sniffs the zip's entry names to tell a Numbers bundle from an xlsx, and scans
+  **both ends** of the archive — Numbers writes its central directory at the
+  tail, so a head-only scan misses every entry name.

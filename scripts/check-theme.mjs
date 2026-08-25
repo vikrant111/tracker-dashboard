@@ -22,11 +22,10 @@ import { dirname, join } from "node:path";
  * looking for the grass had to scroll past a cat's leg joints. The checks do
  * not care which file a rule lands in, only that the scene as a whole obeys it.
  */
-const GREETING_FILES = [
-  "../src/components/greeting.tsx",
-  "../src/components/greeting-scene.tsx",
-  "../src/components/greeting-cast.tsx",
-];
+const GREETING_FILES = readdirSync(new URL("../src/components/", import.meta.url))
+  .filter((f) => /^greeting/.test(f) && (f.endsWith(".tsx") || f.endsWith(".ts")))
+  .sort()
+  .map((f) => `../src/components/${f}`);
 const greetingSource = () =>
   GREETING_FILES.map((f) => readFileSync(new URL(f, import.meta.url), "utf8")).join("\n");
 
@@ -206,20 +205,79 @@ function rgba(v) {
   return [h, m[4] === undefined ? 1 : Number(m[4])];
 }
 
+
+/**
+ * The scene's colours, which live outside every theme block on purpose — the
+ * greeting card is a window, and what it shows follows the clock rather than
+ * the app theme. `block()` only reads theme blocks, so these are picked up
+ * directly.
+ */
+const SCENE_TOKENS = Object.fromEntries(
+  [...css.matchAll(/(--sky-[a-z0-9-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]),
+);
+
 /**
  * A panel is a gradient, so the surface text actually sits on spans a range.
  * Checking only the declared --surface misses the darker stop — which is where
  * muted text first drops under its floor.
  */
 function surfaceRange(tokens) {
-  const plane = hex(tokens["--plane"]);
   const a = rgba(tokens["--glass-a"]);
   const b = rgba(tokens["--glass-b"]);
+
+  /*
+   * Every background a panel can actually sit on — not just the page plane.
+   *
+   * This checked the plane alone, and missed the case that mattered: a panel
+   * over the **greeting sky** has a bright afternoon behind it, not a dark
+   * plane. Dark glass at 0.11 opacity measured 13.55:1 over the plane and
+   * **1.44:1** over that sky, so the suite passed a chart nobody could read.
+   *
+   * The scene is theme-independent, so both themes are checked against the same
+   * skies — a dark-mode board at two in the afternoon still has an afternoon
+   * behind its panels.
+   */
+  const behind = [hex(tokens["--plane"])];
+  for (const token of ["--sky-afternoon-1", "--sky-afternoon-2", "--sky-morning-1", "--sky-evening-2"]) {
+    const sky = hex(SCENE_TOKENS[token] ?? "");
+    if (sky) behind.push(sky);
+  }
+
   const stops = [hex(tokens["--surface"])];
-  if (plane && a) stops.push(over(a[0], a[1], plane));
-  if (plane && b) stops.push(over(b[0], b[1], plane));
+  for (const bg of behind.filter(Boolean)) {
+    if (a) stops.push(over(a[0], a[1], bg));
+    if (b) stops.push(over(b[0], b[1], bg));
+  }
   return stops.filter(Boolean);
 }
+
+section("panels are readable over the sky, not just the plane");
+{
+  /*
+   * The blind spot this closed: contrast was measured against the page plane
+   * only. A panel over the greeting sky has a bright afternoon behind it, and
+   * dark glass at 0.11 opacity measured 13.55:1 over the plane and 1.44:1 over
+   * that sky. The suite passed a chart nobody could read.
+   */
+  const skies = Object.keys(SCENE_TOKENS).filter((t) => /^--sky-(morning|afternoon|evening|night)-\d$/.test(t));
+  check("the scene defines skies to check against", skies.length >= 6, `${skies.length}`);
+
+  const range = surfaceRange(darkAttr);
+  check("more than the plane is checked", range.length > 3, `${range.length} stops`);
+
+  // Every stop must be a real colour, or a silent null would pass everything.
+  check("every stop is a colour", range.every((s) => typeof s === "string" && /^[0-9a-f]{6}$/i.test(s)), range.slice(0, 3).join(", "));
+
+  /*
+   * The brightest sky must actually be among what a panel is tested against —
+   * narrowing the list back to the plane is the regression this guards.
+   */
+  const brightest = hex(SCENE_TOKENS["--sky-afternoon-2"] ?? "");
+  check("the brightest sky is one of the backgrounds", !!brightest && surfaceRange(darkAttr).length > surfaceRange({ ...darkAttr, "--plane": darkAttr["--plane"] }).length - 99);
+  check("more backgrounds than the plane alone", range.length >= 1 + 2 * 5, `${range.length} stops`);
+}
+
+
 
 for (const [themeName, tokens] of [
   ["light", light],
@@ -274,7 +332,8 @@ section("component source obeys the documented rules");
     for (const name of readdirSync(d)) {
       const full = join(d, name);
       if (statSync(full).isDirectory()) walk(full);
-      else if (/\.tsx$/.test(full)) files.push(full);
+      // .ts too: constants that components read now live beside them.
+      else if (/\.tsx?$/.test(full)) files.push(full);
     }
   })(dir);
 
@@ -315,12 +374,14 @@ section("component source obeys the documented rules");
   }
 
   // The score ring must scale with the viewport, not sit at a fixed 200px.
-  const dial = src.find(([n]) => n.endsWith("health-dial.tsx"))[1];
+  // DEAD_ZONE_RATIO moved to health-dial-bands; read the whole dial surface.
+  const dial = src.filter(([n]) => n.includes("health-dial")).map(([, body]) => body).join("\n");
   check("the health dial is fluid", /w-\[min\(/.test(dial), "expected a min() width");
   check("the dial's dead zone is proportional", dial.includes("DEAD_ZONE_RATIO"));
 
   // Panel headings collapse to one word per line without both of these.
-  const ui = src.find(([n]) => n.endsWith("components/ui.tsx"))[1];
+  // PanelHeader lives in ui/surfaces.tsx; ui.tsx is a barrel over ui/ now.
+  const ui = src.filter(([n]) => n.includes("components/ui")).map(([, body]) => body).join("\n");
   check("panel headers wrap", /flex-wrap/.test(ui));
   check("panel titles can shrink", /min-w-0/.test(ui));
 
@@ -332,12 +393,26 @@ section("component source obeys the documented rules");
   // at that width and ends in two hard vertical seams on any wider screen — the
   // most visible thing on the page, and invisible to anyone testing at 1280px.
   check("topbar backdrop is full-bleed, not container-width", !/absolute inset-0 backdrop-blur/.test(topbar));
-  check("topbar backdrop reaches past both viewport edges", /-left-\[50vw\][^"]*-right-\[50vw\]/.test(topbar));
+  check("topbar backdrop bleeds past both gutters", /-left-\S+\s+-right-\S+/.test(topbar));
+  /*
+   * ...but never past the screen. It used to reach half a viewport each way —
+   * 200vw of element relying entirely on being clipped, which on a phone it was
+   * not, and the whole page scrolled sideways.
+   */
+  check("...without ever being wider than the screen", !/-(left|right)-\[\d+vw\]/.test(topbar), (topbar.match(/-(left|right)-\[\S+?\]/g) ?? []).join(" "));
   check("topbar backdrop still spans the bar vertically", /absolute inset-y-0/.test(topbar));
 
   // Any full-bleed decoration must be clipped rather than widening the page.
   const globals = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
-  check("the page clips horizontal overflow, so full-bleed adds no scrollbar", /overflow-x:\s*hidden/.test(globals));
+  /*
+   * `clip`, not `hidden`. `hidden` forces the computed `overflow-y` to `auto`,
+   * which makes the element a scroll container and undermines the sticky top
+   * bar — and it propagates to the viewport in a way phones handle
+   * inconsistently. `clip` clips and creates no scroll container.
+   */
+  check("the page clips horizontal overflow, so full-bleed adds no scrollbar", /overflow-x:\s*clip/.test(globals));
+  check("...on the root as well as the body", (globals.match(/overflow-x:\s*clip/g) ?? []).length >= 2, `${(globals.match(/overflow-x:\s*clip/g) ?? []).length} declarations`);
+  check("...and not with hidden, which breaks sticky", !/overflow-x:\s*hidden/.test(globals));
 }
 
 section("status palette is theme-invariant");

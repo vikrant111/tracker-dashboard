@@ -1,14 +1,15 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Download, FileText, LogOut, RefreshCw, Settings, Sparkles, Upload } from "lucide-react";
+import { KeyRound, Download, FileText, LogOut, RefreshCw, Settings, Sparkles, Upload } from "lucide-react";
 import { UPLOAD } from "@/lib/constants";
 import Link from "next/link";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { Kind } from "@/lib/types";
 import { SearchBox } from "./search-box";
 import { ThemeToggle } from "./theme-toggle";
 import { Button, Menu, MenuItem, MenuSection, SegmentedControl } from "./ui";
+import { ChangePassword } from "./change-password";
 
 export type TeamOption = { id: string; name: string };
 
@@ -60,6 +61,8 @@ export function Topbar({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const [changingPassword, setChangingPassword] = useState(false);
+
   return (
     /*
      * The sticky bar sat at `top-3`, leaving a 12px gap above it through which
@@ -70,15 +73,18 @@ export function Topbar({
      */
     <div className="sticky top-0 z-30 -mx-4 mb-6 px-4 pt-3 pb-3 sm:-mx-6 sm:px-6">
       {/*
-       * Full-bleed on purpose. At `inset-0` this backdrop stopped at the
-       * container's max width, so on any screen wider than 1400px it ended in
-       * two hard vertical seams either side of the bar. It reaches half a
-       * viewport past each edge instead, which the viewport's own `overflow-x`
-       * clips — so there is no edge to see at any width, and no extra scroll.
+       * Bleeds past the gutters on purpose. At `inset-0` this backdrop
+       * stopped at the container's max width, so on any screen wider than
+       * 1400px it ended in two hard vertical seams either side of the bar.
+       *
+       * It used to reach half a viewport each way — 200vw of element, relying
+       * entirely on the viewport clipping it. On a phone that clip did not
+       * hold and the whole page scrolled sideways. A fixed overhang covers the
+       * gutters at every width without ever being wider than the screen.
        */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-y-0 -left-[50vw] -right-[50vw] backdrop-blur-xl"
+        className="pointer-events-none absolute inset-y-0 -left-24 -right-24 backdrop-blur-xl sm:-left-40 sm:-right-40"
         style={{
           background: "linear-gradient(to bottom, var(--plane) 30%, transparent)",
           maskImage: "linear-gradient(to bottom, #000 62%, transparent)",
@@ -233,18 +239,28 @@ export function Topbar({
               </MenuSection>
             </div>
 
-            {isAdmin && (
+            {(authEnabled || isAdmin) && (
               <>
                 <span aria-hidden className="my-1 block h-px bg-[var(--hairline)]" />
-                <MenuSection label="Manage">
+                <MenuSection label="Your account">
+                  {authEnabled && (
+                    <MenuItem
+                      icon={<KeyRound size={15} />}
+                      label="Change password"
+                      hint="you will need your current one"
+                      onClick={() => setChangingPassword(true)}
+                    />
+                  )}
                   {/* Admin is a destination, so it is a link — right-clickable,
                       and openable in a new tab like any other. */}
-                  <MenuItem
-                    icon={<Settings size={15} />}
-                    label="Admin"
-                    hint="PODs, members and access"
-                    href="/admin"
-                  />
+                  {isAdmin && (
+                    <MenuItem
+                      icon={<Settings size={15} />}
+                      label="Admin"
+                      hint="PODs, members and access"
+                      href="/admin"
+                    />
+                  )}
                 </MenuSection>
               </>
             )}
@@ -262,6 +278,9 @@ export function Topbar({
           )}
         </div>
       </motion.header>
+
+      {/* Rendered here so it survives the menu closing under it. */}
+      <ChangePassword open={changingPassword} onClose={() => setChangingPassword(false)} />
     </div>
   );
 }

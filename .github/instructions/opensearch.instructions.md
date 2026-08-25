@@ -1,5 +1,5 @@
 ---
-applyTo: "src/lib/{opensearch,metrics,sync,teams,users}.ts,src/lib/mappings.json,scripts/seed.mjs"
+applyTo: "src/lib/{opensearch,metrics,sync,teams,users,health}.ts,src/lib/metrics/**,src/lib/mappings.json,scripts/seed.mjs"
 description: OpenSearch access, index mappings and aggregation rules
 ---
 
@@ -96,6 +96,45 @@ the Monday start that `calendar_interval: week` buckets on.
 Buckets are **lower-inclusive, upper-exclusive** (`from` in, `to` out). Any
 drill-down that reproduces a bucket must use `gte` / `lt` to match. Using `lte`
 returns one extra item and the drawer disagrees with the bar it came from.
+
+## Where the query lives
+
+`metrics.ts` is a thin façade over `metrics/`:
+
+| File | Holds |
+|---|---|
+| `query.ts` | `filtersToQuery()` — a `Filters` becomes a bool query, in one place |
+| `aggregations.ts` | every aggregation the dashboard reads |
+| `dates.ts` | `daysAgo`, `floorDay`, `floorWeek` — the absolute-millis helpers |
+| `list-items.ts` | the drill-down's paged item search |
+| `types.ts` | the shapes both sides agree on |
+
+**One query fills the dashboard.** `dashboard()` issues a single `size: 0`
+search carrying every aggregation. Splitting it means two tiles read the index
+at different moments and then disagree on screen about the same number.
+
+## The health score
+
+`src/lib/health.ts`, and it is deliberately trivial:
+
+```
+health = round((total − active) / total × 100)
+```
+
+An empty board scores **100**, not `0/0` — nothing tracked means nothing
+outstanding. `active` is clamped into `[0, total]` before the subtraction, so a
+half-written aggregation reporting more open than tracked cannot put an
+impossible percentage on the dial.
+
+It is its own module, not a private function in `metrics.ts`, because that file
+imports the OpenSearch client and so can never be loaded by the pure-logic
+suite. Keep it pure and client-safe.
+
+This replaced a weighted heuristic with capped penalties for aged criticals,
+average age and backlog. It was more diagnostic and nobody could verify it. Age
+and severity are deliberately **not** in the score — the card shows *Critical
+aged* and *Average age* beside the ring because those are the things it cannot
+see. Do not fold them back in.
 
 ## Sync watermark
 

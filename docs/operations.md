@@ -98,9 +98,9 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass
 
 pnpm dev           # in one terminal
-pnpm check         # in another — 316 end-to-end checks
-pnpm check:theme   # static, no server needed — 183 theme-token checks
-pnpm check:ui      # static — 1213 checks on client-side pure logic
+pnpm check         # in another — 343 end-to-end checks
+pnpm check:theme   # static, no server needed — 627 theme-token checks
+pnpm check:ui      # static — 1626 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code
 ```
 
@@ -182,20 +182,83 @@ curl -s -b cj.txt -c cj.txt -X POST localhost:3000/api/auth/callback/credentials
 
 ## Deploying
 
-Needs a **long-lived Node server** — not a serverless target — because the
-in-process poller is a `setInterval`. On serverless, set `SYNC_POLL_SECONDS=0`
-and drive `/api/sync` from an external scheduler instead.
+**Set the environment variables and start it.** Indices, the first admin and —
+if Azure is configured — the first POD are all created on first use. There is
+nothing to run by hand against a production database.
 
-Checklist:
+Needs a **long-lived Node server**, not a serverless target: the poller is an
+in-process `setInterval`. On serverless, set `SYNC_POLL_SECONDS=0` and drive
+`/api/sync` from an external scheduler.
 
-1. `AUTH_SECRET` set, `AUTH_TRUST_HOST=true`.
-2. `AUTH_MODE` not `off`.
-3. `ADMIN_PASSWORD` changed from the default.
-4. OpenSearch reachable, **with the security plugin enabled** — the dev setup
-   disables it.
-5. `AZDO_WEBHOOK_TOKEN` set, and the Service Hook pointed at the public URL.
-6. `pnpm seed --no-demo` once, to create indices and the first admin.
-7. `pnpm build`, then `pnpm start` — not `pnpm dev`.
+### What you must set
+
+| | Why |
+|---|---|
+| `AUTH_SECRET` | **The process refuses to start without it.** `openssl rand -base64 32` |
+| `AUTH_TRUST_HOST=true` | you are behind a proxy |
+| `AUTH_MODE` | anything but `off`, which disables login entirely |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | becomes the first account, once |
+| `OPENSEARCH_URL` + credentials | with the security plugin **on** — the dev compose file turns it off |
+
+Optional: the three `AZDO_*` variables (a POD is created and syncs on its own),
+`AZDO_WEBHOOK_TOKEN` (unset rejects every webhook call, which is the safe
+default), and `WEATHER_LAT`/`WEATHER_LON`.
+
+Everything else has a working default. [`.env.example`](../.env.example) marks
+which is which.
+
+### With Docker
+
+```bash
+docker build -t pod-tracker .
+docker run -p 3000:3000 --env-file .env.production pod-tracker
+```
+
+Multi-stage, so the image carries no compiler and no dev dependencies. It runs
+as a **non-root** user and builds `output: "standalone"`, so nothing is
+installed at start.
+
+### Without Docker
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start          # not `pnpm dev`
+```
+
+### Health checks
+
+| Probe | Path | Answers |
+|---|---|---|
+| **liveness** | `/api/health` | can this process serve? No I/O, so a slow database does not trigger a restart |
+| **readiness** | `/api/health?ready=1` | can it reach OpenSearch? `503` when not, so traffic stops without a kill |
+
+Both return **503 when `AUTH_SECRET` is missing or a placeholder.** That is
+deliberate and was a real bug: the health route did not import the auth config,
+so a container with a broken secret reported *healthy* while every page returned
+500 — and the orchestrator sent it live traffic. A health check that only proves
+itself healthy turns an obvious outage into a silent one.
+
+Neither endpoint needs a session, and neither returns anything worth having: no
+versions, no hostnames, no cluster details, no error text.
+
+### Behind TLS
+
+Session cookies are issued `Secure` with the `__Secure-` prefix in production,
+so **a browser will refuse them over plain HTTP** and sign-in will appear to do
+nothing. Terminate TLS at your proxy and forward `X-Forwarded-Proto`; that is
+the normal arrangement and it works. Running the app itself on bare HTTP in
+production is not supported, by design.
+
+### Security headers
+
+Sent on every route from [`next.config.ts`](../next.config.ts): `X-Frame-Options:
+DENY`, `nosniff`, `strict-origin-when-cross-origin`, HSTS, a locked-down
+`Permissions-Policy`, and a CSP that blocks framing, plugins and every outbound
+origin except Open-Meteo.
+
+HSTS deliberately omits `preload`: submitting a host to the preload list is
+close to irreversible, and is the operator's decision rather than a default.
 
 ## Backup and recovery
 

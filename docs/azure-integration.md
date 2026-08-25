@@ -66,10 +66,11 @@ Every board is customised differently, so mapping is per-POD.
 1. team `valueMap` override (keys lowercased),
 2. `DEFAULT_VALUE_MAP` exact match,
 3. direct match against the allowed values,
-4. **longest** substring match.
+4. **longest word-bounded match** (see [below](#matching-is-word-bounded-not-substring)).
 
 Longest-first is load-bearing: `not a bug` must win over `bug`, `biz-uat` over
-`uat`. Sorting shorter-first silently mislabels items.
+`uat`. Sorting shorter-first silently mislabels items. So is the word boundary:
+an unbounded `includes` matched the key `it` inside "microsites".
 
 Shipped defaults cover the usual shapes — `1 - Critical` → `Critical`,
 `Resolved` → `For QA Validation`, `prod` → `Production`, `CUG(stage)` → `CUG`.
@@ -160,3 +161,71 @@ collapsing `_ - .` to spaces. Only `Title` is required.
   a silently dropped column reads as data loss.
 
 Adding a recognised column means one entry in `COLUMN_ALIASES`.
+
+## Boards that do not use the default names
+
+Two things bite on a real board, and both fail **quietly** — which is why Test
+now reports on them rather than only proving the connection.
+
+### Work item types are matched exactly
+
+The WIQL clause is `[System.WorkItemType] IN ('Bug', 'Task', …)`. An exact
+match. A project whose types are called `3IN1 TASK` and
+`3IN1 AGILE USER STORY` matches none of the shipped defaults, syncs only its
+bugs, and reports success — because the sync *did* succeed, it just found less
+than you expected.
+
+**Test lists the project's real types** and offers them as chips under the field.
+Click one to add it. If a configured type does not exist in the project, Test
+says so plainly: *"Connected, but X has no '3IN1 TASK'. Those items will not
+sync."*
+
+### The status field is often not `System.State`
+
+Many boards carry a custom field — `Bug Status`, `Resolution`, `Sub-State` —
+alongside the built-in state. A bug can be `Active` in `System.State` while its
+Bug Status says `For PO Validation`, and only the second is the one the team
+reads.
+
+Point the **Status** mapping at that field's reference name. The shipped
+vocabulary already covers the common spellings:
+
+| The board says | Becomes |
+|---|---|
+| Active · New · Approved · Triaged · In Progress · Reopened | `Open` |
+| For PO / BA / Business Validation · Fixed · Resolved · Ready for Test | `For QA Validation` |
+| On Hold · Blocked · Deferred · Need More Info | `Commented` |
+| Not a Bug · By Design · Duplicate · Cannot Reproduce · Rejected · Removed | `Not a Bug` |
+| Closed · Done · Completed | `Closed` |
+
+Anything else becomes `Unknown` rather than being guessed into a category. Add
+your own under **Value mapping** on the POD; those win over everything above.
+
+## Matching is word-bounded, not substring
+
+Values resolve in three passes — the POD's own overrides, the shipped table,
+then a **longest-match, word-bounded** pass. That last one is what lets
+`3 - Medium (UI)` reach `Minor` and `Deployed to Prod` reach `Production`.
+
+It used to match anywhere in the string, and a real board found the problem:
+`it → IT-UAT` matched inside **"microsites"**, so every item under an area path
+named *"…Investment Mall and microsites"* came back `IT-UAT`. So did
+"monitoring", "credit", "editor" and "digital". A two-letter key is a substring
+of an enormous number of ordinary words.
+
+The same accident sat in the kind rule: a task tagged `critical` became a
+**change request**, because "critical" contains "cr". The CR tag is matched
+exactly now.
+
+## Fields that are usually missing
+
+**Environment.** Most boards have no such field. The importer falls back to
+**tags**, then to the **area path**, before giving up — so an `AMC_POD` /
+`Production` tag pair is enough, and the mapping row can stay at its default.
+
+**Severity.** Tasks and user stories rarely have one. They land as `Unknown`,
+which is honest — a task has no severity to report.
+
+**Assignee.** "No one selected" becomes `Unassigned`, and that person appears on
+the leaderboard like any other. Unassigned work is real work.
+

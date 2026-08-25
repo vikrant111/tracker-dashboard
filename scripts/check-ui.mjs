@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 /**
  * The real modules, imported — not reimplemented.
@@ -36,15 +36,20 @@ import {
   visibleXRange,
 } from "../src/lib/sky.ts";
 import { currentWeather, skyForCode } from "../src/lib/weather.ts";
-import { AGEING, AZURE, EXPORT, LIMITS, PAGE, SCENE, TIMING, UPLOAD } from "../src/lib/constants.ts";
+import { AGEING, AZURE, EXPORT, LIMITS, LOGIN, PAGE, SCENE, SESSION, TIMING, UPLOAD } from "../src/lib/constants.ts";
+import { MIN_SECRET_LENGTH, resolveAuthSecret } from "../src/lib/auth-secret.ts";
+import { checkSession, secondsRemaining } from "../src/lib/session-policy.ts";
+import { authCookies } from "../src/lib/auth-cookies.ts";
+import { lockedFor, recordFailure, recordSuccess, resetThrottle } from "../src/lib/login-throttle.ts";
 import { mergeRoster } from "../src/lib/roster.ts";
-import { MIN_PASSWORD, isEmail, validateTeam, validateUser } from "../src/lib/validation.ts";
+import { MIN_PASSWORD, isEmail, validateTeam, validateUser, validatePasswordChange, validatePasswordReset } from "../src/lib/validation.ts";
 import { detectSheet, isLegacyXls, isZip, whyNotReadable } from "../src/lib/spreadsheet.ts";
 import { readNumbers } from "../src/lib/numbers.ts";
+import { endLabelPositions } from "../src/components/trend-end-labels.ts";
 import { closedRatio, healthScore } from "../src/lib/health.ts";
 import { LEGACY, numbersBundle, stringCell, zip } from "./lib/numbers-fixture.mjs";
 import { highlight, suggest } from "../src/lib/suggest.ts";
-import { EXPORT_COLUMNS, mapHeaders, pickDataSheet, toRow } from "../src/lib/normalize.ts";
+import { EXPORT_COLUMNS, fromAzure, mapHeaders, pickDataSheet, toRow } from "../src/lib/normalize.ts";
 import {
   FEATHER_MAX,
   MAX_ZOOM,
@@ -65,6 +70,41 @@ import {
 } from "../src/lib/takeover.ts";
 
 /**
+ * The admin screen, as one string.
+ *
+ * It was a single 791-line file holding the POD editor, the member editor, the
+ * Azure connection and the people list — four unrelated jobs. Each is its own
+ * file under `admin/panels/` now; the checks care that the screen as a whole
+ * obeys its rules, not which file a rule landed in.
+ */
+const ADMIN_FILES = [
+  new URL("../src/app/admin/admin-client.tsx", import.meta.url),
+  ...readdirSync(new URL("../src/app/admin/panels/", import.meta.url))
+    .filter((f) => f.endsWith(".tsx") || f.endsWith(".ts"))
+    .sort()
+    .map((f) => new URL(f, new URL("../src/app/admin/panels/", import.meta.url))),
+];
+const adminSource = () => ADMIN_FILES.map((u) => readFileSync(u, "utf8")).join("\n");
+
+
+/**
+ * The shared interface pieces, as one string.
+ *
+ * `ui.tsx` is a barrel over `ui/` — one 750-line module meant finding the
+ * tooltip required scrolling past the menu's keyboard handling. The checks do
+ * not care which file a rule lands in, only that the set as a whole obeys it,
+ * so this reads the directory rather than a list that would go stale.
+ */
+const UI_DIR = new URL("../src/components/ui/", import.meta.url);
+const uiSource = () =>
+  readdirSync(UI_DIR)
+    .filter((f) => f.endsWith(".tsx") || f.endsWith(".ts"))
+    .sort()
+    .map((f) => readFileSync(new URL(f, UI_DIR), "utf8"))
+    .join("\n");
+
+
+/**
  * The greeting, as one string.
  *
  * It lives in three files — the card, the world it looks out on, and the
@@ -72,11 +112,10 @@ import {
  * looking for the grass had to scroll past a cat's leg joints. The checks do
  * not care which file a rule lands in, only that the scene as a whole obeys it.
  */
-const GREETING_FILES = [
-  "../src/components/greeting.tsx",
-  "../src/components/greeting-scene.tsx",
-  "../src/components/greeting-cast.tsx",
-];
+const GREETING_FILES = readdirSync(new URL("../src/components/", import.meta.url))
+  .filter((f) => /^greeting/.test(f) && (f.endsWith(".tsx") || f.endsWith(".ts")))
+  .sort()
+  .map((f) => `../src/components/${f}`);
 const greetingSource = () =>
   GREETING_FILES.map((f) => readFileSync(new URL(f, import.meta.url), "utf8")).join("\n");
 
@@ -338,7 +377,8 @@ section("greeting sky — the flyers");
 
   // With motion off, every flyer needs somewhere sensible to rest.
   const rests = [...src.matchAll(/restX: (\d+)/g)].map((m) => Number(m[1]));
-  check("each bat has a resting position", rests.length === bats.length, `${rests.length} rests for ${bats.length} bats`);
+  const batRests = (batTable.match(/restX: \d+/g) ?? []).length;
+  check("each bat has a resting position", batRests === bats.length, `${batRests} rests for ${bats.length} bats`);
   // Motion off has to park the gulls somewhere too, or they pile up at x=0.
   check("gulls rest somewhere with motion off", src.includes("180 + i * 90"));
   check("resting positions are spread out", new Set(rests).size === rests.length, rests.join(", "));
@@ -401,18 +441,21 @@ section("greeting sky — the grass");
   check("the bands are derived from the meadow's depth", /function meadowBands\(/.test(src));
 
   // Every flying thing and the height it rides at, read from the component.
+  /** Every `{ y, …, depth }` entry in one named table. */
+  const pathsIn = (table) => {
+    const block = src.match(new RegExp(`const ${table} = \\[([\\s\\S]*?)\\n\\];`))?.[1] ?? "";
+    return [...block.matchAll(/\{ y: (\d+),[\s\S]*?depth: ([\d.]+) \}/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  };
+
   const FLYERS = [
-    ...[...src.matchAll(/\{ y: (\d+), scale: [\d.]+, cross: [\s\S]*?depth: ([\d.]+) \}/g)].map((m, i) => [
-      `bat ${i + 1}`,
-      Number(m[1]),
-      Number(m[2]),
-    ]),
+    ...pathsIn("CHOREOGRAPHY").map(([y, d], i) => [`bat ${i + 1}`, y, d]),
+    ...pathsIn("GULL_PATHS").map(([y, d], i) => [`gull ${i + 1}`, y, d]),
+    ...pathsIn("CRANE_PATHS").map(([y, d], i) => [`crane ${i + 1}`, y, d]),
     ...[...src.matchAll(/\{ y: (\d+), s: [\d.]+, dur: [\s\S]*?depth: ([\d.]+) \}/g)].map((m, i) => [
       `cloud ${i + 1}`,
       Number(m[1]),
       Number(m[2]),
     ]),
-    ["crane", 26, Number(src.match(/const CRANE_DEPTH = ([\d.]+)/)?.[1] ?? 0)],
   ];
   check("every flyer's height was found in the source", FLYERS.length >= 9 && FLYERS.every(([, y, d]) => Number.isFinite(y) && Number.isFinite(d)), `${FLYERS.length} flyers`);
 
@@ -528,9 +571,61 @@ section("greeting sky — the grass");
   check("clouds rise into the added sky", /depth: [\d.]+/.test(src) && src.includes("liftBy(c.y, above, c.depth)"));
   check("stars rise into it too", src.includes("liftBy(y, above, depth)"));
   check("bats rise into it", src.includes("liftBy(b.y, above, b.depth)"));
-  check("the crane rises into it", src.includes("liftBy(26, above, CRANE_DEPTH)"));
+  // The clouds map over `c` too, so matching `liftBy(c.y, …)` alone found
+  // theirs. Anchored to the crane's own line, which carries `c.scale`.
+  check("the crane rises into it", /liftBy\(c\.y, above, c\.depth\)\}px\) scale\(\$\{c\.scale\}/.test(src));
+
+  /*
+   * The crane was the odd one out: a plain on/off in the cast table with its
+   * flight hardcoded in the JSX, while the two flyers either side of it had
+   * counts. Every flyer works the same way now, and these keep it that way.
+   */
+  const flyerCount = (table, knob) => {
+    const paths = (src.match(new RegExp(`const ${table} = \\[([\\s\\S]*?)\\n\\];`))?.[1] ?? "")
+      .split("\n")
+      .filter((l) => l.trim().startsWith("{")).length;
+    check(`${table} defines flights`, paths >= 1, `${paths}`);
+    check(`SCENE.${knob} is a sane count`, Number.isInteger(SCENE[knob]) && SCENE[knob] >= 0 && SCENE[knob] <= paths, `${SCENE[knob]} of ${paths}`);
+    check(
+      `the ${knob} count is clamped to its choreography`,
+      new RegExp(`${table}\\.slice\\(0, Math\\.max\\(0, Math\\.min\\(SCENE\\.${knob}, ${table}\\.length\\)\\)\\)`).test(src),
+    );
+  };
+
+  for (const [table, knob] of [["CHOREOGRAPHY", "bats"], ["GULL_PATHS", "gulls"], ["CRANE_PATHS", "cranes"]]) {
+    flyerCount(table, knob);
+  }
+
+  // Perspective, for the cranes as for the others: further is smaller, slower
+  // to cross and slower to beat. One of the three backwards is what makes a
+  // scene feel wrong without anyone being able to say why.
+  {
+    const block = src.match(/const CRANE_PATHS = \[([\s\S]*?)\n\];/)?.[1] ?? "";
+    const nums = (key, pattern) => [...block.matchAll(new RegExp(`${key}: ${pattern}`, "g"))].map((m) => Number(m[1]));
+    const scales = nums("scale", "([\\d.]+)");
+    const cross = nums("cross", '"(\\d+)s"');
+    const flap = nums("flap", '"([\\d.]+)s"');
+    check("cranes are ordered near to far", scales.join() === [...scales].sort((a, b) => b - a).join(), scales.join(", "));
+    check("further cranes cross more slowly", cross.every((c, i) => i === 0 || c > cross[i - 1]), cross.join(", "));
+    check("further cranes beat more slowly", flap.every((f, i) => i === 0 || f > flap[i - 1]), flap.join(", "));
+    // A crane works its wings; a gull holds them. Their beats must not converge,
+    // A crane has a slow, deep, deliberate wingbeat; a gull flaps quickly and
+    // then holds. So the crane's cycle is the LONGER one — and if the two
+    // converge they stop being distinguishable in the air, which is most of
+    // what names them at this size.
+    const gullFlap = [...(src.match(/const GULL_PATHS = \[([\s\S]*?)\n\];/)?.[1] ?? "").matchAll(/flap: "([\d.]+)s"/g)].map((m) => Number(m[1]));
+    check("a crane beats slower and deeper than a gull", Math.min(...flap) > Math.min(...gullFlap), `crane ${Math.min(...flap)}s vs gull ${Math.min(...gullFlap)}s`);
+  }
+
+  // No flying thing is a bare boolean any more.
+  check("the crane is no longer hardcoded", !/liftBy\(26, above, CRANE_DEPTH\)/.test(src));
+  check("...and no flight time is inline", !/animation: "sky-fly 78s/.test(src));
+
   check("rain is spread through it", /liftBy\(0, above,/.test(src));
-  check("every bat carries its own depth", (src.match(/depth: 0\.\d+, /g) || []).length >= 0 && (src.match(/restX: \d+, depth: [\d.]+/g) || []).length === 3);
+  {
+    const bats = src.match(/const CHOREOGRAPHY = \[([\s\S]*?)\n\];/)?.[1] ?? "";
+    check("every bat carries its own depth", (bats.match(/restX: \d+, depth: [\d.]+/g) || []).length === 3);
+  }
   check("the card itself is unaffected", /const above = fit === "adapt" && measured \? skyAbove/.test(src));
 
   for (const token of ["--sky-meadow-1", "--sky-meadow-2", "--sky-meadow-3", "--sky-haze"]) {
@@ -666,7 +761,8 @@ section("greeting sky — the cast by hour");
   check("the crane flies with its neck extended", /M 3\.6 -0\.2 L 11\.4 -1\.4/.test(crane));
   check("the crane's legs trail past its tail", (crane.match(/L -1[34](?:\.\d+)? [\d.]+/g) || []).length >= 2);
 
-  const bat = src.slice(src.indexOf("function Bat("), src.indexOf("function Crane("));
+  // Bounded by the squirrel: the crane moved to greeting-cast-birds.
+  const bat = src.slice(src.indexOf("function Bat("), src.indexOf("function Squirrel("));
   check("the bat's wing has finger struts", bat.includes("--sky-membrane"));
   check("the bat has four fingers per wing", (bat.match(/M \$\{1\.2 \* dir\}/g) || []).length === 4);
   check("the membrane colour is a token, not a hex", !/#[0-9a-f]{3,6}/i.test(bat));
@@ -680,7 +776,8 @@ section("greeting sky — the cast by hour");
 
   // With motion off, every mover needs a resting position.
   check("the walking cat rests somewhere visible", /translateX\(\d+px\)/.test(src.slice(src.indexOf("CAST[phase].cat &&"))));
-  check("the soaring crane rests somewhere visible", /translateX\(250px\)/.test(src));
+  check("the soaring crane rests somewhere visible", /transform: `translateX\(\$\{c\.restX\}px\)`/.test(src));
+  check("...and every crane has one", (src.match(/const CRANE_PATHS = \[([\s\S]*?)\n\];/)?.[1] ?? "").match(/restX: \d+/g)?.length >= 1);
 }
 
 // ------------------------------------------------------------------ the sky
@@ -1349,7 +1446,10 @@ section("sky — the takeover component's guards");
     Object.keys(castShape).join(", "),
   );
   for (const who of ["crane", "squirrel", "cat"]) {
-    check(`the ${who} only appears when the cast is out`, greetingSrc.includes(`{cast && phase && CAST[phase].${who}`));
+    check(
+      `the ${who} only appears when the cast is out`,
+      new RegExp(`cast &&[\\s\\S]{0,24}phase &&[\\s\\S]{0,24}CAST\\[phase\\]\\.${who}`).test(greetingSrc),
+    );
   }
   // The scene is banded rather than stretched over the whole viewport.
   // `vh` on mobile is the tallest the viewport ever gets, not what you can see:
@@ -1372,7 +1472,7 @@ section("sky — the takeover component's guards");
   check("the veil is a token, not a hex", !/#[0-9a-f]{3,6}/i.test(backdrop));
 
   // The card must actually be findable.
-  const ring = readFileSync(new URL("../src/components/health-ring.tsx", import.meta.url), "utf8");
+  const ring = ["health-ring.tsx", "health-drivers.ts"].map((f) => readFileSync(new URL(`../src/components/${f}`, import.meta.url), "utf8")).join("\n");
   check("the health card exposes itself as the anchor", ring.includes("data-sky-anchor") && ring.includes("ref={ref}"));
   const dash = readFileSync(new URL("../src/components/dashboard-client.tsx", import.meta.url), "utf8");
   check("the anchor is wired from the card to the backdrop", dash.includes("ref={setSkyAnchor}") && dash.includes("anchor={skyAnchor}"));
@@ -1466,7 +1566,16 @@ section("the roster — onboarded people appear even with nothing assigned");
 
 section("constants — the hardcoded values live in one place");
 {
-  const constants = readFileSync(new URL("../src/lib/constants.ts", import.meta.url), "utf8");
+  /*
+   * `constants.ts` is a barrel over `constants/` now — one 320-line file held
+   * storage caps, session policy and the greeting's cast schedule, which have
+   * nothing to do with each other. The rules are about the set, not the file.
+   */
+  const CONSTANTS_DIR = new URL("../src/lib/constants/", import.meta.url);
+  const constants = [
+    readFileSync(new URL("../src/lib/constants.ts", import.meta.url), "utf8"),
+    ...readdirSync(CONSTANTS_DIR).filter((f) => f.endsWith(".ts")).sort().map((f) => readFileSync(new URL(f, CONSTANTS_DIR), "utf8")),
+  ].join("\n");
   check("the file documents the env-versus-here rule", /belongs in the repository/.test(constants));
 
   // Every group exists and is frozen at the type level.
@@ -1495,8 +1604,8 @@ section("constants — the hardcoded values live in one place");
     ["../src/lib/types.ts", "AGEING"],
     ["../src/app/api/upload/route.ts", "UPLOAD"],
     ["../src/app/admin/admin-client.tsx", "TIMING"],
-    ["../src/components/greeting.tsx", "SCENE"],
-    ["../src/components/greeting-scene.tsx", "SCENE"],
+    ["../src/components/greeting-choreography.ts", "SCENE"],
+    ["../src/components/greeting-grass.ts", "SCENE"],
   ];
   for (const [file, group] of users) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -1514,7 +1623,7 @@ section("constants — the hardcoded values live in one place");
 
 section("every password field can be revealed");
 {
-  const ui = readFileSync(new URL("../src/components/ui.tsx", import.meta.url), "utf8");
+  const ui = uiSource();
   check("there is one shared password field", /export function PasswordField\(/.test(ui));
   check("it toggles the input type", ui.includes('type={shown ? "text" : "password"}'));
   check("the toggle is labelled for a screen reader", ui.includes('aria-label={shown ? "Hide password" : "Show password"}'));
@@ -1527,16 +1636,19 @@ section("every password field can be revealed");
   check("the reveal toggle cannot submit the form", /<button\s+type="button"/.test(pwField));
 
   // No bare password input may survive anywhere.
-  for (const file of ["../src/app/login/login-form.tsx", "../src/app/admin/admin-client.tsx"]) {
-    const src = readFileSync(new URL(file, import.meta.url), "utf8");
-    check(`${file.split("/").pop()} has no bare password input`, !/type="password"/.test(src));
-    check(`${file.split("/").pop()} uses the shared field`, src.includes("<PasswordField"));
+  for (const [label, src] of [
+    ["the login form", readFileSync(new URL("../src/app/login/login-form.tsx", import.meta.url), "utf8")],
+    ["the admin screen", adminSource()],
+    ["the change-password dialog", readFileSync(new URL("../src/components/change-password.tsx", import.meta.url), "utf8")],
+  ]) {
+    check(`${label} has no bare password input`, !/type="password"/.test(src));
+    check(`${label} uses the shared field`, src.includes("<PasswordField"));
   }
 }
 
 section("destructive and abandonable actions have a way out");
 {
-  const admin = readFileSync(new URL("../src/app/admin/admin-client.tsx", import.meta.url), "utf8");
+  const admin = adminSource();
 
   // Cancel out of a POD edit, with unsaved work protected.
   check("the POD editor can be cancelled", admin.includes("const closeDraft ="));
@@ -1595,7 +1707,12 @@ section("azure connects from the environment alone");
 section("the upload format is documented and matches the importer");
 {
   const doc = readFileSync(new URL("../docs/excel-upload.md", import.meta.url), "utf8");
-  const normalize = readFileSync(new URL("../src/lib/normalize.ts", import.meta.url), "utf8");
+  // COLUMN_ALIASES lives in normalize/columns.ts; read the whole group.
+  const NORM_DIR = new URL("../src/lib/normalize/", import.meta.url);
+  const normalize = [
+    readFileSync(new URL("../src/lib/normalize.ts", import.meta.url), "utf8"),
+    ...readdirSync(NORM_DIR).filter((f) => f.endsWith(".ts")).sort().map((f) => readFileSync(new URL(f, NORM_DIR), "utf8")),
+  ].join("\n");
 
   // Every alias the importer accepts has to appear in the document, or someone
   // formats a sheet from the docs and half their columns are silently ignored.
@@ -1877,8 +1994,14 @@ section("the export route and its button");
 
 section("the For you menu");
 {
-  const ui = readFileSync(new URL("../src/components/ui.tsx", import.meta.url), "utf8");
-  const menu = ui.slice(ui.indexOf("export function Menu("), ui.indexOf("export function MenuSection("));
+  const ui = uiSource();
+  /*
+   * The Menu has its own file now, so read it rather than slicing it out of a
+   * concatenation — the old bound was 'up to MenuSection', which stopped
+   * working the moment MenuSection moved to a file that sorts earlier.
+   */
+  const menu = readFileSync(new URL("../src/components/ui/menu.tsx", import.meta.url), "utf8");
+  const menuItems = readFileSync(new URL("../src/components/ui/menu-item.tsx", import.meta.url), "utf8");
 
   check("there is a menu component", menu.length > 0);
 
@@ -2099,7 +2222,7 @@ section("forms: accounts");
 
 section("forms: success clears, failure keeps");
 {
-  const admin = readFileSync(new URL("../src/app/admin/admin-client.tsx", import.meta.url), "utf8");
+  const admin = adminSource();
 
   // The bug: `save` returned undefined on both paths and the caller cleared
   // the form in a `.then()`, so a rejected account still wiped everything the
@@ -2117,7 +2240,10 @@ section("forms: success clears, failure keeps");
   // Validation runs before the request, and says why.
   check("accounts are checked before sending", admin.includes("const problem = validateUser(form"));
   check("PODs are checked before sending", admin.includes("const problem = validateTeam(draft)"));
-  check("a problem is shown as an error toast", (admin.match(/return flash\(problem, "bad"\)/g) || []).length === 2);
+  // Every validated form reports the same way. Counted against the number of
+  // validators actually called, so adding a form does not silently skip this.
+  const validated = (admin.match(/const problem = validate\w+\(/g) || []).length;
+  check("every checked form shows an error toast", (admin.match(/return flash\(problem, "bad"\)/g) || []).length === validated, `${validated} validators`);
   check("the existing accounts are passed in", admin.includes("users.map((u) => u.email)"));
 
   // The Add button used to need an "@" before it would even light up, so the
@@ -2179,7 +2305,7 @@ section("uploads work without Excel installed");
   check("a missing filename still reads", /that file/.test(whyNotReadable("unknown", "")));
 
   // The route has to use it.
-  const route = readFileSync(new URL("../src/app/api/upload/route.ts", import.meta.url), "utf8");
+  const route = ["route.ts", "sheets.ts"].map((f) => readFileSync(new URL(`../src/app/api/upload/${f}`, import.meta.url), "utf8")).join("\n");
   check("the upload sniffs the bytes", route.includes("detectSheet(new Uint8Array(bytes), file.name)"));
   check("it no longer branches on the filename", !/file\.name\.toLowerCase\(\)\.endsWith\(".csv"\)/.test(route));
   check("an unreadable file is explained", route.includes("whyNotReadable(kind, file.name)"));
@@ -2261,7 +2387,16 @@ section("health is the share of the board that is closed");
   /* --------------------------------------------------------- the wiring -- */
 
   const health = readFileSync(new URL("../src/lib/health.ts", import.meta.url), "utf8");
-  const constants = readFileSync(new URL("../src/lib/constants.ts", import.meta.url), "utf8");
+  /*
+   * `constants.ts` is a barrel over `constants/` now — one 320-line file held
+   * storage caps, session policy and the greeting's cast schedule, which have
+   * nothing to do with each other. The rules are about the set, not the file.
+   */
+  const CONSTANTS_DIR = new URL("../src/lib/constants/", import.meta.url);
+  const constants = [
+    readFileSync(new URL("../src/lib/constants.ts", import.meta.url), "utf8"),
+    ...readdirSync(CONSTANTS_DIR).filter((f) => f.endsWith(".ts")).sort().map((f) => readFileSync(new URL(f, CONSTANTS_DIR), "utf8")),
+  ].join("\n");
   const metrics = readFileSync(new URL("../src/lib/metrics.ts", import.meta.url), "utf8");
 
   check("metrics imports the score", /import \{ healthScore \} from "\.\/health"/.test(metrics));
@@ -2300,7 +2435,7 @@ section("health is the share of the board that is closed");
   check("the dial no longer reads a scoring mode", !/HEALTH/.test(dial));
 
   // The card has to print the denominator, or the score cannot be checked.
-  const ring = readFileSync(new URL("../src/components/health-ring.tsx", import.meta.url), "utf8");
+  const ring = ["health-ring.tsx", "health-drivers.ts"].map((f) => readFileSync(new URL(`../src/components/${f}`, import.meta.url), "utf8")).join("\n");
   check("the summary says how many of how many", /\$\{data\.totals\.active\} of \$\{data\.totals\.total\} open/.test(ring));
   check("the still-open tile carries its denominator", /of: data\.totals\.total > 0/.test(ring));
   check("the denominator is rendered, not just computed", /\{d\.of && </.test(ring));
@@ -2324,8 +2459,8 @@ section("the scene's counts are tunable from one file");
    * turning it does nothing, and the next person trusts it. Checking the value
    * is sane is only half the job — these check the component actually *asks*.
    */
-  const card = readFileSync(new URL("../src/components/greeting.tsx", import.meta.url), "utf8");
-  const world = readFileSync(new URL("../src/components/greeting-scene.tsx", import.meta.url), "utf8");
+  const card = greetingSource();
+  const world = greetingSource();
 
   check("the cast comes from the constant", /const CAST[^=]*= SCENE\.cast;/.test(card));
   check("the cloud counts come from the constant", /const CLOUD_COUNT[^=]*= SCENE\.clouds;/.test(card));
@@ -2489,7 +2624,7 @@ section("the data is found whichever tab it is on");
   check("a sheet with no headers array cannot throw", pickDataSheet([{ name: "x" }]) === null);
   check("hostile sheet entries cannot throw", pickDataSheet([null, undefined, data])?.index === 2);
 
-  const route = readFileSync(new URL("../src/app/api/upload/route.ts", import.meta.url), "utf8");
+  const route = ["route.ts", "sheets.ts"].map((f) => readFileSync(new URL(`../src/app/api/upload/${f}`, import.meta.url), "utf8")).join("\n");
   check("the route reads every tab", /workbook\.worksheets\.map\(/.test(route));
   check("it no longer takes the first tab blindly", !/const sheet = workbook\.worksheets\[0\]/.test(route));
   check("it picks the data sheet", /pickDataSheet\(headers\)/.test(route));
@@ -2510,7 +2645,7 @@ section("the data is found whichever tab it is on");
 
 section("tooltips explain the bars, and cannot be clipped");
 {
-  const ui = readFileSync(new URL("../src/components/ui.tsx", import.meta.url), "utf8");
+  const ui = uiSource();
 
   /*
    * The browser's own `title=` attribute was the previous answer everywhere.
@@ -2550,15 +2685,23 @@ section("tooltips explain the bars, and cannot be clipped");
    * Every chart that carries a bar or a point explains it. A number with no
    * denominator and no unit is the thing readers ask about first.
    */
+  /** Every file making up one visual surface, so a split does not hide a rule. */
+  const filesFor = (stem) =>
+    readdirSync(new URL("../src/components/", import.meta.url))
+      .filter((f) => f === `${stem}.tsx` || f.startsWith(`${stem}-`))
+      .sort()
+      .map((f) => readFileSync(new URL(`../src/components/${f}`, import.meta.url), "utf8"))
+      .join("\n");
+
   const surfaces = {
     "breakdown-card.tsx": /<Tooltip label=\{`\$\{row\.key\} — \$\{row\.count\} of \$\{total\}/,
-    "health-ring.tsx": /<Tooltip key=\{b\.key\} label=\{`\$\{b\.count\} open item/,
+    "ageing-spine.tsx": /<Tooltip key=\{b\.key\} label=\{`\$\{b\.count\} open item/,
     "leaderboard.tsx": /<Tooltip key=\{seg\.key\} label=\{`\$\{seg\.count\} open · \$\{seg\.key\}/,
     "stat-rail.tsx": /<Tooltip key=\{tile\.label\} label=\{`\$\{tile\.label\}: \$\{tile\.note\}/,
     "team-rollup.tsx": /<Tooltip label=\{label\}>/,
   };
   for (const [file, pattern] of Object.entries(surfaces)) {
-    const src = readFileSync(new URL(`../src/components/${file}`, import.meta.url), "utf8");
+    const src = filesFor(file.replace(/\.tsx$/, ""));
     check(`${file} explains its marks`, pattern.test(src));
     check(`${file} imports the tooltip`, /import \{[^}]*Tooltip[^}]*\} from "\.\/ui"/.test(src));
   }
@@ -2569,7 +2712,7 @@ section("tooltips explain the bars, and cannot be clipped");
    * JSX attribute form on an element.
    */
   for (const file of ["breakdown-card.tsx", "health-ring.tsx", "leaderboard.tsx", "stat-rail.tsx", "team-rollup.tsx", "trend-chart.tsx"]) {
-    const src = readFileSync(new URL(`../src/components/${file}`, import.meta.url), "utf8");
+    const src = filesFor(file.replace(/\.tsx$/, ""));
     const native = [...src.matchAll(/^\s+title=\{`/gm)].length;
     check(`${file} uses no native title tooltips`, native === 0, `${native} left`);
   }
@@ -2580,11 +2723,12 @@ section("tooltips explain the bars, and cannot be clipped");
    * existed already and said nothing — a reader could see Tuesday was higher
    * than Monday without learning by how much.
    */
-  const trend = readFileSync(new URL("../src/components/trend-chart.tsx", import.meta.url), "utf8");
-  check("the trend crosshair carries a readout", /role="tooltip"[\s\S]*?fmtDay\(points\[hover\]\.date\)/.test(trend));
-  check("it names both series", /\{points\[hover\]\.raised\}<\/span> raised/.test(trend) && /\{points\[hover\]\.closed\}<\/span> closed/.test(trend));
+  const trend = filesFor("trend");
+  check("the trend crosshair carries a readout", /role="tooltip"[\s\S]*?fmtDay\(point\.date\)/.test(trend));
+  check("...and the chart actually renders it", /<TrendReadout/.test(trend));
+  check("it names both series", /\{point\.raised\}<\/span> raised/.test(trend) && /\{point\.closed\}<\/span> closed/.test(trend));
   check("it carries a colour swatch per series", /background: TREND_COLOR\.raised/.test(trend) && /background: TREND_COLOR\.closed/.test(trend));
-  check("it flips before it leaves the chart", /hover > points\.length \/ 2 \? undefined : x\(hover\) \+ 12/.test(trend));
+  check("it flips before it leaves the chart", /flip=\{hover > points\.length \/ 2\}/.test(trend) && /left: flip \? undefined : x \+ 12/.test(trend));
   check("it does not eat the hit targets", /pointer-events-none absolute z-20/.test(trend));
   check("it says what a click does", /Click to list what was raised/.test(trend));
 }
@@ -2597,12 +2741,61 @@ section("the greeting is three files, each with one job");
    * joints to find it. Splitting it is the change; these keep it split.
    */
   const card = readFileSync(new URL("../src/components/greeting.tsx", import.meta.url), "utf8");
-  const scene = readFileSync(new URL("../src/components/greeting-scene.tsx", import.meta.url), "utf8");
-  const cast = readFileSync(new URL("../src/components/greeting-cast.tsx", import.meta.url), "utf8");
+  const scene = greetingSource();
+  const cast = greetingSource();
 
-  check("the card stays readable in one sitting", card.split("\n").length < 500, `${card.split("\n").length} lines`);
-  check("the scene stays readable too", scene.split("\n").length < 400, `${scene.split("\n").length} lines`);
-  check("so does the cast", cast.split("\n").length < 400, `${cast.split("\n").length} lines`);
+  /*
+   * Every module, not just the greeting's. Two hundred lines is roughly where a
+   * file stops being one thing a reader can hold in their head — past it, they
+   * are scrolling to remember what they were looking at.
+   */
+  {
+    /*
+     * Two hundred lines is roughly where a file stops being one thing a reader
+     * can hold in their head. Past it they are scrolling to remember what they
+     * were looking at.
+     *
+     * The list below is **debt, not permission**. Each entry is a screen that
+     * genuinely resists splitting — the parts share so much state that pulling
+     * one out means threading eight props, which trades a long file for a
+     * confusing one. They are named so the number can only go down: a new file
+     * over the limit fails, and a listed file that grows past its recorded size
+     * fails too.
+     */
+    const ALLOWED = {
+      "topbar.tsx": 287,
+      "greeting.tsx": 292,
+      "trend-chart.tsx": 284,
+      "dashboard-client.tsx": 273,
+      "people-panel.tsx": 252,
+      "admin-client.tsx": 272,
+      "drill-drawer.tsx": 228,
+      "search-box.tsx": 223,
+      "leaderboard.tsx": 222,
+    };
+
+    const walk = (dir) =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory()
+          ? walk(new URL(`${e.name}/`, dir))
+          : /\.tsx?$/.test(e.name)
+            ? [[e.name, readFileSync(new URL(e.name, dir), "utf8").split("\n").length]]
+            : [],
+      );
+
+    const measured = walk(new URL("../src/", import.meta.url));
+
+    const unlisted = measured.filter(([f, n]) => n > 200 && !(f in ALLOWED));
+    check("no new module runs past 200 lines", unlisted.length === 0, unlisted.map(([f, n]) => `${f}:${n}`).join(", "));
+
+    // A listed file may shrink. It may not grow.
+    const grown = measured.filter(([f, n]) => f in ALLOWED && n > ALLOWED[f]);
+    check("the long files are not getting longer", grown.length === 0, grown.map(([f, n]) => `${f}:${n} > ${ALLOWED[f]}`).join(", "));
+
+    // And once one is split, it comes off the list rather than lingering.
+    const stale = Object.keys(ALLOWED).filter((f) => !measured.some(([g, n]) => g === f && n > 200));
+    check("the debt list has no stale entries", stale.length === 0, stale.join(", "));
+  }
 
   // Each file owns its subject outright, or the split bought nothing.
   for (const who of ["Bat", "Crane", "Squirrel", "Cat"]) {
@@ -2617,13 +2810,19 @@ section("the greeting is three files, each with one job");
   // The card composes them; it does not redefine them.
   check("the card imports its cast", /import \{ Bat, Cat, Crane, Gull, Squirrel \} from "\.\/greeting-cast"/.test(card));
   check("the card imports its scene", /from "\.\/greeting-scene"/.test(card));
-  check("who appears when stays with the card", /const CAST: Record<Phase,/.test(card));
+  check("who appears when is declared once", /export const CAST: Record<Phase,/.test(greetingSource()));
 
   // Neither half reaches for data. The scene is drawn, never measured.
   for (const [name, src] of [["the scene", scene], ["the cast", cast]]) {
     check(`${name} fetches nothing`, !/fetch\(|useSWR|\/api\//.test(src));
   }
-  check("the cast holds no scene geometry", !/meadowBands|bandPath|tufts\(/.test(cast));
+  {
+    const castOnly = readdirSync(new URL("../src/components/", import.meta.url))
+      .filter((f) => f.startsWith("greeting-cast"))
+      .map((f) => readFileSync(new URL(`../src/components/${f}`, import.meta.url), "utf8"))
+      .join("\n");
+    check("the cast holds no scene geometry", !/meadowBands|bandPath|tufts\(/.test(castOnly));
+  }
 
   // Both halves are client components, or the animations never run.
   for (const [name, src] of [["the scene", scene], ["the cast", cast]]) {
@@ -2631,6 +2830,734 @@ section("the greeting is three files, each with one job");
   }
 }
 
+section("passwords can be changed, and only by the right person");
+{
+  const ok = (draft) => validatePasswordChange(draft) === null;
+
+  // The happy path, and each rule that guards it.
+  check("a good change is accepted", ok({ current: "old-one-here", next: "newPassword1", confirm: "newPassword1" }));
+  check("the current password is required", /current password/i.test(validatePasswordChange({ next: "newPassword1", confirm: "newPassword1" }) ?? ""));
+  check("a new password is required", /new password/i.test(validatePasswordChange({ current: "old-one-here" }) ?? ""));
+  check("the new password must be long enough", validatePasswordChange({ current: "old-one-here", next: "short", confirm: "short" }) !== null);
+  check("exactly the minimum is enough", ok({ current: "old-one-here", next: "x".repeat(MIN_PASSWORD), confirm: "x".repeat(MIN_PASSWORD) }));
+  check("one under the minimum is not", validatePasswordChange({ current: "o".repeat(12), next: "x".repeat(MIN_PASSWORD - 1), confirm: "x".repeat(MIN_PASSWORD - 1) }) !== null);
+  check("the two new passwords must match", /do not match/i.test(validatePasswordChange({ current: "old-one-here", next: "newPassword1", confirm: "newPassword2" }) ?? ""));
+
+  /*
+   * Reusing the current password is refused before the mismatch is mentioned:
+   * being told to retype a password that was never going to be accepted is the
+   * wrong thing to hear first.
+   */
+  check("reusing the current password is refused", /same as the current/i.test(validatePasswordChange({ current: "sameOne12345", next: "sameOne12345", confirm: "sameOne12345" }) ?? ""));
+  check("...and that is said before any mismatch", /same as the current/i.test(validatePasswordChange({ current: "sameOne12345", next: "sameOne12345", confirm: "different999" }) ?? ""));
+
+  // An unbounded password is an unbounded bcrypt, triggered by a form field.
+  check("an absurd password is refused", validatePasswordChange({ current: "old-one-here", next: "x".repeat(LIMITS.password + 1), confirm: "x".repeat(LIMITS.password + 1) }) !== null);
+  check("a long but sane passphrase is fine", ok({ current: "old-one-here", next: "correct horse battery staple", confirm: "correct horse battery staple" }));
+
+  // Guards. None of these may throw on the way to a message.
+  for (const [label, bad] of [["null", null], ["undefined", undefined], ["an empty object", {}]]) {
+    check(`${label} yields a message, not a crash`, typeof validatePasswordChange(bad) === "string");
+  }
+
+  /* ------------------------------------------------------ the admin reset -- */
+
+  const reset = (draft) => validatePasswordReset(draft);
+  check("an admin reset needs no current password", reset({ email: "a@b.com", next: "newPassword1" }) === null);
+  check("it still needs a long enough one", reset({ email: "a@b.com", next: "short" }) !== null);
+  check("it needs to know whose", /whose password/i.test(reset({ next: "newPassword1" }) ?? ""));
+  check("a non-email is refused", reset({ email: "not-an-email", next: "newPassword1" }) !== null);
+  check("an absurd password is refused here too", reset({ email: "a@b.com", next: "x".repeat(LIMITS.password + 1) }) !== null);
+  for (const [label, bad] of [["null", null], ["undefined", undefined], ["an empty object", {}]]) {
+    check(`a ${label} reset yields a message`, typeof reset(bad) === "string");
+  }
+
+  /* ------------------------------------------------------------ the routes -- */
+
+  const self = readFileSync(new URL("../src/app/api/account/password/route.ts", import.meta.url), "utf8");
+  const byAdmin = readFileSync(new URL("../src/app/api/users/password/route.ts", import.meta.url), "utf8");
+  const users = readFileSync(new URL("../src/lib/users.ts", import.meta.url), "utf8");
+
+  /*
+   * The three properties that make the self-service route safe. Each is a way
+   * the route could be written that compiles, runs, and is an account takeover.
+   */
+  check("the self route verifies the current password", /verifyPassword\(session\.email, current\)/.test(self));
+  check("a wrong current password is a 403", /not your current password[\s\S]{0,60}status: 403/.test(self));
+  check("the account comes from the session, never the body", /getUser\(session\.email\)/.test(self) && !/body\??\.email/.test(self));
+  check("it writes only the hash", self.includes("setPassword(") && !self.includes("saveUser("));
+
+  // The admin route is the mirror image: no current password, admin-only.
+  check("the admin route requires an admin", /requireAdmin\(\)/.test(byAdmin));
+  check("...and does so before reading the body", byAdmin.indexOf("requireAdmin()") < byAdmin.indexOf("req.json()"));
+  check("the admin route also writes only the hash", byAdmin.includes("setPassword(") && !byAdmin.includes("saveUser("));
+
+  /*
+   * `setPassword` exists precisely so neither route goes through `saveUser`,
+   * which would happily rewrite the role and POD list from the same body — a
+   * member changing their own password must not be able to smuggle a role.
+   */
+  check("setPassword touches nothing but the hash", /passwordHash: await bcrypt\.hash\(password, 10\)/.test(users));
+  check("...spreading the stored user, not the input", /putDoc\(IDX\.users, id, \{\s*\.\.\.user,/.test(users));
+  check("...and stamping when it changed", /passwordChangedAt: new Date\(\)\.toISOString\(\)/.test(users));
+
+  // An SSO account has no local password; creating one is a second way in.
+  check("the self route refuses SSO accounts", /user\.passwordHash[\s\S]{0,200}single sign-on/.test(self));
+  check("the admin route refuses them too", /user\.passwordHash[\s\S]{0,200}single sign-on/.test(byAdmin));
+
+  // With auth off there are no accounts, so there is nothing to change.
+  check("both routes refuse when auth is off", /AUTH_MODE === "off"/.test(self) && /AUTH_MODE === "off"/.test(byAdmin));
+
+  // Neither route hands back anything about the account.
+  check("the self route returns nothing but ok", /return Response\.json\(\{ ok: true \}\)/.test(self));
+
+  /* ----------------------------------------------------------------- the UI -- */
+
+  const dialog = readFileSync(new URL("../src/components/change-password.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const admin = adminSource();
+
+  check("the menu offers it", /label="Change password"/.test(bar));
+  check("only when there are passwords to change", /authEnabled && \(\s*<MenuItem/.test(bar));
+  check("the dialog is mounted", /<ChangePassword open=\{changingPassword\}/.test(bar));
+
+  check("the dialog asks for the current password", /label="Current password"/.test(dialog));
+  check("it asks the new one twice", (dialog.match(/autoComplete="new-password"/g) ?? []).length === 2);
+  check("the confirmation is never sent", /JSON\.stringify\(\{ current, next \}\)/.test(dialog));
+  check("fields are cleared on open", /setCurrent\(""\);\s*\n\s*setNext\(""\);/.test(dialog));
+  // The trap is its own hook now — the rule is that the dialog uses one.
+  const trap = readFileSync(new URL("../src/components/use-focus-trap.ts", import.meta.url), "utf8");
+  check("focus is trapped while it is open", /e\.key !== "Tab"/.test(trap) && /useFocusTrap\(open, panel, onClose\)/.test(dialog));
+  check("escape closes it", /e\.key === "Escape"/.test(trap));
+  check("it is a real dialog", /role="dialog"/.test(dialog) && /aria-modal="true"/.test(dialog));
+
+  // The admin's reset is offered only where it can work.
+  check("admin can reset a password", /resetPassword\(user\.email\)/.test(admin));
+  check("...only for accounts that have one", /user\.hasPassword && \(/.test(admin));
+  check("one row is open at a time", /setResetting\(resetting === user\.email \? null : user\.email\)/.test(admin));
+  check("the admin is told nobody is notified", /not notified/i.test(admin));
+}
+
+section("the signing secret cannot be a public constant");
+{
+  const prod = (raw) => resolveAuthSecret(raw, true);
+  const dev = (raw) => resolveAuthSecret(raw, false);
+  const REAL = "Yk8vQm4wZ3JlYWxzZWNyZXRoZXJlMTIzNDU2Nzg5MA==";
+
+  /*
+   * This was `process.env.AUTH_SECRET || "dev-only-insecure-secret"`, and it is
+   * the worst bug this codebase has had — precisely because nothing looked
+   * broken. Sign-in worked. Every check passed. And a deployment that forgot
+   * the variable signed its tokens with a string committed to the repo, so
+   * anybody who could read the source could forge `role: "admin"`.
+   */
+  check("a real secret is accepted in production", prod(REAL).ok === true);
+  check("...and used verbatim", prod(REAL).secret === REAL);
+  check("...without claiming to be generated", prod(REAL).generated === false);
+
+  // Fail closed. Refusing to boot is loud and cheap; booting forgeable is silent
+  // and total.
+  check("production refuses to start with no secret", prod(undefined).ok === false);
+  check("...and says how to make one", /openssl rand -base64 32/.test(prod(undefined).reason ?? ""));
+  check("...and says what the risk was", /forge/i.test(prod(undefined).reason ?? ""));
+  check("an empty secret is the same as none", prod("").ok === false);
+  check("whitespace is not a secret", prod("   ").ok === false);
+
+  /*
+   * The placeholder case is the likely one: `.env.example` ships a value, and
+   * copying that file without editing it leaves a secret that is "set" and
+   * publicly known.
+   */
+  check("the shipped placeholder is refused", prod("change-me-openssl-rand-base64-32").ok === false);
+  check("the old hardcoded fallback is refused", prod("dev-only-insecure-secret").ok === false);
+  check("...as are the obvious ones", ["changeme", "secret", "please-change-me"].every((p) => prod(p).ok === false));
+  check("the placeholder message names the value", /placeholder/i.test(prod("changeme").reason ?? ""));
+
+  // Short is weak; weak is the link an attacker picks.
+  check("a short secret is refused in production", prod("abc123").ok === false);
+  check(`${MIN_SECRET_LENGTH} characters is the floor`, prod("x".repeat(MIN_SECRET_LENGTH)).ok === true);
+  check("one under it is refused", prod("x".repeat(MIN_SECRET_LENGTH - 1)).ok === false);
+
+  /*
+   * Development must stay frictionless, so a missing secret generates one —
+   * but a *random* one, per process, never a constant that could follow the
+   * code into production.
+   */
+  check("development generates one instead", dev(undefined).ok === true);
+  check("...and says that it did", dev(undefined).generated === true);
+  check("...and it is long enough to be real", (dev(undefined).secret ?? "").length >= MIN_SECRET_LENGTH);
+  check("two boots do not share a generated secret", dev(undefined).secret !== dev(undefined).secret);
+  check("a placeholder in development is replaced, not used", dev("changeme").secret !== "changeme" && dev("changeme").generated === true);
+  check("a real secret in development is respected", dev(REAL).secret === REAL);
+
+  // The wiring: the resolved verdict must actually be what NextAuth signs with.
+  const auth = readFileSync(new URL("../src/auth.ts", import.meta.url), "utf8");
+  check("auth.ts resolves the secret", /resolveAuthSecret\(process\.env\.AUTH_SECRET, isProduction\)/.test(auth));
+  check("a bad verdict stops the process", /if \(!verdict\.ok\) throw new Error/.test(auth));
+  check("the resolved secret is the one used", /secret: verdict\.secret/.test(auth));
+  check("no hardcoded fallback survives", !/AUTH_SECRET \|\|/.test(auth) && !auth.includes("dev-only-insecure-secret"));
+}
+
+section("sessions expire, and stop when they should");
+{
+  const now = 1_700_000_000_000;
+  const hour = 3_600_000;
+  const live = (over = {}) => ({ signedInAt: now - hour, passwordAt: now - 10 * hour, ...over });
+
+  check("a fresh session is valid", checkSession(live(), true, null, now).valid === true);
+
+  /*
+   * Two clocks, because one is not enough. The idle clock is renewed by
+   * activity, so a stolen token that is *used* never expires under it — which
+   * is exactly the token you most want to expire.
+   */
+  check("a session past the absolute limit is over", checkSession({ signedInAt: now - (SESSION.absoluteSeconds + 1) * 1000 }, true, null, now).valid === false);
+  check("...and says why", checkSession({ signedInAt: now - (SESSION.absoluteSeconds + 1) * 1000 }, true, null, now).reason === "expired-absolute");
+  check("one second inside the limit still stands", checkSession({ signedInAt: now - (SESSION.absoluteSeconds - 1) * 1000 }, true, null, now).valid === true);
+  check("the absolute limit is longer than the idle one", SESSION.absoluteSeconds > SESSION.idleSeconds);
+  check("a session refreshes more often than it idles out", SESSION.refreshSeconds < SESSION.idleSeconds);
+
+  /*
+   * Changing a password because it leaked has to end the intruder's session.
+   * A token issued before the change belongs to whoever knew the old password.
+   */
+  const changedAt = new Date(now - 5 * hour).toISOString();
+  check("a token older than the password change is refused", checkSession({ signedInAt: now - 10 * hour, passwordAt: now - 10 * hour }, true, changedAt, now).valid === false);
+  check("...and says why", checkSession({ signedInAt: now - 10 * hour, passwordAt: now - 10 * hour }, true, changedAt, now).reason === "password-changed");
+  check("a token issued after it is fine", checkSession({ signedInAt: now - hour, passwordAt: now - 4 * hour }, true, changedAt, now).valid === true);
+  check("a token with no password stamp is refused when one exists", checkSession({ signedInAt: now - hour }, true, changedAt, now).valid === false);
+  check("no stamp and no change is fine", checkSession({ signedInAt: now - hour }, true, null, now).valid === true);
+
+  // A deleted account keeps no session — 403s everywhere with a signed-in shell
+  // is a confusing way to learn your account is gone.
+  check("a deleted account ends the session", checkSession(live(), false, null, now).valid === false);
+  check("...and says why", checkSession(live(), false, null, now).reason === "no-account");
+
+  // Guards. A malformed token is not a trusted one.
+  check("a token with no sign-in time is refused", checkSession({}, true, null, now).reason === "malformed", checkSession({}, true, null, now).reason);
+  check("a token stamped in the future is refused", checkSession({ signedInAt: now + 10 * hour }, true, null, now).reason === "malformed");
+  check("a small clock skew is tolerated", checkSession({ signedInAt: now + 30_000 }, true, null, now).valid === true);
+  for (const [label, bad] of [["null", null], ["undefined", undefined], ["a string stamp", { signedInAt: "yesterday" }], ["NaN", { signedInAt: NaN }]]) {
+    check(`${label} is refused rather than throwing`, checkSession(bad, true, null, now).reason === "malformed", String(checkSession(bad, true, null, now).reason));
+  }
+  check("an unparseable change date does not lock everybody out", checkSession(live(), true, "not-a-date", now).valid === true);
+
+  check("the countdown never goes negative", secondsRemaining({ signedInAt: now - 99 * SESSION.absoluteSeconds * 1000 }, now) === 0);
+  check("a malformed token has no time left", secondsRemaining(null, now) === 0);
+
+  // The wiring.
+  const auth = readFileSync(new URL("../src/auth.ts", import.meta.url), "utf8");
+  check("the idle window is configured", /maxAge: SESSION\.idleSeconds/.test(auth));
+  check("the refresh cadence is configured", /updateAge: SESSION\.refreshSeconds/.test(auth));
+  check("the policy runs on every refresh", /checkSession\(token as TokenClaims/.test(auth));
+  check("a failed check ends the session", /if \(!verdict\.valid\) return null;/.test(auth));
+  check("the sign-in time is stamped once, at sign-in", /trigger === "signIn"[\s\S]{0,120}signedInAt = Date\.now\(\)/.test(auth));
+}
+
+section("the session cookie keeps the token away from JavaScript");
+{
+  const dev = authCookies(false);
+  const prod = authCookies(true);
+
+  /*
+   * These flags are the difference between "an XSS bug is a bug" and "an XSS
+   * bug is every account". NextAuth's defaults are already these values; they
+   * are stated explicitly so they can be checked rather than inherited.
+   */
+  check("the token is httpOnly", prod.sessionToken.options.httpOnly === true);
+  check("...in development too", dev.sessionToken.options.httpOnly === true);
+  check("it is SameSite=Lax, which blocks cross-site POSTs", prod.sessionToken.options.sameSite === "lax");
+  check("it is secure in production", prod.sessionToken.options.secure === true);
+  check("...and not in development, where there is no https", dev.sessionToken.options.secure === false);
+  check("it is scoped to the whole app", prod.sessionToken.options.path === "/");
+  check("its lifetime matches the idle window", prod.sessionToken.options.maxAge === SESSION.idleSeconds);
+
+  /*
+   * `__Secure-` makes the browser refuse the cookie unless it is set over
+   * https, so a plain-http origin cannot overwrite the session. `__Host-` is
+   * stricter still — same origin, no domain — and is right for the CSRF token.
+   */
+  check("production prefixes the session cookie", prod.sessionToken.name.startsWith("__Secure-"));
+  check("...and the CSRF cookie more strictly", prod.csrfToken.name.startsWith("__Host-"));
+  check("development uses no prefix, since there is no https", !dev.sessionToken.name.startsWith("__"));
+
+  // Every cookie, not just the session one.
+  for (const [name, cookie] of Object.entries(prod)) {
+    check(`${name} is httpOnly`, cookie.options.httpOnly === true);
+    check(`${name} is secure in production`, cookie.options.secure === true);
+    check(`${name} is SameSite=Lax at least`, cookie.options.sameSite === "lax");
+  }
+
+  // Strict would break the redirect back from Entra, landing SSO in a loop.
+  check("SameSite is lax, not strict, so SSO can return", prod.sessionToken.options.sameSite !== "strict");
+
+  const auth = readFileSync(new URL("../src/auth.ts", import.meta.url), "utf8");
+  check("auth.ts applies them", /cookies: authCookies\(isProduction\)/.test(auth));
+}
+
+section("password guessing is slowed down");
+{
+  resetThrottle();
+  const who = "target@example.com";
+
+  check("a fresh account is not locked", lockedFor(who) === 0);
+
+  // bcrypt already costs ~100ms a guess. That is a bad rate, not no rate.
+  let locked = 0;
+  for (let i = 0; i < LOGIN.maxAttempts; i++) locked = recordFailure(who);
+  check("it locks at the configured attempt", locked === LOGIN.lockoutSeconds, `${locked}s`);
+  check("...and reports the time left", lockedFor(who) > 0);
+  check("...which is at most the lockout", lockedFor(who) <= LOGIN.lockoutSeconds);
+
+  // The lock is per account: one attacker must not lock out the whole company.
+  check("another account is unaffected", lockedFor("someone-else@example.com") === 0);
+
+  resetThrottle();
+  // One short of the limit is not a lockout — a few typos must not lock a real
+  // person out of their own dashboard.
+  for (let i = 0; i < LOGIN.maxAttempts - 1; i++) recordFailure(who);
+  check("one attempt short does not lock", lockedFor(who) === 0);
+  check("a correct password clears the count", (recordSuccess(who), lockedFor(who) === 0));
+  recordFailure(who);
+  check("...and the next failure starts over", lockedFor(who) === 0);
+
+  resetThrottle();
+  // A quiet spell forgets, so this morning's typo does not combine with this
+  // afternoon's into a lockout.
+  const start = Date.now();
+  for (let i = 0; i < LOGIN.maxAttempts - 1; i++) recordFailure(who, start);
+  check("a stale count is forgotten", recordFailure(who, start + (LOGIN.windowSeconds + 1) * 1000) === 0);
+
+  resetThrottle();
+  check("a lockout expires on its own", lockedFor(who, Date.now() + (LOGIN.lockoutSeconds + 1) * 1000) === 0);
+  check("a blank email is not tracked", recordFailure("") === 0 && lockedFor("") === 0);
+  check("the email is matched case-insensitively", (resetThrottle(), Array.from({ length: LOGIN.maxAttempts }).forEach(() => recordFailure("Mixed@Case.com")), lockedFor("mixed@case.com") > 0));
+  resetThrottle();
+
+  // The settings have to be usable, not just present.
+  check("the attempt limit leaves room for typos", LOGIN.maxAttempts >= 5 && LOGIN.maxAttempts <= 12, `${LOGIN.maxAttempts}`);
+  check("the lockout is long enough to matter", LOGIN.lockoutSeconds >= 5 * 60, `${LOGIN.lockoutSeconds}s`);
+
+  const auth = readFileSync(new URL("../src/auth.ts", import.meta.url), "utf8");
+  {
+    const lock = auth.indexOf("lockedFor(email)");
+    const hash = auth.indexOf("verifyPassword(email, password)");
+    check("the lock is checked at all", lock !== -1);
+    check("...and before the hash, so a locked account costs nothing", lock !== -1 && hash !== -1 && lock < hash, `${lock} vs ${hash}`);
+  }
+  check("a failure is recorded", /recordFailure\(email\)/.test(auth));
+  check("a success clears the count", /recordSuccess\(email\)/.test(auth));
+}
+
+section("it is deployable with nothing but environment variables");
+{
+  const config = readFileSync(new URL("../next.config.ts", import.meta.url), "utf8");
+  const health = readFileSync(new URL("../src/app/api/health/route.ts", import.meta.url), "utf8");
+  const users = readFileSync(new URL("../src/lib/users.ts", import.meta.url), "utf8");
+  const auth = readFileSync(new URL("../src/auth.ts", import.meta.url), "utf8");
+  const env = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+
+  /*
+   * A dashboard behind a login is exactly the sort of thing worth framing on
+   * somebody else's page. Each of these closes a specific hole, and none is
+   * decoration.
+   */
+  check("framing is denied", /X-Frame-Options[\s\S]{0,60}DENY/.test(config));
+  check("MIME sniffing is off", /X-Content-Type-Options[\s\S]{0,60}nosniff/.test(config));
+  check("referrers do not leak filters cross-origin", /Referrer-Policy[\s\S]{0,80}strict-origin/.test(config));
+  check("HSTS is sent", /Strict-Transport-Security[\s\S]{0,80}max-age=\d/.test(config));
+  // Preloading a host is close to irreversible, and is the operator's call.
+  // Anchored to the header value, not the file: the comment above it explains
+  // why preloading is the operator's call, and says the word.
+  check("HSTS does not preload on the operator's behalf", !/max-age=[^"]*preload/.test(config));
+  check("a CSP is set", /Content-Security-Policy/.test(config));
+  check("...and it blocks framing too", /^\s+"frame-ancestors .none.",$/m.test(config));
+  check("...and plugins", /^\s+"object-src .none.",$/m.test(config));
+  check("...and only reaches the weather provider", /connect-src 'self' https:\/\/api\.open-meteo\.com/.test(config));
+  check("the camera and microphone are refused", /camera=\(\)/.test(config));
+  check("every route carries them", /source: "\/:path\*"/.test(config));
+
+  /*
+   * A container image that has to `pnpm install` at start is an image that can
+   * fail at start. `standalone` bundles the server it needs.
+   */
+  check("the build is standalone, for a small image", /output: "standalone"/.test(config));
+
+  /* ------------------------------------------------------- first run -- */
+
+  /*
+   * The whole claim being tested: add env vars, deploy, sign in. Without this
+   * a fresh password-mode deployment has zero users and **nobody can sign in**,
+   * because the seeder is a local convenience rather than something you run at
+   * a production database.
+   */
+  check("the first admin comes from the environment", /export async function ensureFirstAdmin/.test(users));
+  check("...only when nobody exists at all", /if \(\(await countUsers\(\)\) > 0\) return;/.test(users));
+  check("...and only with both variables set", /if \(!email \|\| !password\) return;/.test(users));
+  check("sign-in triggers it", /await ensureFirstAdmin\(\);/.test(auth));
+  check("...before the password is checked", auth.indexOf("ensureFirstAdmin()") < auth.indexOf("verifyPassword(email, password)"));
+
+  /* ---------------------------------------------------------- health -- */
+
+  check("there is a health endpoint", /export async function GET/.test(health));
+  check("liveness does no I/O", /if \(!new URL\(req\.url\)\.searchParams\.has\("ready"\)\)/.test(health));
+  check("readiness pings the store", /os\(\)\.ping\(\)/.test(health));
+  check("an unreachable store is 503, not 500", /status: "unavailable"[\s\S]{0,80}status: 503/.test(health));
+
+  /*
+   * The bug this was written for: a misconfigured AUTH_SECRET makes every real
+   * page 500, but the health route did not import auth — so it answered 200 and
+   * the orchestrator sent live traffic to an instance that could not serve a
+   * single page. A health check that only proves *itself* healthy turns an
+   * obvious outage into a silent one.
+   */
+  check("health fails when the app cannot serve", /resolveAuthSecret\(process\.env\.AUTH_SECRET/.test(health));
+  check("...as a 503", /status: "misconfigured"[\s\S]{0,60}status: 503/.test(health));
+  check("...without naming the variable to a stranger", /console\.error\(`\[health\] not serving/.test(health));
+  check("health is never cached", (health.match(/no-store/g) ?? []).length >= 1);
+
+  /* ------------------------------------------------------- the image -- */
+
+  const docker = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
+  check("there is a Dockerfile", docker.length > 0);
+  check("it builds in stages, so no compiler ships", (docker.match(/^FROM /gm) ?? []).length >= 3);
+  check("it runs as a non-root user", /USER nextjs/.test(docker));
+  check("it uses the standalone output", /\.next\/standalone/.test(docker));
+  check("it has a healthcheck", /^HEALTHCHECK /m.test(docker));
+  check("...pointed at readiness, not liveness", /health\?ready=1/.test(docker));
+  check("the build-time secret is marked as unused at runtime", /not-used-at-runtime/.test(docker));
+
+  const ignored = readFileSync(new URL("../.dockerignore", import.meta.url), "utf8");
+  check("secrets are not copied into the image", /^\.env\*/m.test(ignored));
+  check("...but the template is", /^!\.env\.example/m.test(ignored));
+
+  /* ----------------------------------------------------- what to set -- */
+
+  for (const key of [
+    "OPENSEARCH_URL",
+    "AUTH_MODE",
+    "AUTH_SECRET",
+    "AUTH_TRUST_HOST",
+    "ADMIN_EMAIL",
+    "ADMIN_PASSWORD",
+    "AZDO_ORG_URL",
+    "AZDO_PROJECT",
+    "AZDO_PAT",
+    "SYNC_POLL_SECONDS",
+    "AZDO_WEBHOOK_TOKEN",
+    "WEATHER_LAT",
+  ]) {
+    check(`${key} is in the template`, new RegExp(`^${key}=`, "m").test(env));
+  }
+  check("the template says which are required", /REQUIRED/.test(env));
+  check("it says the app refuses to start without a secret", /REFUSES TO START/.test(env));
+  check("it no longer claims the admin needs a seed run", !/run seed/.test(env));
+  check("it does not tell anyone to use the other package manager", !/\bnpm run\b/.test(env));
+
+  /*
+   * An unset webhook token rejecting everything is the safe default, and the
+   * template must not ship a value that looks set but is public.
+   */
+  check("the webhook token ships empty rather than shared", /^AZDO_WEBHOOK_TOKEN=$/m.test(env));
+
+  /* --------------------------------------------------- error surfaces -- */
+
+  const errorPage = readFileSync(new URL("../src/app/error.tsx", import.meta.url), "utf8");
+  check("a render failure has a page", /export default function Error/.test(errorPage));
+  // A thrown OpenSearch error carries the cluster URL and sometimes the query.
+  check("it does not print the error to the reader", !/\{error\.message\}/.test(errorPage));
+  check("...but does log it", /console\.error/.test(errorPage));
+  check("it offers a way out", /onClick=\{reset\}/.test(errorPage));
+  check("a missing page has one too", readFileSync(new URL("../src/app/not-found.tsx", import.meta.url), "utf8").includes("Nothing here"));
+}
+
+
+section("a board's own words resolve, without false positives");
+{
+  const team = {
+    id: "t", name: "T",
+    azure: { orgUrl: "", project: "", pat: "", areaPath: "", workItemTypes: [] },
+    fieldMap: { severity: "S", environment: "E", status: "System.State" },
+    valueMap: { severity: {}, environment: {}, status: {} },
+    ageingThresholdDays: 7,
+  };
+  const item = (fields) =>
+    fromAzure(
+      { id: 1, fields: { "System.WorkItemType": "Bug", "System.Title": "t", "System.State": "New", "System.CreatedDate": "2026-01-01T00:00:00Z", ...fields } },
+      team,
+    );
+
+  /*
+   * The bug a real board found. `it` -> IT-UAT matched **inside** ordinary
+   * words, so every item under an area path named
+   * "…Investment Mall and microsites" was labelled IT-UAT. The substring pass
+   * is word-bounded now.
+   */
+  const REAL_AREA = "3in1_Agile_Projects\\365_Bajaj AMC Learning center Investment Mall and microsites";
+  check("a real area path guesses no environment", item({ "System.AreaPath": REAL_AREA }).environment === "Unknown", item({ "System.AreaPath": REAL_AREA }).environment);
+  for (const word of ["microsites", "monitoring", "credit", "editor", "digital", "suite", "audit"]) {
+    check(`"${word}" is not read as an environment`, item({ "System.AreaPath": word }).environment === "Unknown", item({ "System.AreaPath": word }).environment);
+  }
+
+  // ...while everything the pass exists for still resolves.
+  for (const [value, want] of [
+    ["Production", "Production"], ["Deployed to Prod", "Production"], ["live", "Production"],
+    ["IT-UAT", "IT-UAT"], ["ituat", "IT-UAT"], ["BIZ-UAT", "BIZ-UAT"], ["UAT", "BIZ-UAT"],
+    ["CUG(Stage)", "CUG"], ["Staging", "CUG"],
+  ]) {
+    check(`environment "${value}" -> ${want}`, item({ E: value }).environment === want, item({ E: value }).environment);
+  }
+  for (const [value, want] of [
+    ["2 - Major", "Major"], ["1 - Critical", "Critical"], ["3 - Medium (UI)", "Minor"],
+    ["4 - Low", "Minor"], ["Blocker", "Critical"], ["High", "Major"],
+  ]) {
+    check(`severity "${value}" -> ${want}`, item({ S: value }).severity === want, item({ S: value }).severity);
+  }
+
+  /*
+   * Boards name whoever signs off differently. All of these mean the same thing
+   * to this dashboard: fixed, waiting on somebody.
+   */
+  for (const [value, want] of [
+    ["Active", "Open"], ["New", "Open"], ["Approved", "Open"], ["In Progress", "Open"],
+    ["For PO Validation", "For QA Validation"], ["For QA Validation", "For QA Validation"],
+    ["Fixed", "For QA Validation"], ["Resolved", "For QA Validation"],
+    ["Closed", "Closed"], ["Done", "Closed"],
+    ["Not a Bug", "Not a Bug"], ["Duplicate", "Not a Bug"], ["Cannot Reproduce", "Not a Bug"],
+  ]) {
+    check(`status "${value}" -> ${want}`, item({ "System.State": value }).status === want, item({ "System.State": value }).status);
+  }
+
+  /*
+   * The same two-letter accident in the kind rule: `includes("cr")` made a task
+   * tagged "critical" a change request.
+   */
+  const kindOfTagged = (type, tags) =>
+    fromAzure({ id: 1, fields: { "System.WorkItemType": type, "System.Title": "t", "System.State": "New", "System.Tags": tags, "System.CreatedDate": "2026-01-01T00:00:00Z" } }, team).kind;
+  check("a task tagged critical is not a change request", kindOfTagged("Task", "critical") === "ticket", kindOfTagged("Task", "critical"));
+  check("...nor one tagged 'increment'", kindOfTagged("Task", "increment") === "ticket");
+  check("...nor one tagged 'scrum'", kindOfTagged("Task", "scrum") === "ticket");
+  // But a real CR tag still is one.
+  check("a task tagged CR is a change request", kindOfTagged("Task", "CR") === "cr");
+  check("...lower case too", kindOfTagged("Task", "cr") === "cr");
+  check("...and 'Change Request'", kindOfTagged("Task", "Change Request") === "cr");
+  check("a bug stays a bug whatever its tags", kindOfTagged("Bug", "CR; critical") === "bug");
+
+  /*
+   * A board with its own type names. The query matches them exactly, so these
+   * only arrive if the POD lists them — but once here they must classify.
+   */
+  check("a custom task type is a ticket", kindOfTagged("3IN1 TASK", "AMC_POD") === "ticket");
+  check("a custom story type is a ticket", kindOfTagged("3IN1 AGILE USER STORY", "") === "ticket");
+  check("a custom bug type is still a bug", kindOfTagged("3IN1 BUG", "") === "bug");
+
+  // Unassigned work is real work, not missing work.
+  check("nobody assigned reads as Unassigned", item({}).assignee === "Unassigned");
+
+  /* ------------------------------------------------- what Test reports -- */
+
+  const azure = readFileSync(new URL("../src/lib/azure.ts", import.meta.url), "utf8");
+  /*
+   * The query matches type names exactly, so a board using "3IN1 TASK" matches
+   * none of the shipped defaults, syncs only its bugs, and says nothing. Test
+   * asks the project what it actually has.
+   */
+  check("Test asks for the project's work item types", /_apis\/wit\/workitemtypes/.test(azure));
+  check("...ignores disabled ones", /!t\.isDisabled/.test(azure));
+  check("...and failing to list them does not fail the test", /catch \{[\s\S]{0,200}connection is\s*\n?\s*\/\/ still good/.test(azure) || /types: string\[\] = \[\];/.test(azure));
+  check(
+    "Test reports types the project does not have",
+    /const unmatched = types\.length\s*\n\s*\? configured\.filter\(\(t\) => !types\.some\(/.test(azure),
+  );
+
+  const adminSrc = adminSource();
+  check("a missing type is called out loudly", /will not sync/.test(adminSrc));
+  check("the real types stay on screen to copy from", /projectTypes/.test(adminSrc));
+  check("...and are clickable", /workItemTypes: on/.test(adminSrc));
+}
+
+
+section("the change recipes still describe the code");
+{
+  const recipes = readFileSync(new URL("../docs/changing-the-data.md", import.meta.url), "utf8");
+
+  /*
+   * A recipe that names a function which has moved is worse than no recipe:
+   * somebody follows it, cannot find the thing, and stops trusting the docs.
+   * Every symbol the guide tells you to edit is checked to still exist.
+   */
+  const namedIn = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+
+  for (const [symbol, file] of [
+    ["queryChangedIds", "lib/azure.ts"],
+    ["fromAzure", "lib/normalize.ts"],
+    ["fromRow", "lib/normalize.ts"],
+    ["COLUMN_ALIASES", "lib/normalize/columns.ts"],
+    ["EXPORT_COLUMNS", "lib/normalize/columns.ts"],
+    ["DEFAULT_VALUE_MAP", "lib/value-map.ts"],
+    ["TERMINAL_STATUSES", "lib/types.ts"],
+    ["SEVERITIES", "lib/types.ts"],
+    ["ENVIRONMENTS", "lib/types.ts"],
+    ["STATUSES", "lib/types.ts"],
+    ["filtersFromRequest", "lib/api.ts"],
+    ["FIRST_RUN_DAYS", "lib/sync.ts"],
+    ["SEVERITY_COLOR", "lib/palette.ts"],
+    ["ENV_COLOR", "lib/palette.ts"],
+    ["STATUS_COLOR", "lib/palette.ts"],
+    ["AGEING_COLOR", "lib/palette.ts"],
+  ]) {
+    // The **declaration**, not any mention of the name: renaming a `const`
+    // leaves its other references behind, and a plain `includes` finds those.
+    const declares = new RegExp(`(const|function|type|interface|let)\\s+${symbol}\\b`);
+    check(`the guide's ${symbol} is still declared in ${file}`, declares.test(namedIn(file)));
+  }
+
+  // Recipe 3 walks the Item type. If a field is added without the guide being
+  // read, that is fine — but the fields it names must exist.
+  const types = namedIn("lib/types.ts");
+  for (const field of ["severity", "environment", "status", "isActive", "closedDate"]) {
+    check(`Item still has ${field}`, new RegExp(`\\n  ${field}[?]?:`).test(types));
+  }
+
+  /*
+   * Every field on `Item` needs an index mapping, or it stores fine and
+   * silently aggregates to nothing — which is Recipe 3's step 2, the one people
+   * skip.
+   */
+  {
+    const mappings = JSON.parse(readFileSync(new URL("../src/lib/mappings.json", import.meta.url), "utf8"));
+    const mapped = Object.keys(mappings.items?.properties ?? mappings.items?.mappings?.properties ?? {});
+    const itemBlock = types.slice(types.indexOf("export type Item"));
+    const declared = [...itemBlock.slice(0, itemBlock.indexOf("\n};")).matchAll(/^  (\w+)[?]?:/gm)].map((m) => m[1]);
+    check("the Item block was found", declared.length >= 15, `${declared.length} fields`);
+    const missing = declared.filter((f) => !mapped.includes(f));
+    check("every Item field has an index mapping", missing.length === 0, missing.join(", "));
+  }
+
+  // The rule the guide leads with, and the reason the suites exist.
+  check("the guide insists on running the suites", /pnpm test/.test(recipes));
+  check("...and on breaking the code to prove a check bites", /break the code on purpose/i.test(recipes));
+  check("it names the security boundary", /filtersFromRequest.*security boundary/s.test(recipes));
+  check("it warns that mappings are immutable", /immutable once written/i.test(recipes));
+  check("it warns about short mapping keys", /shorter than three characters/i.test(recipes));
+  check("it points at the one-query rule", /Do not add a second query/i.test(recipes));
+
+  // The commands it tells you to run must be real.
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  for (const cmd of [...recipes.matchAll(/^pnpm (check:\w+|test|seed|check)\b/gm)].map((m) => m[1])) {
+    check(`\`pnpm ${cmd}\` is a real script`, cmd === "seed" || cmd in pkg.scripts, cmd);
+  }
+}
+
+
+section("the trend chart's end labels stay apart and in frame");
+{
+  const y = (v) => 200 - v * 10;          // a plain scale, so the maths is legible
+  const place = (raised, closed) =>
+    endLabelPositions({ points: [{ date: "2026-08-01", raised, closed }], y, top: 20, bottom: 200 });
+
+  /*
+   * A quiet week ends both series at zero, which put both names at the same y
+   * and printed them on top of each other. Common enough that it was on screen.
+   */
+  const same = place(0, 0);
+  check("both labels are placed", same.length === 2);
+  check("labels at the same value do not collide", Math.abs(same[0].y - same[1].y) >= 12, `${Math.abs(same[0].y - same[1].y).toFixed(1)}px apart`);
+  check("...and stay inside the plot", same.every((r) => r.y >= 20 && r.y <= 200), same.map((r) => r.y.toFixed(0)).join(", "));
+
+  // Well separated values are left where they belong.
+  const apart = place(10, 2);
+  check("labels far apart are not nudged", Math.abs(apart.find((r) => r.key === "raised").y - (y(10) + 3.5)) < 0.01);
+
+  // The nudge is symmetric, so neither series is favoured.
+  const near = place(5, 5.4);
+  const middle = (y(5) + y(5.4)) / 2 + 3.5;
+  check("the nudge splits the difference", Math.abs((near[0].y + near[1].y) / 2 - middle) < 0.01);
+
+  // Ordering is preserved: the higher value keeps the higher label.
+  const ordered = place(9, 1);
+  check("the higher series keeps the higher label", ordered.find((r) => r.key === "raised").y < ordered.find((r) => r.key === "closed").y);
+
+  // Guards.
+  check("no points means no labels", endLabelPositions({ points: [], y, top: 20, bottom: 200 }).length === 0);
+  check("a label never goes above the plot", place(999, 999).every((r) => r.y >= 20));
+  check("...nor below it", place(-999, -999).every((r) => r.y <= 200));
+
+  /*
+   * A plot shorter than the gap between two labels. The shift cannot help —
+   * there is no arrangement that fits — so the last-resort clamp is what keeps
+   * both inside the frame. Real on a short phone viewport.
+   */
+  {
+    const squashed = endLabelPositions({ points: [{ date: "2026-08-01", raised: 0, closed: 0 }], y, top: 100, bottom: 105 });
+    check("a plot too short for both still frames them", squashed.every((r) => r.y >= 100 && r.y <= 105), squashed.map((r) => r.y.toFixed(0)).join(", "));
+  }
+}
+
+section("nothing is wider than the screen it is on");
+{
+  /*
+   * A phone that scrolls sideways is the most obviously broken a responsive
+   * layout gets, and the cause is always the same shape: one element wider than
+   * the viewport, plus a clip somebody assumed would hold.
+   *
+   * The clip is the second line of defence, not the first — `overflow-x: clip`
+   * is set on the root and the body, but a layout that needs it is one browser
+   * quirk away from the bug this section was written for.
+   */
+  const componentFiles = readdirSync(new URL("../src/components/", import.meta.url))
+    .filter((f) => /\.tsx$/.test(f))
+    .map((f) => [f, readFileSync(new URL(`../src/components/${f}`, import.meta.url), "utf8")]);
+  const adminFiles = readdirSync(new URL("../src/app/admin/panels/", import.meta.url))
+    .filter((f) => /\.tsx$/.test(f))
+    .map((f) => [f, readFileSync(new URL(`../src/app/admin/panels/${f}`, import.meta.url), "utf8")]);
+  const all = [...componentFiles, ...adminFiles];
+
+  /*
+   * `-left-[50vw]` and friends make an element 200vw wide. The topbar backdrop
+   * did exactly that, and on a phone the page scrolled sideways behind a bar
+   * that was supposed to be clipped.
+   */
+  for (const [file, src] of all) {
+    const offenders = src.match(/-(?:left|right|inset-x)-\[\d+(?:\.\d+)?vw\]/g) ?? [];
+    check(`${file} has no viewport-wide negative inset`, offenders.length === 0, offenders.join(" "));
+  }
+
+  /*
+   * A fixed `min-w` narrower than a phone is fine; wider than one must sit
+   * inside a scroller, or it pushes the whole page.
+   */
+  const PHONE = 320;
+  for (const [file, src] of all) {
+    for (const m of src.matchAll(/min-w-\[(\d+)(px|rem)\]/g)) {
+      const px = m[2] === "rem" ? Number(m[1]) * 16 : Number(m[1]);
+      if (px <= PHONE) continue;
+      // The scroller may be on the element itself or on the line before it.
+      const at = m.index ?? 0;
+      const around = src.slice(Math.max(0, at - 400), at + 200);
+      check(
+        `${file}: min-w-[${m[1]}${m[2]}] sits inside a horizontal scroller`,
+        /overflow-x-auto|overflow-x-scroll/.test(around),
+        `${px}px`,
+      );
+    }
+  }
+
+  // `w-screen` is 100vw, which on desktop includes the scrollbar and overflows
+  // by its width. Almost never what anybody means.
+  for (const [file, src] of all) {
+    check(`${file} does not use w-screen`, !/\bw-screen\b/.test(src));
+  }
+
+  /*
+   * The page's own clip, which every full-bleed decoration leans on. `clip`
+   * rather than `hidden`: `hidden` forces the computed `overflow-y` to `auto`,
+   * which makes the element a scroll container and undermines the sticky bar.
+   */
+  const globals = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  check("the page clips sideways overflow", (globals.match(/overflow-x:\s*clip/g) ?? []).length >= 2);
+  check("...and never with hidden, which breaks sticky", !/overflow-x:\s*hidden/.test(globals));
+}
 console.log("\n" + "─".repeat(60));
 console.log(failures === 0 ? `All ${checks} ui checks passed.` : `${failures} of ${checks} ui checks FAILED.`);
 process.exit(failures ? 1 : 0);

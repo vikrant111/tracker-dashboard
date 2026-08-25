@@ -2,30 +2,20 @@
 
 import { motion } from "framer-motion";
 import { TrendingUp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { TrendReadout } from "./trend-readout";
+import { endLabelPositions } from "./trend-end-labels";
+import { TrendAxis } from "./trend-axis";
+import { useWidth } from "./use-width";
 import type { TrendPoint } from "@/lib/metrics";
 import { STATUS, TREND_COLOR } from "@/lib/palette";
 import { useDrill } from "./drill-drawer";
 import { Empty, Panel, PanelHeader, SegmentedControl } from "./ui";
+const fmtDay = (iso: string) =>
+  new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 const PAD = { top: 18, right: 56, bottom: 26, left: 34 };
 const HEIGHT = 250;
-
-function useWidth<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  const [width, setWidth] = useState(720);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, width] as const;
-}
-
-const fmtDay = (iso: string) =>
-  new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
 /**
  * Raised vs closed over time. One y-axis — never two — so the two counts stay
@@ -49,6 +39,8 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
   const y = (v: number) => PAD.top + innerH - (v / niceMax) * innerH;
   const path = (key: "raised" | "closed") =>
     points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
+
+  const endLabels = endLabelPositions({ points, y, top: PAD.top + 4, bottom: PAD.top + innerH });
 
   const ticks = [0, niceMax / 4, niceMax / 2, (niceMax * 3) / 4, niceMax];
   const totalRaised = points.reduce((n, p) => n + p.raised, 0);
@@ -94,29 +86,14 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
       ) : (
         <div ref={ref} className="relative">
           {hover != null && points[hover] && (
-            <div
-              role="tooltip"
-              aria-live="polite"
-              className="pointer-events-none absolute z-20 -translate-y-1/2 rounded-lg border border-[var(--hairline)] bg-[var(--panel)] px-2.5 py-1.5 text-xs shadow-lg"
-              style={{
-                // Flip to the left of the crosshair once the right half of the
-                // chart would push the card off its own edge.
-                left: hover > points.length / 2 ? undefined : x(hover) + 12,
-                right: hover > points.length / 2 ? Math.max(0, width - x(hover) + 12) : undefined,
-                top: PAD.top + innerH / 2,
-              }}
-            >
-              <p className="font-semibold text-[var(--ink)]">{fmtDay(points[hover].date)}</p>
-              <p className="mt-0.5 flex items-center gap-1.5 text-[var(--ink-2)]">
-                <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: TREND_COLOR.raised }} />
-                <span className="tnum font-medium">{points[hover].raised}</span> raised
-              </p>
-              <p className="flex items-center gap-1.5 text-[var(--ink-2)]">
-                <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: TREND_COLOR.closed }} />
-                <span className="tnum font-medium">{points[hover].closed}</span> closed
-              </p>
-              <p className="mt-1 text-[10px] text-[var(--ink-muted)]">Click to list what was raised</p>
-            </div>
+            <TrendReadout
+              point={points[hover]}
+              x={x(hover)}
+              flip={hover > points.length / 2}
+              width={width}
+              top={PAD.top + innerH / 2}
+              fmtDay={fmtDay}
+            />
           )}
           <svg
             width="100%"
@@ -126,28 +103,7 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
             role="img"
             aria-label={`Raised versus closed, ${grain}. ${totalRaised} raised and ${totalClosed} closed in the window.`}
           >
-            {ticks.map((t) => (
-              <g key={t}>
-                <line
-                  x1={PAD.left}
-                  x2={PAD.left + innerW}
-                  y1={y(t)}
-                  y2={y(t)}
-                  stroke="var(--grid)"
-                  strokeWidth={1}
-                />
-                <text
-                  x={PAD.left - 8}
-                  y={y(t) + 3.5}
-                  textAnchor="end"
-                  className="font-[family-name:var(--font-mono)] tnum"
-                  fontSize={10}
-                  fill="var(--ink-muted)"
-                >
-                  {t}
-                </text>
-              </g>
-            ))}
+            <TrendAxis ticks={ticks} y={y} padLeft={PAD.left} innerW={innerW} />
 
             <defs>
               {(["raised", "closed"] as const).map((key) => (
@@ -185,14 +141,19 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
               />
             ))}
 
-            {/* Direct end-labels: identity without reading the legend. */}
-            {(["raised", "closed"] as const).map((key) => {
-              const last = points[points.length - 1];
+            {/*
+              * Direct end-labels: identity without reading the legend.
+              *
+              * Nudged apart when the two series finish at the same value —
+              * which is common, because a quiet week ends both at zero. Left
+              * alone they printed on top of each other and neither was legible.
+              */}
+            {endLabels.map(({ key, y: labelY }) => {
               return (
                 <text
                   key={key}
                   x={x(points.length - 1) + 8}
-                  y={y(last[key]) + 3.5}
+                  y={labelY}
                   fontSize={11}
                   fill={TREND_COLOR[key]}
                   className="font-medium"

@@ -1,15 +1,45 @@
 # POD Tracker — working instructions
 
 Ageing bugs, tickets and CRs across multiple PODs (teams). Data comes from Azure
-DevOps Boards or an Excel/CSV upload, lands in OpenSearch, and is read back
+DevOps Boards or a spreadsheet upload, lands in OpenSearch, and is read back
 through aggregations.
 
 **Stack:** Next.js 15 App Router (frontend *and* backend) · React 19 · TypeScript
 strict · Tailwind v4 · OpenSearch 3.x · NextAuth v5 · framer-motion · exceljs.
-No chart library — charts are hand-written SVG.
+No chart library — charts are hand-written SVG. **pnpm, never npm.**
 
 Detailed reference lives in [`docs/`](../docs/README.md). Read the page that
-matches your task before making non-trivial changes.
+matches the task before making non-trivial changes. For changing what the
+dashboard fetches, maps or shows, [`docs/changing-the-data.md`](../docs/changing-the-data.md)
+is a recipe book: which files, in what order, and what breaks if you skip one.
+
+---
+
+## The one habit that matters here
+
+**Every non-trivial change leaves a runnable check, and you break the code on
+purpose to prove the check fails.**
+
+This is not ceremony. The suites in `scripts/` exist because each rule in them
+was broken once, and most were broken *while a check was passing*. Three
+knowingly-broken builds shipped past a suite that was testing its own copy of
+the logic rather than importing the real module.
+
+Two traps that have caught people repeatedly:
+
+- **A check that reimplements what it checks** tests only its copy. Import the
+  real module; the suites run under Node's type stripping, which is why relative
+  imports inside those modules carry an explicit `.ts`.
+- **A comment quoting the string its own rule forbids** will trip that rule.
+  Anchor source rules to code, not prose.
+- **`indexOf(a) < indexOf(b)`** is true when `a` is missing, because `indexOf`
+  returns `-1`. Check both are present first.
+
+```bash
+pnpm exec tsc --noEmit    # fastest way to find what a change missed
+pnpm test                 # every suite; manages the dev server itself
+pnpm check invariants     # after touching anything that reads or writes items
+```
 
 ---
 
@@ -17,138 +47,135 @@ matches your task before making non-trivial changes.
 
 1. **Never widen a query's team scope.** Everything user-facing goes through
    `filtersFromRequest()` in `src/lib/api.ts`, which rejects a POD the caller
-   cannot see. A member with no PODs gets a 403, never an unscoped query.
+   cannot see. A member with no PODs gets a 403, never an unscoped query. **This
+   is the security boundary** — a route that builds its own filters has bypassed
+   tenancy.
 2. **Never store a computed age.** Item age is derived at query time from
    `createdDate`. Storing it makes it wrong the next day.
 3. **Never reorder `SERIES` in `src/lib/palette.ts`.** Slot order is the
-   colourblind-safety mechanism, validated against the chart surface. Reordering
-   silently invalidates it. Palette exports resolve to CSS variables — never
-   hardcode a colour in a component, and never write `white/10` or `black/50`,
-   which are dark-mode assumptions.
+   colourblind-safety mechanism, validated against the chart surface. Palette
+   exports resolve to CSS variables — never hardcode a colour in a component,
+   and never write `white/10` or `black/50`, which are dark-mode assumptions.
 4. **Never add a second y-axis to a chart.** Two measures of different scale get
    two charts, not two scales.
-5. **Aggregation fields must be `keyword`.** Adding a field you will group or
-   filter on means adding it to `src/lib/mappings.json` first — dynamic mapping
-   makes it `text` and every terms agg on it fails.
-6. **PATs never reach the browser.** `/api/teams` redacts them; a masked value
-   coming back means "leave unchanged".
-7. **The webhook never returns 5xx.** Azure disables a subscription after
+5. **Aggregation fields must be `keyword`.** A field you will group or filter on
+   goes into `src/lib/mappings.json` first — dynamic mapping makes it `text` and
+   every terms agg on it fails, silently.
+6. **One query fills the dashboard.** `dashboard()` issues a single `size: 0`
+   search carrying every aggregation. Separate queries drift apart between
+   moments, and then two tiles disagree on screen about the same number.
+7. **PATs and password hashes never reach the browser.** `/api/teams` redacts
+   PATs; a masked value coming back means "leave unchanged". `/api/users` sends
+   `hasPassword: boolean` and never the hash.
+8. **The webhook never returns 5xx.** Azure disables a subscription after
    repeated failures, so errors return 200 with `ok: false`.
+9. **Never invent data.** No weather provider configured means no weather drawn.
+   An unrecognised severity becomes `Unknown`, never a guess at which real one
+   was meant.
+10. **Nothing is wider than the viewport.** No `w-screen`, no negative inset in
+    `vw`, and any `min-w` past 320px lives inside `overflow-x-auto`.
+
+---
 
 ## Repo shape
 
 ```
-src/lib/       data + domain layer, no React
-src/app/api/   route handlers (Node runtime — never Edge, OpenSearch needs node:https)
-src/app/       pages: / (dashboard), /admin, /login
-src/components/ client components; dashboard-client.tsx is the orchestrator
-scripts/seed.mjs  bootstraps indices, admin user, demo data
+src/lib/            data + domain, no React
+  api.ts            request → scoped Filters   ← the security boundary
+  opensearch.ts     client, index bootstrap, bulk upsert
+  mappings.json     index mappings, shared with scripts/seed.mjs
+  metrics.ts        one aggregation; metrics/ holds query, dates, list-items
+  health.ts         the board score: closed ÷ total
+  normalize.ts      Azure item / spreadsheet row → Item
+    normalize/      vocabulary (a board's words → ours), columns
+  value-map.ts      the word table itself; grows with every board that connects
+  azure.ts          WIQL + workitemsbatch + testConnection
+  sync.ts           watermarked incremental sync
+  numbers.ts        Apple Numbers reader; numbers/ holds zip, snappy, protobuf
+  auth-secret.ts    refuses to boot on a missing or placeholder AUTH_SECRET
+  auth-cookies.ts   httpOnly / SameSite / Secure, stated so they are checkable
+  session-policy.ts idle and absolute timeouts; what ends a session early
+  login-throttle.ts per-account lockout, checked before the bcrypt
+  constants.ts      a barrel over constants/ — every tunable literal
+  types.ts          the vocabulary       palette.ts  validated data colours
+src/app/api/        route handlers, Node runtime — never Edge
+src/app/admin/      admin-client + panels/ (pod-list, pod-azure, people-panel…)
+src/components/     client components; dashboard-client.tsx orchestrates
+  ui.tsx            a barrel over ui/ (surfaces, controls, menu, tooltip…)
+  greeting*.tsx     the card, its scene, its cast, its choreography
+scripts/            seed + four check suites
 ```
 
-Server/client split: `src/lib/*` is server-only apart from `palette.ts` and
-`types.ts`, which are safe to import from components. Never import
-`opensearch.ts`, `azure.ts`, `sync.ts`, `users.ts` or `session.ts` into a
-`"use client"` file.
+**Server/client split.** `src/lib/*` is server-only apart from `palette.ts`,
+`types.ts`, `health.ts`, `greeting.ts`, `sky.ts`, `takeover.ts`, `validation.ts`,
+`suggest.ts`, `spreadsheet.ts` and `constants.ts`, which are safe to import from
+components. Never import `opensearch.ts`, `azure.ts`, `sync.ts`, `users.ts` or
+`session.ts` into a `"use client"` file.
+
+**File size.** Modules stay under 200 lines. A handful of screens are over and
+are listed as debt in `scripts/check-ui.mjs`; that list may shrink, never grow.
+
+---
 
 ## Conventions
 
 - **Imports** use the `@/` alias (`@/lib/metrics`), never deep relative paths.
-- **Route handlers** follow one shape: `try { const user = await requireUser() … }
-  catch (err) { return errorResponse(err) }`. Throw `HttpError(status, message)`
-  for expected failures; `errorResponse` maps it and logs only real 500s.
+  Exception: modules the check suites import directly need `.ts` on their own
+  relative imports, because Node's type stripping does not resolve extensionless
+  specifiers.
+- **Route handlers** follow one shape:
+  `try { const user = await requireUser() … } catch (err) { return errorResponse(err) }`.
+  Throw `HttpError(status, message)` for expected failures.
 - **Every route handler** sets `export const dynamic = "force-dynamic"`.
-- **Error messages are user-facing prose** — "Pick the POD this file belongs to."
-  not "teamId required". They render directly in a toast.
-- **Comments explain why, not what**, and only where the reason is not obvious
-  from the code. Do not narrate.
-- **No new dependencies** without a strong reason. Charts, the drawer, count-up
-  and the parallax layer are all hand-rolled on purpose.
+- **Error messages are user-facing prose** — "Pick the POD this file belongs to.",
+  not "MISSING_TEAM_ID". If a file cannot be read, name the way out.
+- **Comments say why, never what.** The code already says what. A comment that
+  restates the line above it is noise; one that records the bug the line
+  prevents is the most valuable thing in the file.
+- **Hardcoded values** go in `src/lib/constants/`, not inline — unless they are
+  only meaningful beside the equation that uses them (`sky.ts`, `takeover.ts`).
 
-## Vocabulary — do not invent new values
+---
 
-Defined once in `src/lib/types.ts`; the UI, palette and aggregations all key off
-these exact strings.
+## Things that look right and are not
 
-| Dimension | Values |
+Each of these shipped, looked fine, and was wrong:
+
+| Looked fine | Was |
 |---|---|
-| `severity` | `Critical` `Major` `Minor` `Unknown` |
-| `environment` | `IT-UAT` `BIZ-UAT` `CUG` `Production` `Unknown` |
-| `status` | `Open` `Commented` `For QA Validation` `Not a Bug` `Closed` `Unknown` |
-| `kind` | `bug` `ticket` `cr` |
+| `AUTH_SECRET \|\| "dev-only-insecure-secret"` | anyone reading the repo could forge an admin session |
+| A health check that returned 200 | it did not import the auth config, so a broken container was marked healthy while every page 500'd |
+| `it → IT-UAT` matching by substring | matched inside "microsites", mislabelling a whole board |
+| `tags.includes("cr")` | a task tagged "critical" became a change request |
+| Dark glass at `0.11` opacity | 13.55:1 over the page plane, **1.44:1** over the greeting sky — invisible |
+| `overflow-x: hidden` on `body` | forces `overflow-y: auto`, making it a scroll container that breaks sticky |
+| `lte` on an ageing bucket's upper bound | one extra item, so the drawer disagreed with the bar |
+| A 30-day default session | no absolute timeout, so a stolen token that was used never expired |
 
-Board-specific values are mapped onto these in `src/lib/normalize.ts` — per-team
-overrides first, then `DEFAULT_VALUE_MAP`, then longest-substring match. Adding a
-value means updating `types.ts`, `palette.ts` (a colour slot) **and** the `ORDER`
-table in `src/components/breakdown-card.tsx`.
+The pattern: **the failure was silent.** When in doubt, prefer the option that
+fails loudly.
 
-## Common tasks
-
-| Task | Where |
-|---|---|
-| New dashboard metric | add an agg in `dashboard()` in `src/lib/metrics.ts`, extend the `Dashboard` type, render it |
-| New drill-down filter | `Filters` + `buildQuery()` in `metrics.ts`, then parse it in `filtersFromRequest()` |
-| New Azure field | `fromAzure()` in `normalize.ts` + a `keyword` entry in `mappings.json` |
-| New spreadsheet column | `COLUMN_ALIASES` in `normalize.ts` |
-| New page or panel | copy an existing `Panel` from `src/components/ui.tsx` |
-| New expandable surface | call `useDrill()`, then add a check that its drill matches the number shown |
-| New theme token | add it to **all three** blocks in `globals.css`; `pnpm check:theme` enforces it |
-
-## Validation rules
-
-User input reaches OpenSearch date math and `size`, where junk becomes a 500.
-
-- Numeric query params go through `intParam()` in `src/lib/api.ts` — never
-  `Number(p.get(...))` directly.
-- Ageing thresholds go through `clampThreshold()` in `types.ts`, **on read as
-  well as on write**, because stored documents predate the validation.
-- Enum-ish params are checked against their allowlist (`KINDS`, `SORTS`, `ROLES`)
-  and fall back to a default rather than being passed through.
-- `teamIds` must be a real array in both `saveUser()` and `canSeeTeam()`. On a
-  string, `.includes()` is a substring test and grants access nobody granted.
-- Date params go through `isoParam()`; unparseable dates are dropped, not passed on.
+---
 
 ## Numbers and their drill-throughs
 
-Wherever the UI prints a number beside a drill, the drill must return **exactly
-that number**. Add a case to `pnpm check invariants` for every new one — three
-have already been wrong, and none was visible without comparing the two.
+Every number on the dashboard is clickable and must return **exactly** the count
+it displays. `pnpm check invariants` asserts that for every tile, bar and row.
 
-The single exception is the Environments tile, whose number is a cardinality
-rather than an item count; its drawer is explicitly labelled to say so.
+Date windows are absolute epoch millis, never `now-7d` date math — OpenSearch
+wraps a range containing `now` in a query that throws inside a filter
+aggregation, intermittently. Ageing buckets are lower-inclusive and
+upper-exclusive, and the drill-down mirrors that with `gte`/`lt`.
 
-## Gotchas that have already bitten
+---
 
-- **Never put `now` in a range query.** OpenSearch wraps it in a query class that
-  cannot produce a weight, and inside a filter aggregation it throws
-  `unsupported_operation_exception` — intermittently, taking the whole dashboard
-  down. Use `daysAgo()` / `floorDay()` / `floorWeek()` from `metrics.ts`.
-- `date_range` buckets are **lower-inclusive, upper-exclusive**. Ageing
-  drill-downs use `gte`/`lt` to match; using `lte` returns one item too many.
-- OpenSearch `wildcard` with options needs the nested form:
-  `{ wildcard: { field: { value: "*x*", case_insensitive: true } } }`.
-- Azure's `ResolvedDate` is **not** a close date — an item can be resolved and
-  still open for QA. Only `Microsoft.VSTS.Common.ClosedDate` closes an item.
-- WIQL rejects millisecond ISO timestamps. Use `yyyy-MM-ddTHH:mm:ssZ`.
-- The OpenSearch client types aggregations as a union of every possible shape.
-  Read responses through `search<T>()` in `opensearch.ts`, which narrows once.
-- The poller lives in `src/lib/poller.ts`, started from the metrics route — **not**
-  in `instrumentation.ts`, which Next bundles for a runtime that cannot resolve
-  `node:https`.
-
-## Verifying a change
+## Before opening a PR
 
 ```bash
-pnpm test                 # every suite in one command
-pnpm exec tsc --noEmit          # must be clean
-pnpm build             # must pass  (stop `pnpm dev` first — it overwrites .next)
-pnpm check             # 316 end-to-end checks against a running dev server
-pnpm check:theme       # 183 static checks on the light/dark token system
-pnpm check:ui        # 1213 checks on client-side pure logic
-pnpm check:docs        # docs still match the code (links, hexes, modules)
+pnpm exec tsc --noEmit
+pnpm test
 ```
 
-`pnpm check [invariants|input|auth]` is the real safety net. Every case in it
-corresponds to a bug that was once real, so a failure means something regressed,
-not that the check is fussy. Add a case whenever you fix a bug.
-
-`pnpm seed --reset` rebuilds demo data if checks left the board dirty.
+`pnpm check:docs` is part of that and will fail if you add a source module
+without mentioning it in `docs/README.md`, quote a hex that no longer exists, or
+tell anybody to run `npm`.

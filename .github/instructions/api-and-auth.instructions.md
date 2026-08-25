@@ -1,5 +1,5 @@
 ---
-applyTo: "src/app/api/**,src/lib/{session,api,users}.ts,src/auth.ts,src/app/login/**,src/app/admin/page.tsx"
+applyTo: "src/app/api/**,src/lib/{session,api,users,auth-secret,auth-cookies,session-policy,login-throttle,validation,roster,http-error}.ts,src/auth.ts,src/app/login/**,src/app/admin/**"
 description: Route handler shape, authentication modes and POD scoping
 ---
 
@@ -71,6 +71,73 @@ them into the token as write-once values.
 
 With SSO the first user to sign in becomes admin (`upsertSsoUser`); everyone
 after joins as a member with no PODs.
+
+## The signing secret
+
+`src/lib/auth-secret.ts` resolves `AUTH_SECRET` and is the reason the app can be
+handed over safely. It **throws in production** when the secret is missing,
+under 32 characters, or one of the known placeholders; in development it
+generates a random per-process key instead, so nobody has a reason to commit
+one.
+
+This replaced `AUTH_SECRET || "dev-only-insecure-secret"`. That fallback meant
+anybody who read the repo could forge an admin session in any deployment where
+the variable had not been set — and nothing would have looked wrong.
+
+Never add a fallback here, and never make the throw conditional. `/api/health`
+returns **503** when this resolver fails, so a container with a bad secret is
+never marked healthy.
+
+## Sessions — two clocks
+
+`src/lib/session-policy.ts` holds `checkSession()`, pure and testable. Both
+timeouts come from `SESSION` in `src/lib/constants/auth.ts`:
+
+| Clock | Value | Why |
+|---|---|---|
+| **Idle**, rolling | 12h | renewed by activity; a laptop left on a train is signed out by morning |
+| **Absolute**, hard ceiling | 7d | the idle clock alone is renewed by use, so a *stolen token that is being used* would never expire |
+
+`checkSession()` returns a `reason` — `expired-absolute`, `password-changed`,
+`no-account`, `malformed` — and every one of them is asserted separately.
+Returning a bare `false` lets a guard be deleted while a different branch keeps
+the test green.
+
+Three things end a session before its time: the account is gone, the password
+changed since the token was issued (`passwordChangedAt`), or the claims are
+unreadable. **A missing or future `signedInAt` is `malformed`, not trusted** —
+absent evidence of when a session started is not evidence that it is fresh.
+
+## Cookies
+
+`src/lib/auth-cookies.ts` states every flag explicitly rather than relying on
+defaults, so they can be checked: `httpOnly`, `sameSite: "lax"`, `secure` and a
+`__Secure-` prefix in production; `__Host-` for the CSRF token, which is scoped
+to the origin with no domain.
+
+**The token never reaches JavaScript.** No token in `localStorage`, no token in
+a response body, no token in a URL. If a component appears to need one, it does
+not — it needs a route handler.
+
+## Login throttle
+
+`src/lib/login-throttle.ts` — 8 failures locks an account for 15 minutes, and a
+15-minute quiet spell clears the count. The lockout is checked **before** the
+bcrypt compare: checking after it means an attacker still gets the ~100ms of
+work done on every attempt, and the throttle only shapes the response.
+
+Tracking is capped at 10,000 accounts and evicts oldest-first, so the map cannot
+be grown without bound by an attacker inventing addresses.
+
+The failure message is identical for a wrong password, an unknown account and a
+locked one. Distinguishing them enumerates valid addresses.
+
+## Changing a password
+
+`/api/account/password` — a signed-in user changing their own, requiring the
+current one. `/api/users/password` — an admin setting someone else's, which does
+not. Both stamp `passwordChangedAt`, which is what invalidates every existing
+session for that account through `checkSession()`.
 
 ## Secrets
 

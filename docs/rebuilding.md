@@ -178,9 +178,15 @@ seed** so every run produces the same board.
 `src/lib/normalize.ts` — `fromAzure()` and `fromRow()`, both landing on `Item`.
 
 Value resolution runs in three passes, and the order matters: the POD's own
-overrides, then the shipped defaults, then a **substring** pass with the longest
-key first — so `3 - Medium (UI)` reaches `Minor`, `Deployed to Prod` reaches
-`Production`, and `Not a Bug` beats `Bug`.
+overrides, then the shipped defaults, then a **word-bounded** pass with the
+longest key first — so `3 - Medium (UI)` reaches `Minor`, `Deployed to Prod`
+reaches `Production`, and `Not a Bug` beats `Bug`.
+
+**Bounded, not `includes`.** A key must match a whole word: a non-alphanumeric
+character or the end of the string on both sides. Written unbounded first, the
+key `it` matched inside "microsites" and mislabelled every item under an area
+path containing it. The same accident made anything tagged "critical" a change
+request, so the CR tag is compared exactly.
 
 Environment is the field most boards do not have, so it falls back to tags, then
 to the Azure area path, before giving up.

@@ -74,7 +74,7 @@ chart. Keep them separate: chrome may be retuned freely, data colour may not.
 | Solid popovers, drawers, menus | `--panel` `#ffffff` | `#0d1b2b` |
 | Primary ink | `--ink` `#0e1a26` | `#eef4fa` |
 | Secondary ink | `--ink-2` `#3d5266` | `#a3b4c6` |
-| Muted ink | `--ink-muted` `#5a6d80` | `#8496ab` |
+| Muted ink | `--ink-muted` `#526578` | `#9caec3` |
 | Hairline / gridline | `--hairline`, `--grid` | |
 | Translucent fills | `--wash`, `--wash-2`, `--wash-3` | |
 | Accent | `--accent` `#0071bb` (brand) → `--accent-2` `#0d9aa8` | `#1393ed` → `#2bc0d0` |
@@ -262,6 +262,42 @@ itself rather than off a setting.
 
 ### Responsive
 
+#### Nothing may be wider than the screen
+
+A phone that scrolls sideways is the most obviously broken a responsive layout
+gets. The cause is always the same shape: **one element wider than the viewport,
+plus a clip somebody assumed would hold.**
+
+The top bar's backdrop bleeds past the page gutters so it does not end in two
+hard seams on a wide screen. It used to do that with `-left-[50vw]
+-right-[50vw]` — 200vw of element, held back only by the page clip. On a phone
+that clip did not hold and the whole board scrolled sideways. It reaches a fixed
+distance now, wide enough to cover the gutters at any width and never wider than
+the screen.
+
+The page still clips, as a second line of defence, with **`overflow-x: clip`
+rather than `hidden`**:
+
+| | `hidden` | `clip` |
+|---|---|---|
+| Clips overflow | ✅ | ✅ |
+| Forces `overflow-y: auto` | ⚠️ **yes** | no |
+| Creates a scroll container | ⚠️ **yes** | no |
+| Leaves `position: sticky` alone | ⚠️ no | ✅ |
+
+That middle row is why the top bar and the page disagreed: `hidden` on `body`
+made the body a scroll container, which is the wrong place for a sticky element
+to anchor to.
+
+Three rules, all checked:
+
+- **No negative inset in `vw`.** `-left-[50vw]` doubles an element's width.
+- **A `min-w` wider than 320px lives inside `overflow-x-auto`.** Wide tables are
+  fine; wide tables that push the page are not.
+- **No `w-screen`.** It is `100vw`, which on desktop includes the scrollbar and
+  overflows by its width.
+
+
 Every panel is fluid down to 320px. The rules the checks enforce:
 
 - **The score dial is fluid** — `w-[min(200px,52vw)]` with a viewBox that scales,
@@ -295,8 +331,13 @@ observed rather than decorated — and the whole schedule is `SCENE.cast` in
 | Bat | | | ● | ● |
 
 **How many of each is tunable from one place.** `SCENE` in `lib/constants.ts`
-holds the cast schedule, the bat count, the grass tuft counts and the cloud
-count per weather condition. The *choreography* — which bat flies how fast at
+holds the cast schedule, a count for each flyer — `bats`, `gulls`, `cranes` —
+the grass tuft counts and the cloud count per weather condition.
+
+The crane was the odd one out until recently: an on/off in the cast table with
+its flight hardcoded in the JSX, while the flyers either side of it had counts.
+All three work the same way now, and a check asserts it — a table of flights, a
+count clamped to that table, and perspective holding across it. The *choreography* — which bat flies how fast at
 what distance — stays with the scene, because it is animation rather than a
 number anyone tunes; `SCENE.bats` picks how many of it to use and is clamped to
 what is defined, so asking for nine draws three rather than crashing.

@@ -110,6 +110,83 @@ const theme = [...everyDoc.matchAll(/(\d+)\s+(?:static|theme[- ]token|theme)\s+c
 check("end-to-end check count is quoted consistently", new Set(e2e).size <= 1, e2e.join(", "));
 check("theme check count is quoted consistently", new Set(theme).size <= 1, theme.join(", "));
 
+section("the handover files point at things that exist");
+/*
+ * VS Code loads a file in .github/instructions/ only when the open file matches
+ * its `applyTo` glob, and says nothing when one matches nothing at all. Every
+ * glob here went stale the moment code moved into subdirectories: someone
+ * editing `metrics/query.ts` or `normalize/vocabulary.ts` got no rules loaded,
+ * silently. These assert against the filesystem so a future move is caught.
+ */
+const INSTRUCTIONS = join(ROOT, ".github/instructions");
+const exists = (p) => {
+  try {
+    statSync(join(ROOT, p));
+    return true;
+  } catch {
+    return false;
+  }
+};
+/**
+ * Split the list on commas that are **not** inside a brace group.
+ *
+ * A plain `.split(",")` tears `{session,api}` into `{session` and `api}` and
+ * every pattern then fails to resolve — which is exactly how this check failed
+ * the first time it ran.
+ */
+const splitPatterns = (applyTo) => {
+  const out = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of applyTo) {
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    if (ch === "," && depth === 0) {
+      out.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  return [...out, current].map((p) => p.trim()).filter(Boolean);
+};
+
+/** `src/lib/{a,b}.ts` → `src/lib/a.ts`, `src/lib/b.ts`. One level is all we use. */
+const expandBraces = (pattern) => {
+  const m = pattern.match(/^(.*)\{([^}]+)\}(.*)$/);
+  if (!m) return [pattern];
+  return m[2].split(",").map((part) => `${m[1]}${part.trim()}${m[3]}`);
+};
+
+for (const name of readdirSync(INSTRUCTIONS)) {
+  const text = readFileSync(join(INSTRUCTIONS, name), "utf8");
+  const applyTo = text.match(/^applyTo: "(.*)"$/m)?.[1];
+  check(`${name} declares an applyTo glob`, Boolean(applyTo));
+  if (!applyTo) continue;
+
+  const patterns = splitPatterns(applyTo).flatMap(expandBraces);
+  check(`${name}: applyTo parses into patterns`, patterns.length > 0);
+  /*
+   * A pattern with no wildcard is a literal file and must exist — that is what
+   * catches a rename. One with a wildcard is checked as far as its fixed
+   * prefix, so `src/lib/numbers/**` still fails once that directory is gone.
+   */
+  const dead = patterns.filter((p) => !exists(p.split("*")[0].replace(/\/$/, "")));
+  check(`${name}: every path in applyTo exists`, dead.length === 0, dead.join(" "));
+}
+
+/*
+ * The two entry files are the handover's front door. Whether their links
+ * *resolve* is already covered by the "links" section above, which walks every
+ * markdown file — but that check passes vacuously on a file with no links left,
+ * which is what a gutted front door looks like. This is the part it cannot see.
+ */
+for (const entry of ["AGENTS.md", ".github/copilot-instructions.md"]) {
+  const text = readFileSync(join(ROOT, entry), "utf8");
+  const into = [...text.matchAll(/\]\((?:\.\.\/)?docs\/[^)]+\)/g)];
+  check(`${entry} points into docs/`, into.length > 0, `${into.length} links`);
+}
+
 console.log("\n" + "─".repeat(60));
 console.log(failures === 0 ? `All ${checks} doc checks passed.` : `${failures} of ${checks} doc checks FAILED.`);
 process.exit(failures ? 1 : 0);

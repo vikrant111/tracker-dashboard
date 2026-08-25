@@ -1,5 +1,5 @@
 ---
-applyTo: "src/components/**,src/app/**/*.tsx,src/app/globals.css,src/lib/palette.ts"
+applyTo: "src/components/**,src/app/**/*.tsx,src/app/globals.css,src/lib/{palette,sky,takeover,greeting,suggest}.ts,src/lib/sky/**,src/lib/takeover/**,src/lib/constants/scene.ts"
 description: Visual system, chart rules and motion
 ---
 
@@ -28,6 +28,12 @@ Glass reads as glass because of the **backdrop** (`--mesh-1..4`, `--orb-*`,
 `--grain`) and the specular `--glass-rim`, not because panels are transparent.
 Do not lower panel opacity to make it "more glassy" — that changes the effective
 `--surface` and invalidates the palette's contrast validation.
+
+**Check glass contrast over the brightest thing it can sit on, not the page.**
+The dark panel fill was `rgba(148, 190, 240, 0.11)` — 13.55:1 over the page
+plane and a perfectly good number, but **1.44:1** over the greeting card's sky,
+where a chart drawn on it was invisible. It is now a near-opaque dark fill.
+`pnpm check:theme` composites the alpha and checks both backdrops.
 
 **Glow: use `.glow` / `.glow-sm` / `.glow-lg` / `.bloom` / `.breathe` / `.lit`
 with a `--hue` set inline. Never hardcode a coloured `box-shadow`.** Halos are
@@ -122,6 +128,12 @@ that POD's metrics only once its row is opened.
 
 ## The health dial
 
+The ring shows a **percentage** — the share of tracked items that are closed,
+from `healthScore()` in `src/lib/health.ts`. It carries a `%` sign, because a
+bare number reads as a score out of an unstated maximum and nobody could tell
+what it was out of. The reader can check it against the "138 of 244" printed a
+few rows below and get the same answer; keep that property.
+
 `role="slider"`, drag or arrow keys to explore thresholds, springs back on
 release. **It is display-only** — the scrubbed value must never reach a query or
 be mistaken for the real score, and the caption says so while dragging.
@@ -130,12 +142,51 @@ If you touch the pointer maths, update `scripts/check-ui.mjs` to match; it
 mirrors `valueAt` deliberately because the component is a client module. The
 same file mirrors the greeting rules from `lib/greeting.ts`.
 
+## Chart labels
+
+`trend-end-labels.ts` places the two series names at the right-hand end of the
+trend chart. They are pushed apart when they would overlap — a quiet week ends
+both series at zero and they printed on top of each other.
+
+**The pair is moved as a unit when it would leave the plot.** Clamping each
+label independently looked correct and was not: with both at zero, the lower one
+hit the floor while the upper one stayed, and the gap that had just been opened
+collapsed straight back. Any similar nudge-then-clamp has the same trap.
+
+## Nothing is wider than the viewport
+
+No `w-screen`, no negative inset measured in `vw`, and any `min-w` past 320px
+lives inside its own `overflow-x-auto` container. On a phone the whole page must
+sit exactly in the screen with no horizontal scroll.
+
+The top bar's backdrop bleeds past the page gutters by a **fixed** distance
+(`-left-24 … sm:-left-40`). It used to reach `-left-[50vw] -right-[50vw]` —
+200vw of element, held back only by a clip that phones did not apply, and the
+whole page scrolled sideways.
+
+`globals.css` uses `overflow-x: clip`, on both `html` and `body`. **Not
+`hidden`:** `hidden` forces the computed `overflow-y` to `auto`, which makes the
+element a scroll container and breaks the sticky top bar, and it propagates to
+the viewport inconsistently. `clip` clips and creates no scroll container.
+
 ## Chrome layout
 
 The top bar is pinned at `sticky top-0` inside a wrapper whose blurred,
 downward-fading backdrop covers the strip above it. Do not move it to `top-N` —
 the gap that creates lets scrolling panels show through and the bar reads as
 detached. `pnpm check:theme` enforces both.
+
+## The greeting card
+
+The scene is a time-of-day illustration with a cast of animals. Everything
+countable about it — how many bats, which animals appear in which part of the
+day, grass and cloud counts — lives in `src/lib/constants/scene.ts`, not inline
+in a component.
+
+Sky colours are the exception to the token rule: the 26 `--sky-*` scene tokens
+are defined **once**, outside every theme block. The scene follows the clock,
+not the theme — switching to dark at nine in the morning must not turn the
+illustration to night.
 
 ## Motion
 

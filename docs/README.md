@@ -11,6 +11,7 @@ pages are the internals.
 | [architecture.md](architecture.md) | How a request becomes a number on screen. Module map, layering rules. |
 | [data-model.md](data-model.md) | Documents, indices, id schemes, the vocabulary, ageing. |
 | [metrics.md](metrics.md) | Every tile and chart, and the aggregation behind it. |
+| [changing-the-data.md](changing-the-data.md) | **Recipes for changing what the dashboard fetches, maps and shows.** Which files, in what order, and what breaks if you skip one. |
 | [azure-integration.md](azure-integration.md) | REST calls, WIQL, field mapping, the three live-update paths. |
 | [auth-and-tenancy.md](auth-and-tenancy.md) | Auth modes, roles, how POD scoping is enforced. |
 | [design-system.md](design-system.md) | Tokens, type, the validated palette, motion, accessibility. |
@@ -42,21 +43,39 @@ PODs assigned to them, enforced server-side.
 src/lib/          domain and data. No React, server-only
   opensearch.ts   client, index bootstrap, narrowed search, bulk upsert
   mappings.json   index mappings, shared with scripts/seed.mjs
-  metrics.ts      every tile and chart in one aggregation; drill-down listing
+  metrics.ts      every tile and chart in one aggregation
+  metrics/
+    types         Filters, Bucket, Dashboard — what the board is described in
+    dates         absolute epoch bounds, never `now-7d` date math
+    query         one builder, shared by the aggregation and the drill-down
+    aggregations  the pieces of the big query, and severity's sort rank
+    list-items    the drill-down page, plus the true total
   azure.ts        WIQL + workitemsbatch
   normalize.ts    Azure work item / spreadsheet row → Item
+  normalize/
+    vocabulary    a board's own words → ours, in three passes
+    columns       the spreadsheet's columns, in both directions
   sync.ts         watermarked incremental sync, webhook team routing
   poller.ts       background timer
   teams.ts users.ts   document CRUD
   session.ts      auth helpers, errorResponse
+  auth-secret.ts  refuses to boot on a missing or placeholder AUTH_SECRET
+  auth-cookies.ts httpOnly / SameSite / Secure, stated so they can be checked
+  session-policy.ts  idle and absolute timeouts, and what ends a session early
+  login-throttle.ts  per-account lockout, checked before the bcrypt
   http-error.ts   HttpError — its own module so the domain layer can throw
                   without importing the auth stack
   api.ts          request → scoped Filters  ← the security boundary
   types.ts        vocabulary, clampThreshold      (client-safe)
+  value-map.ts    a board's own words → ours; grows with every board that
+                  connects                                   (client-safe)
   palette.ts      validated data colours as CSS variables (client-safe)
   greeting.ts     phase of day, first name from an email  (client-safe, pure)
-  sky.ts          scene geometry, sun/moon placement, tonight's real moon
-                  phase and its shadow path              (client-safe, pure)
+  sky.ts          a barrel over sky/                      (client-safe, pure)
+  sky/
+    base          Body, and the two clamps both halves need
+    geometry      the 400×120 coordinate system, and how it grows
+    astronomy     where the sun and moon are, and tonight's real moon phase
   weather.ts      optional Open-Meteo lookup; returns null unless
                   WEATHER_LAT/WEATHER_LON are set — never a guess
   takeover.ts     the scroll takeover: card rect → viewport, as a clip-path
@@ -66,40 +85,104 @@ src/lib/          domain and data. No React, server-only
   spreadsheet.ts  what an uploaded file actually is, from its bytes — so a
                   CSV from Numbers or Sheets works without Excel installed
                                                          (client-safe, pure)
-  numbers.ts      reads Apple Numbers files: zip, Snappy, IWA, Protobuf, so a
-                  Mac with no Excel uploads what it already has  (server-only)
+  numbers.ts      reads Apple Numbers files, so a Mac with no Excel uploads
+                  what it already has                            (server-only)
+  numbers/
+    zip           just enough zip to find the .iwa entries
+    snappy        the raw Snappy block, and IWA's framing around it
+    protobuf      a schema-less wire-format walk — Apple publishes none
+    cells         one cell, one string table, one tile of rows
+    types         the value and sheet shapes, and the archive type numbers
   suggest.ts      ranks the names offered under the search box
                                                          (client-safe, pure)
   health.ts       the board score: the share of tracked items that are closed
                                                          (client-safe, pure)
                                                          (client-safe, pure)
-  constants.ts    every tunable literal that is not an environment variable
+  constants.ts    a barrel over constants/ — every tunable literal that is
+                  not an environment variable
+  constants/
+    storage       LIMITS and PAGE: how big a field may be, how many rows
+    timing        toasts, debounces, poll intervals
+    auth          SESSION timeouts and the LOGIN lockout
+    board         AZURE batching, AGEING thresholds
+    scene         the greeting's cast, and how many of each
+    spreadsheet   EXPORT columns and UPLOAD limits
   roster.ts       folds a POD's roster into the leaderboard, so an onboarded
                   person with no items shows as a zero rather than vanishing
                                                          (client-safe, pure)
 
+src/app/admin/
+  admin-client    the screen: state, toasts, and which POD is being edited
+  panels/
+    blank-team    what "New POD" starts from
+    field         one labelled input, and the member-row updater
+    pod-identity  a POD's name, description and ageing threshold
+    pod-members   who is in it
+    pod-azure     the Boards connection, field mapping and sync controls
+    people-panel  who can sign in, what they see, and their passwords
+    add-person-form  the row that adds one
+    use-reset-password  an admin setting somebody else's password
+    pod-list      every POD, and which one is open
+
 src/app/api/      route handlers, Node runtime
+  upload/sheets   one shape for every reader, so the route has one row path
 src/app/          / dashboard · /admin (page + admin-client)
                   /login (page + login-form)
   layout.tsx      fonts, theme pre-paint script, viewport theme colour
+  error.tsx       what a reader sees when a page throws — never the message,
+                  which can carry a cluster URL
+  not-found.tsx   a page that is not there
+  api/health      liveness and readiness, for a load balancer
   globals.css     the two theme token blocks, glass recipe, keyframes
 src/components/   client components, dashboard-client.tsx orchestrates
   drill-drawer    the one detail surface every panel opens
   drill-filters   the drawer's own filter bar
   health-dial     the draggable score ring (role="slider", display-only)
-  greeting        the card: whose name, what hour, and what to draw
-  greeting-scene  the world it looks out on: ground, weather, sun, moon
+  health-dial-bands  what each score means, and the ring's geometry
+  use-dial-scrub  dragging the ring to scrub a hypothetical score
+  health-drivers  the three numbers beside the ring; only one moves it
+  use-focus-trap  keeps Tab inside an open dialog, Escape closes it
+  ageing-spine    open work across the ageing buckets, as one bar
+  leaderboard-load-bar  one person's open work split by severity
+  skeleton-board  the board's shape before its numbers arrive
+  greeting        the sky: places the sun and moon, assembles the scene
+  greeting-card   the reader's name and caption over it
+  greeting-scene  the world: ground, weather, sun, moon
   greeting-cast   the animals, one small SVG each
+  greeting-choreography
+                  who is out when, and how each of them moves
+  greeting-ground the meadow's depth bands
+  greeting-grass  the tufts on them, varied by index rather than at random
+  greeting-cast-birds  the crane and the gull — told apart by how they fly
+  use-box         an element's measured size, so the sun is not drawn off-frame
+  use-debounced   a value that settles before it is used
+  use-width       an element's measured width, for charts that draw in pixels
+  trend-readout   what the trend crosshair is pointing at
+  trend-axis      the gridlines and their labels — one y-scale, never two
+  trend-end-labels  where each series' name sits, nudged apart when they collide
+  team-rollup-cell    one number in the roll-up, with a tooltip
+  team-rollup-detail  a POD's own breakdown, loaded when its row opens
   sky-backdrop    the card's sky, opening from its rect to fill the page
   search-box      the board search: debounced query, ranked suggestions
+  change-password the self-service dialog: current password required, focus
+                  trapped, fields cleared on open and on success
   footer          what the page knows: tracked, PODs, last sync
   theme-toggle    light / system / dark, plus the pre-paint script
-  ui              Panel, PanelHeader, CountUp, Button, SegmentedControl
+  ui              a barrel over ui/ — every existing `from "./ui"` still works
+  ui/
+    surfaces      Panel, PanelHeader, Empty
+    controls      Button, Chip, SegmentedControl
+    count-up      a number that animates into view
+    password-field  an input with a reveal control
+    menu          the "For you" panel: roving focus, outside-press close
+    menu-context  how an item closes the menu it is in
+    menu-item     MenuSection and MenuItem
+    tooltip       a label that escapes the panel through a portal
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       316 end-to-end checks against a running server
-  check-theme.mjs 183 static checks: theme tokens, contrast, source rules
-  check-ui.mjs    1213 checks on client-side pure logic — it imports the real
+  check.mjs       343 end-to-end checks against a running server
+  check-theme.mjs 627 static checks: theme tokens, contrast, source rules
+  check-ui.mjs    1626 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-docs.mjs  these pages still match the code

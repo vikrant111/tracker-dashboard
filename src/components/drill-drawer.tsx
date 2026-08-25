@@ -13,22 +13,13 @@ import { Empty } from "./ui";
 export type DrillQuery = Record<string, string>;
 
 type DrillRequest = { title: string; subtitle?: string; query: DrillQuery };
+import { useDebounced } from "./use-debounced";
 
 const DrillContext = createContext<(req: DrillRequest) => void>(() => {});
 
 export const useDrill = () => useContext(DrillContext);
 
 const PAGE = 200;
-
-/** Wait for typing to settle before refetching. */
-function useDebounced<T>(value: T, ms = 250): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setSettled(value), ms);
-    return () => clearTimeout(t);
-  }, [value, ms]);
-  return settled;
-}
 
 /**
  * One drawer serves every expandable surface: tiles, severity rows, status rows,

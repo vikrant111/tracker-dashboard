@@ -2,7 +2,7 @@
 
 import { useReducedMotion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
-import { GREETING, displayName, phaseFor, type Phase } from "@/lib/greeting";
+import type { Phase } from "@/lib/greeting";
 import {
   GROUND,
   VIEW_H,
@@ -26,166 +26,16 @@ import { Cloud, Meadow, Moon, Sun, type Box } from "./greeting-scene";
 // Scene geometry lives in lib/sky.ts, re-exported here for the scene itself.
 export { GROUND, VIEW_H, VIEW_W };
 
-/**
- * A small sky above the reader's name, filling the gap the health card used to
- * leave empty.
- *
- * The sun and moon are placed from the actual clock — a half-sine from rise to
- * set — so a 19:00 sun sits low on the western horizon instead of blazing
- * overhead, and the moon takes over when the sun is down wearing tonight's real
- * phase. Weather is drawn only when configured; it is never invented.
- */
-export function Greeting({ name, weather }: { name: string; weather: Weather | null }) {
-  const reduced = useReducedMotion();
-  // The clock is only knowable on the client. Rendering it during SSR would give
-  // a server-time sky that then hydrated into a different one, so it starts null.
-  const [now, setNow] = useState<Date | null>(null);
-
-  useEffect(() => {
-    const read = () => setNow(new Date());
-    read();
-    const id = setInterval(read, 60_000);
-    return () => clearInterval(id);
-  }, []);
-
-  const phase = now ? phaseFor(now.getHours()) : null;
-  const who = displayName(name);
-
-  /*
-   * Ink follows the **sky**, not the app theme.
-   *
-   * The scene is theme-independent — an afternoon card is bright in dark mode
-   * too — so text colour cannot come from the theme either, or pale dark-mode
-   * ink would sit on a pale afternoon sky and vanish. Night is the one phase
-   * whose gradient is dark enough to need it.
-   */
-  const ink = phase === "night" ? "var(--sky-ink-night)" : "var(--sky-ink)";
-  const ink2 = phase === "night" ? "var(--sky-ink-night-2)" : "var(--sky-ink-2)";
-
-  return (
-    <section
-      aria-label={`${phase ? GREETING[phase] : "Hello"}, ${who}`}
-      className="relative shrink-0 overflow-hidden rounded-2xl border border-[var(--hairline)]"
-      style={{
-        background: phase
-          ? `linear-gradient(to bottom, var(--sky-${phase}-1), var(--sky-${phase}-2))`
-          : "linear-gradient(to bottom, var(--sky-morning-1), var(--sky-morning-2))",
-        minHeight: "clamp(8rem, 26vw, 10.5rem)",
-        transition: "background 1200ms var(--ease)",
-      }}
-    >
-      <Sky now={now} phase={phase} weather={weather} reduced={!!reduced} />
-
-      {/* Anything crossing behind the text is dimmed by this, so a walking cat
-          never reads as scribble through the greeting. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 z-[5]"
-        style={{
-          background: `linear-gradient(to right, var(--sky-${phase ?? "morning"}-2) 12%, transparent 62%)`,
-          opacity: 0.82,
-        }}
-      />
-
-      {/* Centred, not bottom-aligned. Pinned to the floor of the card the text
-          sat under the horizon and read as an afterthought; the greeting is the
-          point of the card, so it holds the middle of it. */}
-      <div className="relative z-10 flex h-full flex-col justify-center p-4 sm:p-5">
-        <p className="eyebrow" style={{ color: ink2 }}>
-          {phase ? GREETING[phase] : " "}
-        </p>
-        <p
-          className="mt-1 font-[family-name:var(--font-display)] text-[clamp(1.25rem,5.5vw,1.5rem)] leading-tight font-bold tracking-tight"
-          style={{ color: ink }}
-        >
-          Hi, {who}
-        </p>
-        <p className="mt-1 text-xs" style={{ color: ink2 }}>
-          {now ? caption(phase, weather, now) : " "}
-        </p>
-      </div>
-    </section>
-  );
-}
-
-/** What the line under the name says. Weather only appears when it is real. */
-function caption(phase: Phase | null, weather: Weather | null, now: Date): string {
-  if (weather) {
-    const moon = phase === "night" || phase === "evening" ? ` · ${moonName(moonPhase(now)).toLowerCase()}` : "";
-    return `${weather.label}, ${weather.temperature}°${moon}`;
-  }
-  if (phase === "night") return `${moonName(moonPhase(now))} tonight.`;
-  if (phase === "evening") return "Winding down — here is where things stand.";
-  return "Here is where the board stands today.";
-}
-
-/** Who is out at which hour — tune it in `SCENE.cast`, not here. */
-const CAST: Record<Phase, { crane: boolean; gull: boolean; squirrel: boolean; cat: boolean; bat: boolean }> = SCENE.cast;
-
-/**
- * The bats' choreography: three distances, slow crossings, and a continuous
- * unhurried beat — no glide holds, because a bat does not soar.
- *
- * This is animation, not a number anybody tunes; **how many** of these to use
- * is `SCENE.bats`. Clamped to what is defined here, so raising that past the
- * choreography draws fewer bats rather than crashing on an undefined entry.
- */
-const CHOREOGRAPHY = [
-  { y: 30, scale: 1, cross: "72s", delay: "-6s", flap: "2.2s", opacity: 0.92, restX: 110, depth: 0.7 },
-  { y: 50, scale: 0.76, cross: "88s", delay: "-38s", flap: "2.7s", opacity: 0.76, restX: 232, depth: 0.6 },
-  { y: 20, scale: 0.58, cross: "104s", delay: "-70s", flap: "3.2s", opacity: 0.6, restX: 318, depth: 0.8 },
-];
-
-const BATS = CHOREOGRAPHY.slice(0, Math.max(0, Math.min(SCENE.bats, CHOREOGRAPHY.length)));
-
-/**
- * The gulls' choreography: distance, crossing time and wingbeat.
- *
- * Two of them at different depths, crossing at different speeds, because a
- * single bird in an empty sky reads as a mistake and two read as weather. The
- * further one is smaller, slower to cross and slower to beat — the same
- * perspective rule the bats follow.
- *
- * **How many** of these to use is `SCENE.gulls`.
- */
-const GULL_PATHS = [
-  { y: 30, scale: 0.62, cross: "94s", delay: "-12s", flap: "3.4s", opacity: 0.95, depth: 0.74 },
-  { y: 20, scale: 0.46, cross: "106s", delay: "-64s", flap: "4.1s", opacity: 0.8, depth: 0.82 },
-];
-
-const GULLS = GULL_PATHS.slice(0, Math.max(0, Math.min(SCENE.gulls, GULL_PATHS.length)));
-
-/** How high the crane rides in a frame that gained open sky. */
-const CRANE_DEPTH = 0.72;
-
-/** How much cloud each condition puts in the sky — tune it in `SCENE.clouds`. */
-const CLOUD_COUNT: Record<string, number> = SCENE.clouds;
-const CLOUDS_UNKNOWN = SCENE.clouds.unknown;
-
-/**
- * Measures an element, so the scene knows how much of itself is actually on
- * screen. `slice` crops a tall narrow card to a strip barely 58 units wide, and
- * the sun has to be pulled inside that strip or it is drawn with its disc
- * hanging over the edge.
- */
-function useBox(ref: React.RefObject<SVGSVGElement | null>) {
-  const [box, setBox] = useState<{ width: number; height: number } | null>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const measure = () => {
-      const r = el.getBoundingClientRect();
-      setBox(r.width > 0 && r.height > 0 ? { width: r.width, height: r.height } : null);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref]);
-
-  return box;
-}
+export { Greeting } from "./greeting-card";
+import {
+  BATS,
+  CAST,
+  CLOUD_COUNT,
+  CLOUDS_UNKNOWN,
+  CRANES,
+  GULLS,
+} from "./greeting-choreography";
+import { useBox } from "./use-box";
 
 /**
  * Exported so the scroll takeover draws the **same** scene the card draws.
@@ -390,15 +240,26 @@ export function Sky({
           </g>
         ))}
 
-      {cast && phase && CAST[phase].crane && (
-        <g style={reduced ? { transform: "translateX(250px)" } : { animation: "sky-fly 78s linear -30s infinite" }}>
-          <g style={{ transform: `translate(0px, ${liftBy(26, above, CRANE_DEPTH)}px) scale(0.8)` }}>
-            <g style={{ animation: reduced ? undefined : "sky-bob 4.6s ease-in-out infinite" }}>
-              <Crane reduced={reduced} />
+      {cast &&
+        phase &&
+        CAST[phase].crane &&
+        CRANES.map((c, i) => (
+          <g
+            key={`crane-${i}`}
+            style={
+              reduced
+                ? { transform: `translateX(${c.restX}px)` }
+                : { animation: `sky-fly ${c.cross} linear ${c.delay} infinite` }
+            }
+            opacity={c.opacity}
+          >
+            <g style={{ transform: `translate(0px, ${liftBy(c.y, above, c.depth)}px) scale(${c.scale})` }}>
+              <g style={{ animation: reduced ? undefined : `sky-bob ${c.flap} ease-in-out infinite` }}>
+                <Crane reduced={reduced} />
+              </g>
             </g>
           </g>
-        </g>
-      )}
+        ))}
 
       {cast && phase && CAST[phase].squirrel && (
         <g style={{ transform: "translate(322px, 104px) scale(0.85)" }}>

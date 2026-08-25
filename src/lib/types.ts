@@ -95,6 +95,17 @@ export type User = {
   role: "admin" | "member";
   teamIds: string[];
   createdAt: string;
+  /**
+   * When the password last changed, ISO.
+   *
+   * Sessions issued before this are refused. Without it, changing a password
+   * because it was compromised would leave the attacker's session working —
+   * which is the one moment a password change most needs to mean something.
+   *
+   * Optional: accounts written before this field existed simply have no
+   * cut-off, and nothing about them is invalidated.
+   */
+  passwordChangedAt?: string;
 };
 
 export const DEFAULT_FIELD_MAP: FieldMap = {
@@ -104,56 +115,8 @@ export const DEFAULT_FIELD_MAP: FieldMap = {
 };
 
 /** Keys are lowercased before lookup, so only write lowercase keys here. */
-export const DEFAULT_VALUE_MAP: ValueMap = {
-  severity: {
-    "1 - critical": "Critical",
-    "2 - high": "Major",
-    "3 - medium": "Minor",
-    "4 - low": "Minor",
-    critical: "Critical",
-    blocker: "Critical",
-    high: "Major",
-    major: "Major",
-    medium: "Minor",
-    minor: "Minor",
-    low: "Minor",
-  },
-  environment: {
-    "it-uat": "IT-UAT",
-    ituat: "IT-UAT",
-    it: "IT-UAT",
-    "biz-uat": "BIZ-UAT",
-    bizuat: "BIZ-UAT",
-    uat: "BIZ-UAT",
-    biz: "BIZ-UAT",
-    cug: "CUG",
-    stage: "CUG",
-    staging: "CUG",
-    "cug(stage)": "CUG",
-    prod: "Production",
-    production: "Production",
-    live: "Production",
-  },
-  status: {
-    new: "Open",
-    open: "Open",
-    active: "Open",
-    "to do": "Open",
-    commented: "Commented",
-    "need more info": "Commented",
-    "for qa validation": "For QA Validation",
-    "qa validation": "For QA Validation",
-    resolved: "For QA Validation",
-    "ready for test": "For QA Validation",
-    "not a bug": "Not a Bug",
-    "by design": "Not a Bug",
-    rejected: "Not a Bug",
-    closed: "Closed",
-    done: "Closed",
-    completed: "Closed",
-    removed: "Not a Bug",
-  },
-};
+export { DEFAULT_VALUE_MAP } from "./value-map.ts";
+
 
 /** Statuses that mean the item no longer needs work. */
 export const TERMINAL_STATUSES: Status[] = ["Closed", "Not a Bug"];

@@ -558,9 +558,90 @@ async function auth(admin) {
     ["sync another POD", "/api/sync", json('{"teamId":"payments-pod"}')],
     ["test another POD's connection", "/api/teams/payments-pod/test", { method: "POST" }],
     ["promote themselves", "/api/users", json('{"email":"chk-member@x.com","role":"admin"}')],
+    // The one that matters most: a member must not be able to take over the
+    // admin account by setting its password.
+    ["reset the admin's password", "/api/users/password", json('{"email":"' + ADMIN_EMAIL + '","next":"takeover12345"}')],
+    ["reset another member's password", "/api/users/password", json('{"email":"chk-sub@x.com","next":"takeover12345"}')],
   ];
   for (const [label, path, init] of writes) check(label, (await call(member, path, init)).status === 403);
   check("still blocked afterwards", (await call(member, "/api/metrics?teamId=payments-pod")).status === 403);
+
+  section("auth — changing your own password");
+  /*
+   * Self-service, and the only route that touches the caller's own credentials.
+   * The current password is verified rather than merely required: a live
+   * session is not proof of who is at the keyboard, and an unlocked laptop
+   * would otherwise be a complete account takeover.
+   */
+  {
+    const post = (j, body) => call(j, "/api/account/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+    check("anonymous cannot change a password", (await post(anon, { current: "x", next: "whatever12345" })).status === 401);
+
+    const wrong = await post(member, { current: "not-the-password", next: "brandNew12345" });
+    check("a wrong current password is refused", wrong.status === 403, `[${wrong.status}]`);
+    check("...and says so plainly", /not your current password/i.test(wrong.json?.error ?? ""), wrong.json?.error);
+
+    check("a short new password is refused", (await post(member, { current: "pw123456", next: "tiny" })).status === 400);
+    check("reusing the current password is refused", (await post(member, { current: "pw123456", next: "pw123456" })).status === 400);
+    check("a blank current password is refused", (await post(member, { current: "", next: "brandNew12345" })).status === 400);
+    check("malformed JSON is a 400, not a 500", (await call(member, "/api/account/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{{{" })).status === 400);
+
+    /*
+     * The escalation attempt. This route reads the account from the session,
+     * never from the body, and writes only the hash — so a role or a POD list
+     * sent alongside a legitimate password change must do nothing at all.
+     */
+    const smuggle = await post(member, { current: "pw123456", next: "changed12345", role: "admin", teamIds: ["payments-pod"], email: "admin@example.com" });
+    check("a valid change succeeds", smuggle.status === 200, `[${smuggle.status}]`);
+
+    const after = await signIn("chk-member@x.com", "changed12345");
+    check("the new password works", (await call(after, "/api/metrics")).status === 200);
+    check("the old password does not", (await call(await signIn("chk-member@x.com", "pw123456"), "/api/metrics")).status !== 200);
+    check("the smuggled role did nothing", (await call(after, "/api/users")).status === 403);
+    check("the smuggled POD did nothing", (await call(after, "/api/metrics?teamId=payments-pod")).status === 403);
+
+    // Put it back, so the rest of the suite still signs in with pw123456.
+    check("changing it back works", (await post(after, { current: "changed12345", next: "pw123456" })).status === 200);
+  }
+
+  section("auth — an admin setting somebody else's password");
+  /*
+   * There is no email reset in this product, so without this a forgotten
+   * password is unrecoverable: the alternative is deleting the account and
+   * recreating it, which drops the role and every POD they could see.
+   */
+  {
+    const post = (j, body) => call(j, "/api/users/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+    check("a short password is refused", (await post(admin, { email: "chk-member@x.com", next: "tiny" })).status === 400);
+    check("an unknown account is a 404", (await post(admin, { email: "ghost@nowhere.com", next: "longEnough123" })).status === 404);
+
+    // An account created without a password signs in through SSO; giving it a
+    // local one would be a second way in that the identity provider cannot revoke.
+    await call(admin, "/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "chk-sso@x.com", name: "SSO", role: "member" }) });
+    const sso = await post(admin, { email: "chk-sso@x.com", next: "longEnough123" });
+    check("an SSO account is refused", sso.status === 400, `[${sso.status}]`);
+    check("...and says why", /single sign-on/i.test(sso.json?.error ?? ""), sso.json?.error);
+
+    const done = await post(admin, { email: "chk-member@x.com", next: "resetByAdmin7" });
+    check("a valid reset succeeds", done.status === 200, `[${done.status}]`);
+    check("it names whose password moved", done.json?.email === "chk-member@x.com");
+    check("it flags that this was not self", done.json?.self === false);
+
+    const reset = await signIn("chk-member@x.com", "resetByAdmin7");
+    check("the reset password works", (await call(reset, "/api/metrics")).status === 200);
+
+    // The whole reason this beats delete-and-recreate.
+    const row = (await call(admin, "/api/users")).json.users.find((u) => u.email === "chk-member@x.com");
+    check("the role survived the reset", row?.role === "member", row?.role);
+    check("their PODs survived the reset", JSON.stringify(row?.teamIds) === JSON.stringify(["amc-pod"]), JSON.stringify(row?.teamIds));
+    check("they still have a password", row?.hasPassword === true);
+
+    // Back to what the rest of the suite expects.
+    await post(admin, { email: "chk-member@x.com", next: "pw123456" });
+    check("restored for the rest of the run", (await call(await signIn("chk-member@x.com", "pw123456"), "/api/metrics")).status === 200);
+  }
 
   section("auth — a malformed stored user cannot widen access");
   // Written straight into OpenSearch, bypassing saveUser's sanitising, so this
@@ -590,7 +671,13 @@ async function auth(admin) {
   }
 
   section("auth — page guards and anonymous access");
-  const adminPage = await call(member, "/admin");
+  /*
+   * A fresh session: the password sections above changed this account's
+   * password, and a password change now ends every session it had — including
+   * the jar this suite was holding. Reusing it would test a signed-out caller.
+   */
+  const memberNow = await signIn("chk-member@x.com", "pw123456");
+  const adminPage = await call(memberNow, "/admin");
   check("/admin redirects a member", adminPage.status === 307 && adminPage.location?.endsWith("/"));
   check("/admin allows an admin", (await call(admin, "/admin")).status === 200);
   for (const path of ["/api/metrics", "/api/items", "/api/users", "/api/teams"])
@@ -598,7 +685,11 @@ async function auth(admin) {
   const home = await call(anon, "/");
   check("anonymous / redirects to login", home.status === 307 && home.location?.includes("/login"));
 
-  await call(admin, "/api/users?email=chk-member@x.com", { method: "DELETE" });
+  // Every account this suite created, gone again — a run must leave the
+  // instance exactly as it found it.
+  for (const email of ["chk-member@x.com", "chk-sso@x.com"]) {
+    await call(admin, `/api/users?email=${encodeURIComponent(email)}`, { method: "DELETE" });
+  }
 }
 
 // --------------------------------------------------------------------- main

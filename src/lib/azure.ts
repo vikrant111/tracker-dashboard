@@ -106,11 +106,44 @@ export async function fetchWorkItems(team: Team, ids: number[]) {
 }
 
 /** Verify a connection from the admin UI without importing anything. */
-export async function testConnection(team: Team): Promise<{ ok: true; project: string } | { ok: false; error: string }> {
+export async function testConnection(
+  team: Team,
+): Promise<{ ok: true; project: string; types: string[]; unmatched: string[] } | { ok: false; error: string }> {
   try {
     const { orgUrl, project, pat } = creds(team);
     await call(`${orgUrl}/_apis/projects/${encodeURIComponent(project)}?${API}`, pat);
-    return { ok: true, project };
+
+    /*
+     * What this project actually calls its work items. Reported back so the
+     * admin can copy them rather than guess — the query matches type names
+     * exactly, and a board using "3IN1 TASK" matches none of the defaults.
+     */
+    let types: string[] = [];
+    try {
+      const res = await call<{ value?: { name?: string; isDisabled?: boolean }[] }>(
+        `${orgUrl}/${encodeURIComponent(project)}/_apis/wit/workitemtypes?${API}`,
+        pat,
+      );
+      types = (res.value ?? [])
+        .filter((t) => t?.name && !t.isDisabled)
+        .map((t) => String(t.name))
+        .sort((a, b) => a.localeCompare(b));
+    } catch {
+      // Listing types needs no extra scope, but if it fails the connection is
+      // still good — report that rather than turning a success into an error.
+    }
+
+    /*
+     * Which of the configured types this project does not have. Empty when the
+     * POD has none set, because then the defaults apply and naming them as
+     * "unmatched" would be noise on a board that has a Bug and nothing else.
+     */
+    const configured = team.azure.workItemTypes ?? [];
+    const unmatched = types.length
+      ? configured.filter((t) => !types.some((real) => real.toLowerCase() === String(t).trim().toLowerCase()))
+      : [];
+
+    return { ok: true, project, types, unmatched };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

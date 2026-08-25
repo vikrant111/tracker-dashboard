@@ -30,7 +30,13 @@
 
   --ink: #0e1a26;
   --ink-2: #3d5266;
-  --ink-muted: #5a6d80;
+  /*
+   * Darkened from #5a6d80 so small labels clear 4.5:1 against the *darker*
+   * stop of the panel gradient, and against a panel sitting over the greeting
+   * sky. The old value measured 4.13:1 there — axis labels on a chart over the
+   * sky were genuinely hard to read.
+   */
+  --ink-muted: #526578;
 
   --hairline: rgba(14, 26, 38, 0.11);
   --grid: rgba(14, 26, 38, 0.07);
@@ -131,7 +137,7 @@
 
     --ink: #eef4fa;
     --ink-2: #a3b4c6;
-    --ink-muted: #8496ab;
+    --ink-muted: #9caec3;
 
     --hairline: rgba(255, 255, 255, 0.09);
     --grid: rgba(255, 255, 255, 0.06);
@@ -140,8 +146,21 @@
     --wash-2: rgba(255, 255, 255, 0.1);
     --wash-3: rgba(255, 255, 255, 0.14);
 
-    --glass-a: rgba(148, 190, 240, 0.11);
-    --glass-b: rgba(120, 170, 230, 0.045);
+    /*
+     * Opaque, not tinted glass.
+     *
+     * These were 0.11 and 0.045 — barely there. Over the dark plane that looked
+     * fine and measured 13.55:1, which is why the contrast suite passed them.
+     * But a panel over the **greeting sky** has a bright afternoon behind it,
+     * and there the same text measured **1.44:1**: the chart in that card could
+     * not be read at all.
+     *
+     * At 0.92/0.86 the worst case is 10:1 over a bright sky and 12.5:1 over the
+     * plane. The glassiness comes from the gradient, the rim and the backdrop
+     * blur — not from letting the background through.
+     */
+    --glass-a: rgba(31, 48, 66, 0.92);
+    --glass-b: rgba(20, 33, 47, 0.86);
     --glass-border: rgba(255, 255, 255, 0.1);
     --glass-inset: rgba(255, 255, 255, 0.1);
     --glass-shadow:
@@ -217,7 +236,7 @@
 
   --ink: #eef4fa;
   --ink-2: #a3b4c6;
-  --ink-muted: #8496ab;
+  --ink-muted: #9caec3;
 
   --hairline: rgba(255, 255, 255, 0.09);
   --grid: rgba(255, 255, 255, 0.06);
@@ -226,8 +245,8 @@
   --wash-2: rgba(255, 255, 255, 0.1);
   --wash-3: rgba(255, 255, 255, 0.14);
 
-  --glass-a: rgba(148, 190, 240, 0.11);
-  --glass-b: rgba(120, 170, 230, 0.045);
+  --glass-a: rgba(31, 48, 66, 0.92);
+  --glass-b: rgba(20, 33, 47, 0.86);
   --glass-border: rgba(255, 255, 255, 0.1);
   --glass-inset: rgba(255, 255, 255, 0.1);
   --glass-shadow:
@@ -370,6 +389,8 @@
  * makes the sky invisible again; `pnpm check:theme` fails if it does.
  */
 html {
+  /* Paired with `body` below — whichever the browser propagates must clip. */
+  overflow-x: clip;
   background:
     radial-gradient(ellipse 90% 60% at 50% -10%, var(--veil), transparent 65%),
     linear-gradient(180deg, var(--plane), var(--plane-2));
@@ -404,7 +425,16 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  /*
+   * `clip`, not `hidden`. `hidden` forces the computed `overflow-y` to `auto`,
+   * which makes the body a scroll container and undermines the sticky top bar
+   * — and it propagates to the viewport in a way phones handle inconsistently,
+   * which is how the page ended up scrolling sideways behind a bar that was
+   * meant to be clipped.
+   *
+   * `clip` clips, creates no scroll container, and leaves sticky alone.
+   */
+  overflow-x: clip;
   min-height: 100vh;
 }
 
