@@ -33,7 +33,7 @@ to the recipe.
      src/lib/types.ts             the vocabulary itself
                                    │
                                    ▼
-  ⑤  OpenSearch                  src/lib/mappings.json
+  ⑤  MongoDB                     src/db/schemas/item.schema.ts
                                    │
                                    ▼
   ⑥  src/lib/metrics/            one query → every tile and chart
@@ -134,25 +134,30 @@ Say you want `Iteration` (the sprint) on the board.
 | Order | File | What | Skip it and… |
 |---|---|---|---|
 | 1 | [`types.ts`](../src/lib/types.ts) | add `iteration: string` to `Item` | nothing compiles — a good first failure |
-| 2 | [`mappings.json`](../src/lib/mappings.json) | add it as `keyword` | it stores but cannot be aggregated or filtered |
+| 2 | [`item.schema.ts`](../src/db/schemas/item.schema.ts) | add the field, and an index if you will group or filter by it | **the value is silently dropped on write** |
 | 3 | [`normalize.ts`](../src/lib/normalize.ts) | read it in **`fromAzure`** | Azure items have no value |
 | 4 | [`normalize.ts`](../src/lib/normalize.ts) | read it in **`fromRow`** | spreadsheet items have no value |
 | 5 | [`normalize/columns.ts`](../src/lib/normalize/columns.ts) | add to `COLUMN_ALIASES` **and** `EXPORT_COLUMNS` | the round trip breaks — a downloaded report cannot be re-uploaded |
 | 6 | [`metrics/types.ts`](../src/lib/metrics/types.ts) + [`api.ts`](../src/lib/api.ts) | add to `Filters` and to `filtersFromRequest` | you cannot filter or drill by it |
 | 7 | [`components/`](../src/components/) | show it | it is in the data and nowhere on screen |
 
-**Step 2 is the one people forget.** OpenSearch will happily store a field it
-has no mapping for, and it will look fine until you try to group by it and get
-nothing back.
+**Step 2 is the one people forget**, and under MongoDB it fails harder than it
+used to. The schema is `strict`, so a field it does not declare is **thrown away
+at write time** — not stored-but-unaggregatable, simply gone. Everything
+compiles, the import reports success, and the column is empty forever.
+
+A check asserts that every field on `Item` appears in the schema, so this fails
+the suite rather than the dashboard.
 
 **Step 5 is the one that bites later.** Export and import share one definition
 on purpose, and a check asserts every exported header maps back through
 `mapHeaders`. Add a column to one and not the other and the suite fails — which
 is the point.
 
-> ⚠️ **Existing documents will not have the new field.** OpenSearch cannot add a
-> field to documents already written. Either run **Full resync** on each POD, or
-> write the reader to treat missing as a default. Recipe 7 covers reindexing.
+> ⚠️ **Existing documents will not have the new field.** Nothing back-fills
+> them. Either run **Full resync** on each POD, or give the field a schema
+> default and write the reader to cope with it missing. Recipe 7 covers the
+> rebuild.
 
 ---
 
@@ -234,13 +239,17 @@ A number you cannot click is a number nobody can check.
 
 ---
 
-## Recipe 7 · "I changed a mapping and need to reindex"
+## Recipe 7 · "I changed the schema and need to rebuild"
 
-OpenSearch mappings are **immutable once written**. Adding a field is fine;
-changing an existing field's type is not.
+MongoDB has no fixed mapping, so **adding** a field needs nothing but the schema
+change — existing documents simply lack it. Two changes still need a rebuild:
+
+- **changing a field's type** (a string that becomes a date), because the old
+  documents keep the old type and the aggregation sees both;
+- **renaming** a field, because nothing migrates the values across.
 
 ```bash
-pnpm seed --reset       # drops the indices and recreates them
+pnpm seed --reset       # drops the collections and recreates them, indexes and all
 ```
 
 Then **Full resync** each POD from Admin, and re-upload any spreadsheet-sourced
@@ -261,7 +270,7 @@ For production, take a snapshot first: [operations.md](operations.md#backup-and-
 | what a board's words become | [`value-map.ts`](../src/lib/value-map.ts) |
 | the categories themselves | [`types.ts`](../src/lib/types.ts) |
 | what "closed" means | [`types.ts`](../src/lib/types.ts) `TERMINAL_STATUSES` |
-| how a field is indexed | [`mappings.json`](../src/lib/mappings.json) |
+| how a field is stored and indexed | [`item.schema.ts`](../src/db/schemas/item.schema.ts) |
 | every tile and chart | [`metrics.ts`](../src/lib/metrics.ts) |
 | what a drill-down accepts | [`api.ts`](../src/lib/api.ts) `filtersFromRequest` ← **the security boundary** |
 | the health score | [`health.ts`](../src/lib/health.ts) |

@@ -1,4 +1,4 @@
-import { os } from "@/lib/opensearch";
+import { connectToDatabase, isConnected } from "@/db/connect";
 import { resolveAuthSecret } from "@/lib/auth-secret";
 
 export const dynamic = "force-dynamic";
@@ -52,8 +52,14 @@ export async function GET(req: Request) {
   }
 
   try {
-    // The cheapest call that proves the connection and credentials both work.
-    await os().ping();
+    /*
+     * Connect, then ping. `connectToDatabase` is a no-op once warm, so this is
+     * cheap — and the ping is what proves the socket is still alive rather than
+     * merely that we once opened one.
+     */
+    const mongoose = await connectToDatabase();
+    await mongoose.connection.db?.admin().ping();
+    if (!isConnected()) throw new Error("connection is not open");
     return Response.json({ status: "ok", store: "reachable" }, { headers: noStore });
   } catch {
     /*
@@ -62,7 +68,7 @@ export async function GET(req: Request) {
      * learning the cluster URL from an error string is how a health endpoint
      * becomes reconnaissance.
      */
-    console.error("[health] OpenSearch is not reachable");
+    console.error("[health] MongoDB is not reachable");
     return Response.json({ status: "unavailable", store: "unreachable" }, { status: 503, headers: noStore });
   }
 }

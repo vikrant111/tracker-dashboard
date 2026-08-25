@@ -115,69 +115,78 @@ real fallback after its variable, so nothing looks broken — just plainer.
 
 ---
 
-## 3. OpenSearch, without Docker
+## 3. The database, without Docker
 
-The dashboard cannot run without OpenSearch. `docker compose up` is the
-convenience, not the requirement.
+The dashboard needs MongoDB. It does **not** need Docker, and it does not need
+you to install anything. Pick whichever of these your network allows.
 
-### Run it from the tarball
+### The easy one: a hosted cluster
 
-No admin rights, no daemon, no install — and it bundles its own Java, so you do
-not need a JDK either.
+Nothing installed, nothing running on your machine. [MongoDB
+Atlas](https://www.mongodb.com/cloud/atlas/register) has a free tier that is
+more than this dashboard needs.
 
-1. Download the `tar.gz` (Linux/macOS) or `.zip` (Windows) from
-   [opensearch.org/downloads](https://opensearch.org/downloads.html)
-2. Unpack it anywhere you can write
-3. In `config/opensearch.yml`, add:
-
-   ```yaml
-   discovery.type: single-node
-   plugins.security.disabled: true
-   ```
-
-4. Start it:
-
-   ```bash
-   ./bin/opensearch          # Windows: bin\opensearch.bat
-   ```
-
-5. Confirm, in another terminal:
-
-   ```bash
-   curl localhost:9200
-   ```
-
-Leave that terminal running — it is the database. `OPENSEARCH_URL` already
-defaults to `http://localhost:9200`, so there is nothing to configure.
-
-> Disabling the security plugin is right for a local single node on your own
-> machine and wrong for anything shared. For a shared instance, leave it on and
-> set `OPENSEARCH_USERNAME` / `OPENSEARCH_PASSWORD`.
-
-### Or use one somebody else runs
-
-If your organisation already has an OpenSearch or Elasticsearch cluster, point
-at it and skip the download entirely:
+1. Create a free **M0** cluster
+2. **Database Access** → add a user with a password
+3. **Network Access** → add your current IP
+4. **Connect → Drivers** → copy the connection string
 
 ```bash
-OPENSEARCH_URL=https://opensearch.internal.example
-OPENSEARCH_USERNAME=…
-OPENSEARCH_PASSWORD=…
+MONGODB_URI=mongodb+srv://USER:PASSWORD@cluster0.abcde.mongodb.net
+MONGODB_DB=pod_tracker
 ```
 
-Indices are created on first run and prefixed with `OPENSEARCH_INDEX_PREFIX`
-(default `tracker`), so sharing a cluster with other applications is safe. Pick
-a distinct prefix if you want to be sure.
+That is the whole configuration. Collections and indexes are created on first
+use; there is no migration step.
 
-### Memory
+> **If the password contains `@ : / ? # %`** it must be percent-encoded in the
+> connection string, or the driver reads it as part of the host. The app names
+> this specifically when authentication fails, because it is the single most
+> common setup mistake.
 
-The tarball defaults to a 1 GB heap and will not start on a machine that cannot
-give it that. To lower it, edit `config/jvm.options`:
+> **`mongodb+srv://` needs DNS SRV lookups**, which some corporate networks
+> block. If it fails to resolve, Atlas will also give you a plain
+> `mongodb://host1,host2,host3/…` string under *Connect → Drivers → older
+> driver versions*. That form needs no SRV.
 
+### The local one: no install, no Docker
+
+If outbound port 27017 is blocked — common on a corporate network — run a real
+MongoDB locally without installing it:
+
+```bash
+pnpm mongo:local
 ```
--Xms512m
--Xmx512m
+
+It downloads a `mongod` binary the first time (about 100 MB, cached under
+`node_modules`) and runs it against `.mongo-data/` in the repo, so your data
+survives restarts. Leave it in its own terminal — it is the database.
+
+```bash
+MONGODB_URI=mongodb://127.0.0.1:27017
 ```
+
+That download goes through the same proxy as everything else, so if it fails,
+fix the certificate in section 1 first.
+
+### Or one somebody else runs
+
+If your organisation already has a MongoDB, point at it and skip both:
+
+```bash
+MONGODB_URI=mongodb://mongo.internal.example:27017
+MONGODB_DB=pod_tracker
+MONGODB_COLLECTION_PREFIX=tracker
+```
+
+Collections are prefixed, so sharing a cluster with other applications is safe.
+Pick a distinct prefix if you want to be certain.
+
+### Why this is easier than it was
+
+The app used to need MongoDB, which meant a JVM, a gigabyte of heap and
+either Docker or a tarball. MongoDB replaced it precisely so that a locked-down
+machine has a route in: **a URL in `.env.local` is the entire setup.**
 
 ---
 
@@ -209,7 +218,8 @@ echo 'FONT_SOURCE=local' >> .env.local
 pnpm build --offline
 ```
 
-You will still need the OpenSearch tarball, which is a single download.
+The database is the one thing left: either a hosted cluster, or `pnpm mongo:local`
+(whose binary download you can also carry over in `node_modules`).
 
 ---
 
@@ -224,7 +234,7 @@ pnpm check:env                    # what is broken here, and how to fix it
 # whatever it told you, then:
 pnpm install
 echo 'FONT_SOURCE=local' >> .env.local     # if Google is unreachable
-./opensearch-*/bin/opensearch &             # if you have no Docker
+pnpm mongo:local &                          # if you have no database
 pnpm seed                                   # sample data, no Azure needed
 pnpm dev
 ```
@@ -240,7 +250,7 @@ pnpm dev
 |---|---|---|
 | `pnpm install` hangs, no error | Proxy needs authentication | `export HTTPS_PROXY=http://user:pass@proxy:port` |
 | Build succeeds, fonts look wrong | `FONT_SOURCE=local` with no files committed | `pnpm fonts:vendor`, or use `system` |
-| `pnpm seed` fails instantly | OpenSearch not up yet | Wait ~30s after starting it, `curl localhost:9200` |
-| OpenSearch exits immediately | Not enough heap | Lower `-Xmx` in `config/jvm.options` |
+| `pnpm seed` fails instantly | The database is unreachable | Run `pnpm check:env` — it names which of the four things is wrong |
+| `mongodb+srv://` will not resolve | The network blocks DNS SRV | Use the plain `mongodb://host1,host2,host3/…` form Atlas also offers |
 | Works in dev, fails in `pnpm build` | `FONT_SOURCE` set in the shell but not `.env.local` | Put it in `.env.local` |
 | Certificate error only in `pnpm build` | `NODE_EXTRA_CA_CERTS` not exported in that shell | Add it to your shell profile |

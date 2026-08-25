@@ -24,7 +24,7 @@ right and were not. VS Code Copilot loads it automatically.
 
 Path-scoped rules in [`.github/instructions/`](.github/instructions/) load
 automatically in VS Code when a matching file is open — API and auth, Azure
-integration, OpenSearch, UI and charts, and how the check suites are written.
+integration, the database, UI and charts, and how the check suites are written.
 
 **pnpm, never npm.**
 

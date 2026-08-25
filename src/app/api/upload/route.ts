@@ -1,7 +1,8 @@
 import { Readable } from "node:stream";
 import ExcelJS from "exceljs";
 import { fromRow, pickDataSheet } from "@/lib/normalize";
-import { IDX, bulkIndex, ensureIndices } from "@/lib/opensearch";
+import { bulkUpsertItems } from "@/controllers/items.controller";
+import { connectToDatabase } from "@/db/connect";
 import { canSeeTeam, errorResponse, requireUser } from "@/lib/session";
 import { getTeam } from "@/lib/teams";
 import type { Item } from "@/lib/types";
@@ -30,7 +31,7 @@ export async function POST(req: Request) {
     const team = await getTeam(teamId);
     if (!team) return Response.json({ error: "POD not found." }, { status: 404 });
 
-    await ensureIndices();
+    await connectToDatabase();
 
     const bytes = await file.arrayBuffer();
 
@@ -149,7 +150,7 @@ export async function POST(req: Request) {
     const unique = [...byId.values()];
     const duplicates = items.length - unique.length;
 
-    const failed = await bulkIndex(IDX.items, unique);
+    const failed = await bulkUpsertItems(unique);
 
     return Response.json({
       imported: unique.length - failed,

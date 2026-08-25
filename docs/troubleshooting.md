@@ -87,7 +87,7 @@ The nested option form is required:
 `{ wildcard: { field: { value: "*x*", case_insensitive: true } } }`.
 
 **Type errors reading `body.aggregations`.**
-Go through `search<T>()` in `opensearch.ts`, which narrows the client's
+Go through the helpers in `controllers/dashboard.shape.ts`, which narrow the
 union-typed response once, rather than casting at the call site.
 
 **401 on every API call after changing auth.**
@@ -98,10 +98,11 @@ They are assigned to no PODs. That is a deliberate 403 — check
 `filtersFromRequest()` still throws rather than falling through to an unscoped
 query.
 
-## OpenSearch
+## The database
 
 **Connection refused on 9200.**
-`brew services start opensearch`, then wait 20–40s. Check with `curl -s localhost:9200`.
+`pnpm mongo:local` (no install, no Docker), or set `MONGODB_URI` to a hosted
+cluster. `pnpm check:env` says which of the two is wrong.
 
 **Useful direct queries**
 
@@ -124,10 +125,10 @@ Each one is covered by a case in `pnpm check`, so it stays fixed.
 | Bug | Cause | Fix |
 |---|---|---|
 | Ageing drill-downs returned one item too many | `lte` upper bound against lower-inclusive/upper-exclusive `date_range` buckets | `lt` for the upper bound |
-| Search 500'd | flat `wildcard` with a sibling `case_insensitive` key | nested option form |
+| Search 500'd on `c++`, and again on `%00` | regex metacharacters, then a null byte BSON cannot carry inside a regex | `escapeRegex` escapes the first and strips the second |
 | Resolved items counted as closed | `ResolvedDate` used as a fallback for `ClosedDate` | only `ClosedDate` closes; `isActive` also requires no close date |
-| A drawer claimed "200 items" for a 360-item slice | the page size was reported as the count | `listItems` returns the true total via `track_total_hits` |
-| **The whole dashboard 500'd intermittently** with `unsupported_operation_exception: … DateRangeIncludingNowQuery … does not implement createWeight` | OpenSearch wraps any range containing `now` in a query class that cannot produce a weight; inside a filter aggregation this throws, but only for some segment states, so it looked random | all date windows resolved to absolute epoch millis in JS (`daysAgo` / `floorDay` / `floorWeek`) — no `now` reaches OpenSearch |
+| A drawer claimed "200 items" for a 360-item slice | the page size was reported as the count | `listItems` returns the true total from a `$facet` that pages and counts in one query |
+| **The whole dashboard 500'd intermittently** *(pre-MongoDB)* | the old store wrapped any range containing `now` in a query class that could not produce a weight; inside a filter aggregation it threw, but only for some segment states, so it looked random | all date windows resolve to absolute epoch millis in JS (`daysAgo` / `floorDay` / `floorWeek`). **The rule outlived the store**: `$NOW` would let two panels straddle midnight and disagree by a day |
 | Future-dated items dragged the average age below reality | the age script could return a negative | floored at zero in the script |
 | Duplicate ids in one upload reported 3 imported when 1 document was written | rows counted instead of documents | deduped by id before indexing, `duplicates` reported separately |
 
@@ -328,7 +329,7 @@ both, so the fix that looked right cannot come back.
 
 | Bug | Cause | Fix |
 |---|---|---|
-| **Download report returned a 500, saved as `export.json`** | `EXPORT.maxRows` was 20,000 and `listItems` asks for it as a single `size`. OpenSearch refuses any `from + size` above `index.max_result_window` — 10,000 by default — so it failed on **every** board, including one holding 360 items. Chrome named the file from the JSON error response | `streamItems` pages with `search_after`, which has no window at all. `workItemId` is appended to the sort so the order is total — with ties, documents can repeat across pages or be skipped between them |
+| **Download report returned a 500, saved as `export.json`** *(pre-MongoDB)* | `EXPORT.maxRows` was 20,000 asked for as a single page. The old store refused any `from + size` above its result window — 10,000 by default — so it failed on **every** board, including one holding 360 items. Chrome named the file from the JSON error response | `streamItems` pages with a cursor. MongoDB has no such window, but the tiebreak still matters: `workItemId` is appended to every sort so the order is **total** — with ties, documents repeat across pages or vanish between them |
 
 The response now carries `X-Row-Count`, so a caller can tell a complete export
 from one that reached the cap.

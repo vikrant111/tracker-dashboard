@@ -5,4 +5,9 @@
 # build is dead weight — declined deliberately rather than left as an unresolved
 # warning, which pnpm exits non-zero on and which then blocks every script.
 allowBuilds:
+  # Its postinstall downloads a mongod binary from fastdl.mongodb.org. Declined,
+  # so `pnpm install` stays quick and — more to the point — still works behind a
+  # corporate proxy that would refuse that download. The package fetches the
+  # binary lazily the first time the check suite actually asks for one.
+  mongodb-memory-server: false
   sharp: false

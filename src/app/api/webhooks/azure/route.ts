@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { IDX, os } from "@/lib/opensearch";
+import { deleteItem } from "@/controllers/items.controller";
 import { syncSingleWorkItem, teamForAreaPath } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
@@ -55,9 +55,7 @@ export async function POST(req: Request) {
   if (!team) return Response.json({ ok: true, skipped: "no matching POD" });
 
   if (payload.eventType === "workitem.deleted") {
-    await os()
-      .delete({ index: IDX.items, id: `${team.id}:${workItemId}`, refresh: true })
-      .catch(() => {});
+    await deleteItem(`${team.id}:${workItemId}`).catch(() => {});
     return Response.json({ ok: true, deleted: workItemId });
   }
 

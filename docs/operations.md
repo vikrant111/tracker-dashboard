@@ -6,9 +6,9 @@
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENSEARCH_URL` | `http://localhost:9200` | |
-| `OPENSEARCH_USERNAME` / `_PASSWORD` | blank | blank when the security plugin is off |
-| `OPENSEARCH_INDEX_PREFIX` | `tracker` | lets several environments share a cluster |
+| `MONGODB_URI` | `mongodb://127.0.0.1:27017` | required in production |
+| `MONGODB_DB` | `pod_tracker` | Atlas strings usually omit the database |
+| `MONGODB_COLLECTION_PREFIX` | `tracker` | lets several environments share a cluster |
 | `AUTH_MODE` | `password` | `off` \| `password` \| `entra` \| `both` |
 | `AUTH_SECRET` | — | `openssl rand -base64 32` |
 | `AUTH_TRUST_HOST` | `true` | needed behind a proxy |
@@ -63,18 +63,20 @@ optimiser and this app renders no `<Image>`.
 ## Running
 
 ```bash
-brew install opensearch && brew services start opensearch   # or: docker compose up -d
+pnpm mongo:local   # a real MongoDB, nothing installed — or set MONGODB_URI
 pnpm install
-pnpm seed          # indices + admin + demo data
+pnpm seed          # collections, indexes, admin + demo data
 pnpm dev
 ```
 
-Seed variants: `-- --no-demo` (indices and admin only), `-- --reset` (drop
-indices first). The seeder uses a fixed PRNG seed, so demo data is identical
+Seed variants: `-- --no-demo` (indexes and admin only), `-- --reset` (drop the
+collections first). The seeder uses a fixed PRNG seed, so demo data is identical
 every run.
 
-OpenSearch takes 20–40 seconds to accept connections after starting. `pnpm
-seed` fails fast with the start command if it cannot reach the cluster.
+`pnpm check:env` reports what is missing before you run anything else. `pnpm
+seed` fails fast with a sentence naming the real problem when it cannot reach
+the cluster — a blocked port, an IP that is not on the Atlas allowlist, or a
+password with an unencoded `@` in it.
 
 ## Verifying a change
 
@@ -98,9 +100,9 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass
 
 pnpm dev           # in one terminal
-pnpm check         # in another — 356 end-to-end checks
-pnpm check:theme   # static, no server needed — 668 theme-token checks
-pnpm check:ui      # static — 1626 checks on client-side pure logic
+pnpm check         # in another — 330 end-to-end checks
+pnpm check:theme   # static, no server needed — 728 theme-token checks
+pnpm check:ui      # static — 1653 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code
 ```
 
@@ -198,7 +200,7 @@ in-process `setInterval`. On serverless, set `SYNC_POLL_SECONDS=0` and drive
 | `AUTH_TRUST_HOST=true` | you are behind a proxy |
 | `AUTH_MODE` | anything but `off`, which disables login entirely |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | becomes the first account, once |
-| `OPENSEARCH_URL` + credentials | with the security plugin **on** — the dev compose file turns it off |
+| `MONGODB_URI` | **required** — production never falls back to localhost |
 
 Optional: the three `AZDO_*` variables (a POD is created and syncs on its own),
 `AZDO_WEBHOOK_TOKEN` (unset rejects every webhook call, which is the safe
@@ -231,7 +233,7 @@ pnpm start          # not `pnpm dev`
 | Probe | Path | Answers |
 |---|---|---|
 | **liveness** | `/api/health` | can this process serve? No I/O, so a slow database does not trigger a restart |
-| **readiness** | `/api/health?ready=1` | can it reach OpenSearch? `503` when not, so traffic stops without a kill |
+| **readiness** | `/api/health?ready=1` | can it reach MongoDB? `503` when not, so traffic stops without a kill |
 
 Both return **503 when `AUTH_SECRET` is missing or a placeholder.** That is
 deliberate and was a real bug: the health route did not import the auth config,

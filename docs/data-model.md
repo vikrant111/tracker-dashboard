@@ -1,10 +1,11 @@
 # Data model
 
-Four indices, prefixed by `OPENSEARCH_INDEX_PREFIX` (default `tracker`). Mappings
-are in [`src/lib/mappings.json`](../src/lib/mappings.json) — the single source
-shared by the app and `scripts/seed.mjs`.
+Four MongoDB collections, prefixed by `MONGODB_COLLECTION_PREFIX` (default
+`tracker`). The schemas are in [`src/db/schemas/`](../src/db/schemas/), one file
+per collection — the single source shared by the app and `scripts/seed.mjs`,
+which imports the real models rather than describing them again.
 
-## `tracker-items`
+## `tracker_items`
 
 One flat document per bug, ticket or CR. Flat on purpose: every dashboard number
 is a `terms`, `filter` or `date_range` aggregation over these fields, and nesting
@@ -12,33 +13,46 @@ would cost a `nested` query for no gain.
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | keyword | deterministic, see below |
-| `workItemId` | keyword | id on the source system |
-| `teamId` | keyword | the POD; every scoped query filters on it |
-| `source` | keyword | `azure` \| `excel` |
-| `kind` | keyword | `bug` \| `ticket` \| `cr` |
-| `type` | keyword | raw work item type (`Bug`, `User Story`, …) |
-| `title` | text + `.raw` | text for prefix search |
-| `url` | keyword, not indexed | link out to Azure |
-| `assignee` | keyword | display name — what the leaderboard groups on |
-| `assigneeEmail` | keyword | |
-| `severity` | keyword | `Critical` `Major` `Minor` `Unknown` |
-| `environment` | keyword | `IT-UAT` `BIZ-UAT` `CUG` `Production` `Unknown` |
-| `status` | keyword | `Open` `Commented` `For QA Validation` `Not a Bug` `Closed` `Unknown` |
-| `state` | keyword | raw board state, kept for debugging a mapping |
-| `priority` | integer | |
-| `tags` | keyword[] | |
-| `createdDate` | date | **the ageing anchor** |
-| `changedDate` | date | drives the sync watermark |
-| `closedDate` | date \| null | only a real close, never a resolve |
-| `isActive` | boolean | |
+| `id` | String | deterministic, see below — and the document's `_id` |
+| `workItemId` | String | id on the source system; also the sort tiebreak |
+| `teamId` | String, indexed | the POD; every scoped query filters on it |
+| `source` | String, enum | `azure` \| `excel` |
+| `kind` | String, enum | `bug` \| `ticket` \| `cr` |
+| `type` | String | raw work item type (`Bug`, `User Story`, …) |
+| `title` | String | matched by an **anchored** regex, never a text index |
+| `url` | String | link out to Azure; never queried |
+| `assignee` | String, indexed | display name — what the leaderboard groups on |
+| `assigneeEmail` | String | |
+| `severity` | String, enum | `Critical` `Major` `Minor` `Unknown` |
+| `environment` | String, enum | `IT-UAT` `BIZ-UAT` `CUG` `Production` `Unknown` |
+| `status` | String, enum | `Open` `Commented` `For QA Validation` `Not a Bug` `Closed` `Unknown` |
+| `state` | String | raw board state, kept for debugging a mapping |
+| `priority` | Number \| null | |
+| `tags` | String[] | |
+| `createdDate` | **Date**, indexed | **the ageing anchor** |
+| `changedDate` | **Date** | drives the sync watermark |
+| `closedDate` | **Date** \| null, indexed | only a real close, never a resolve |
+| `isActive` | Boolean | |
 
-### Keyword vs text
+### The schema is strict, and dates are dates
 
-Anything grouped, filtered or sorted on **must** be `keyword`. Dynamic mapping
-would type it `text` and a `terms` aggregation on a `text` field fails at query
-time. Adding a field means adding it to `mappings.json` first; changing a type
-needs a reindex (`pnpm seed --reset` in dev).
+Two rules, and both fail quietly if you break them.
+
+**A field the schema does not declare is dropped on write.** Not
+stored-and-unqueryable — gone. Everything compiles, the import reports success,
+and the column is empty forever. Add the field to `Item` *and* to
+[`item.schema.ts`](../src/db/schemas/item.schema.ts); a check asserts the two
+agree.
+
+**Dates must be `Date`, never `String`.** Declared as a string they still save
+and still read back, and only the aggregation breaks: `$dateTrunc` against a
+string returns null, so every trend bucket empties while every other panel looks
+correct. The controller converts to ISO strings on the way out, because that is
+what crosses the wire — [`items.shape.ts`](../src/controllers/items.shape.ts) is
+the one place that knows.
+
+Adding a field needs no rebuild; existing documents simply lack it. **Changing** a
+field's type or renaming one does — `pnpm seed --reset` in dev.
 
 ### Ids are deterministic
 
@@ -47,8 +61,10 @@ needs a reindex (`pnpm seed --reset` in dev).
 | Azure | `<teamId>:<workItemId>` |
 | Excel/CSV | `<teamId>:xlsx:<workItemId>` |
 
-So every sync and every re-upload **upserts**. Re-running a sync is always safe,
-which is what lets the watermark overlap by a minute without creating duplicates.
+The id is the document's `_id`, so every sync and every re-upload **upserts**.
+Re-running a sync is always safe, which is what lets the watermark overlap by a
+minute without creating duplicates. Letting Mongoose generate an `ObjectId`
+instead would duplicate the whole board on the next sync.
 
 ### Active vs closed
 
@@ -61,7 +77,7 @@ overrides the status text. Note `For QA Validation` is **open** — the work is
 resolved but still needs someone. This is why `ResolvedDate` must not be read as
 `closedDate`.
 
-## `tracker-teams`
+## `tracker_teams`
 
 A POD. `members`, `azure`, `fieldMap` and `valueMap` are mapped
 `{"type":"object","enabled":false}` — stored and returned, never indexed, because
@@ -85,7 +101,7 @@ so item ids stay valid.
 Deleting a team deletes its items in the same call. Orphaned items would keep
 counting toward every cross-POD total with no way to reach them.
 
-## `tracker-users`
+## `tracker_users`
 
 ```ts
 { id: email, email, name, passwordHash | null, role: "admin"|"member", teamIds[], createdAt }
@@ -94,7 +110,7 @@ counting toward every cross-POD total with no way to reach them.
 Id is the lowercased email. `passwordHash` is bcrypt (cost 10) and mapped
 `index: false`. SSO users have `passwordHash: null`.
 
-## `tracker-sync`
+## `tracker_sync`
 
 One document per team, id = `teamId`.
 

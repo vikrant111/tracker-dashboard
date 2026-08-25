@@ -53,7 +53,7 @@ arguing on screen. 🥊
 graph LR
     A["🌐 Azure Boards"] -->|REST| N
     B["📗 Your spreadsheet"] -->|drag & drop| N
-    N["⚡ Next.js 15<br/>front AND back"] <-->|one big query| O["🔍 OpenSearch"]
+    N["⚡ Next.js 15<br/>front AND back"] <-->|one big query| O["🍃 MongoDB"]
     N --> U["🎨 The dashboard"]
     U -->|click any number| D["📋 Drill-down drawer"]
 ```
@@ -63,7 +63,7 @@ graph LR
 | 🖼️ **Framework** | Next.js 15 (App Router) + React 19 | Frontend *and* backend in one repo. One deploy, one language. |
 | 🔤 **Language** | TypeScript, strict mode | The compiler catches what tired humans don't. |
 | 🎨 **Styling** | Tailwind v4 | Tokens live in `globals.css`. Two themes, both hand-picked. |
-| 🗄️ **Store** | OpenSearch | Aggregations are the whole product. A SQL `GROUP BY` per tile would be eight queries that disagree. |
+| 🗄️ **Store** | MongoDB | Aggregations are the whole product. A SQL `GROUP BY` per tile would be eight queries that disagree. |
 | 🔐 **Auth** | NextAuth v5 | Password, Microsoft SSO, or both. Or off, for local poking. |
 | ✨ **Motion** | framer-motion | Springs, not linear fades. |
 | 🖇️ **Icons** | lucide-react | |
@@ -100,7 +100,7 @@ build if any doc tells you to. 😄
 
 ---
 
-### Step 1 · Wake up OpenSearch 🔍
+### Step 1 · Start a database 🍃
 
 Pick your fighter:
 
@@ -109,7 +109,7 @@ Pick your fighter:
 docker compose up -d
 
 # 🍺 Or Homebrew, if you like your databases native
-brew install opensearch && brew services start opensearch
+pnpm mongo:local     # a real MongoDB — no install, no Docker
 ```
 
 > ⏳ **It takes 20–40 seconds to accept connections.** This is normal. It is not
@@ -142,8 +142,8 @@ still works.** 🎉
 
 | Variable | Default | Do I care? |
 |---|---|---|
-| `OPENSEARCH_URL` | `http://localhost:9200` | 😴 No |
-| `OPENSEARCH_INDEX_PREFIX` | `tracker` | 😴 No — until two environments share a cluster |
+| `MONGODB_URI` | `mongodb://127.0.0.1:27017` | 🌟 Yes, in production |
+| `MONGODB_COLLECTION_PREFIX` | `tracker` | 😴 No — until two environments share a cluster |
 | `AUTH_MODE` | `password` | 😴 No |
 | `AUTH_SECRET` | — | 🚨 **Yes, really.** `openssl rand -base64 32`. Production **refuses to start** without it |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@example.com` / `changeme` | 🤔 Change the password before anyone else can reach it |
@@ -246,7 +246,7 @@ shows the true count. The board re-reads itself every 30 seconds. 🔄
 flowchart TD
     A["🌐 Azure Boards"] -->|"WIQL + batch"| N["🔀 normalize.ts"]
     B["📗 Excel / CSV / Numbers"] -->|"upload"| N
-    N -->|"one flat Item doc"| O[("🔍 OpenSearch")]
+    N -->|"one flat Item doc"| O[("🍃 MongoDB")]
     O -->|"ONE size:0 query<br/>with every aggregation"| M["📊 metrics.ts"]
     M --> API["/api/metrics"]
     API --> UI["🎨 Dashboard"]
@@ -414,7 +414,7 @@ flowchart LR
     W["🪝 Webhook<br/>instant"] --> S
     M["👆 Manual button"] --> S
     S -->|"watermark −60s overlap"| A["🌐 Azure"]
-    A --> O[("🔍 OpenSearch")]
+    A --> O[("🍃 MongoDB")]
 ```
 
 **1. Polling** — every `SYNC_POLL_SECONDS`, a WIQL query on `System.ChangedDate`
@@ -507,7 +507,7 @@ came from. Add a column the importer doesn't know and the suite fails. 🔒
 | Mode | Behaviour |
 |---|---|
 | `off` | 🏠 no login, everyone is a local admin — **local development only** |
-| `password` | 🔑 email + password, bcrypt hashed, stored in OpenSearch |
+| `password` | 🔑 email + password, bcrypt hashed, stored in MongoDB |
 | `entra` | 🏢 Microsoft Entra ID (Azure AD) SSO |
 | `both` | 🤝 both offered on the sign-in screen |
 
@@ -650,7 +650,7 @@ If it doesn't scream, it isn't a check, it's decoration. 🎭
 
 | 😵 Symptom | 💡 Likely cause |
 |---|---|
-| Seed fails instantly | OpenSearch isn't up yet. Wait 30s, `curl localhost:9200` |
+| Seed fails instantly | No database. Run `pnpm check:env` — it names the problem |
 | `Cannot find module './chunks/…'` | You ran `pnpm build` while `pnpm dev` was running. Stop dev, delete `.next`, restart |
 | Upload says "no Title column" | Your header row isn't row 1. The error lists every tab and what it found |
 | Login rejects you | `AUTH_SECRET` unset, or you never ran `pnpm seed` |
@@ -686,7 +686,7 @@ Full symptom → cause table, including every bug already fixed here:
 ```
 src/
   lib/              domain and data — no React, server-only
-    opensearch.ts   client, index bootstrap, bulk upsert
+    db/            connection, schemas, models, query builders
     mappings.json   index mappings — shared with scripts/seed.mjs
     metrics.ts      every tile and chart, in ONE aggregation query
     health.ts       the board score: closed ÷ total

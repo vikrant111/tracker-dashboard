@@ -1,28 +1,70 @@
-# Optional — only if you would rather not `brew install opensearch`.
-#   docker compose up -d
+# Production only.
+#
+# Local development needs **none of this** — no Docker, no installed database.
+# Run `pnpm mongo:local` for a real MongoDB with nothing installed, or point
+# MONGODB_URI at a hosted cluster. See docs/restricted-environments.md.
+#
+#   docker compose --profile prod up -d --build
+#
+# The app image is built from the Dockerfile in this directory. MongoDB is a
+# sibling service here for a self-contained deployment; if you use Atlas or a
+# managed cluster, drop the `mongo` service and set MONGODB_URI to point at it.
 services:
-  opensearch:
-    image: opensearchproject/opensearch:2.19.1
-    container_name: tracker-opensearch
-    environment:
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
-      # Local dev only. Keep the security plugin on for anything shared.
-      - DISABLE_SECURITY_PLUGIN=true
-      - DISABLE_INSTALL_DEMO_CONFIG=true
-    ulimits:
-      memlock: { soft: -1, hard: -1 }
-      nofile: { soft: 65536, hard: 65536 }
+  app:
+    profiles: ["prod"]
+    build:
+      context: .
+      # The build needs no network: FONT_SOURCE=local uses the committed fonts.
+      args:
+        FONT_SOURCE: local
+    container_name: tracker-app
+    restart: unless-stopped
     ports:
-      - "9200:9200"
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      # Service name, not localhost — inside the network `mongo` is the host.
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
+      MONGODB_DB: ${MONGODB_DB:-pod_tracker}
+      MONGODB_COLLECTION_PREFIX: ${MONGODB_COLLECTION_PREFIX:-tracker}
+      # No default. The app refuses to boot without a real one, deliberately.
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET — openssl rand -base64 32}
+      AUTH_MODE: ${AUTH_MODE:-password}
+      AUTH_TRUST_HOST: "true"
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      AZDO_ORG_URL: ${AZDO_ORG_URL:-}
+      AZDO_PROJECT: ${AZDO_PROJECT:-}
+      AZDO_PAT: ${AZDO_PAT:-}
+      AZDO_WEBHOOK_TOKEN: ${AZDO_WEBHOOK_TOKEN:-}
+      SYNC_POLL_SECONDS: ${SYNC_POLL_SECONDS:-300}
+    depends_on:
+      mongo:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200 >/dev/null"]
+      # Readiness, not liveness: this one proves the database answers too.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health?ready=1').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  mongo:
+    profiles: ["prod"]
+    image: mongo:8
+    container_name: tracker-mongo
+    restart: unless-stopped
+    # Not published to the host. Only the app needs to reach it, and exposing
+    # an unauthenticated database on 27017 is how they get found and wiped.
+    expose:
+      - "27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 12
 
 volumes:
-  opensearch-data:
+  mongo-data:

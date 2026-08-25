@@ -20,6 +20,10 @@ COPY . .
 # A placeholder, only so the build can import `auth.ts` — which now refuses to
 # load without a secret. It never reaches the running image; the real one comes
 # from the environment at start.
+# Fonts from the repository, so the image builds with no network at all —
+# which is also what makes it work behind a TLS-inspecting proxy.
+ARG FONT_SOURCE=local
+ENV FONT_SOURCE=$FONT_SOURCE
 ENV AUTH_SECRET=build-time-placeholder-not-used-at-runtime-000
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm run build

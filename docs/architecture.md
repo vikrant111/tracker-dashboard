@@ -9,7 +9,7 @@ app/api/*/route.ts   auth, scope, delegate, serialise. No business logic.
   ↕
 lib/*.ts             domain. Pure-ish, no Request/Response, no React.
   ↕
-OpenSearch · Azure DevOps REST
+MongoDB · Azure DevOps REST
 ```
 
 Rules that keep it honest:
@@ -20,7 +20,7 @@ Rules that keep it honest:
   the branch belongs in `lib/`.
 - **`lib/` is server-only** except `types.ts` and `palette.ts`, which are pure
   data and safe to import from a client component. Importing anything else into
-  a `"use client"` file drags the OpenSearch client into the browser bundle and
+  a `"use client"` file drags the MongoDB driver into the browser bundle and
   the build fails.
 
 ## Request path: dashboard load
@@ -31,7 +31,7 @@ Rules that keep it honest:
 2. `DashboardClient` mounts, builds `baseQuery` from `{teamId, kind, search}` and
    polls `/api/metrics?…` every 30s through SWR.
 3. `/api/metrics` runs `requireUser()` → `filtersFromRequest()` → `dashboard()`.
-4. `dashboard()` issues **one** OpenSearch search with `size: 0` and every
+4. `dashboard()` issues **one** MongoDB aggregation whose `$facet` carries every
    aggregation the page needs. One round trip fills the whole board.
 5. The response carries `teamNames` and last-sync info alongside the numbers, so
    the page needs no second call.
@@ -63,9 +63,9 @@ payload shape varies per event type.
 
 ## Runtime notes
 
-- Every route handler is the **Node runtime**. The OpenSearch client needs
+- Every route handler is the **Node runtime**. The MongoDB driver needs
   `node:https`; Edge cannot resolve it.
-- `serverExternalPackages` in `next.config.ts` keeps `@opensearch-project/opensearch`,
+- `serverExternalPackages` in `next.config.ts` keeps `mongoose`,
   `exceljs` and `bcryptjs` out of the webpack graph.
 - The poller is started from the metrics route rather than `instrumentation.ts`,
   because Next compiles instrumentation for a runtime that cannot resolve

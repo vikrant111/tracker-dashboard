@@ -23,8 +23,8 @@ A stored age is wrong the next day, and would need a nightly job to stay honest.
 Cheap where it can be: filters use an index-backed `range` on `createdDate`; the
 painless script is reserved for `avg`, where there is no alternative.
 
-*Revisit if* script aggregations dominate the query cost — an OpenSearch runtime
-field would be the next step, not a stored column.
+*Revisit if* script aggregations dominate the query cost — a materialised view
+would be the next step, not a stored column.
 
 ---
 
@@ -55,7 +55,7 @@ and the failure would look like a UI bug.
 ### No `middleware.ts`
 
 NextAuth v5 on the Edge runtime needs the config split in two, because the
-credentials provider reads OpenSearch, which cannot run on Edge. Guarding in
+credentials provider reads MongoDB, which cannot run on Edge. Guarding in
 server components and route handlers is two lines and no split.
 
 *Revisit if* the app grows many protected routes and the guard lines start being
@@ -66,7 +66,7 @@ forgotten — the split is worth it at that point, not before.
 ### The poller lives in a lib module, not `instrumentation.ts`
 
 `instrumentation.ts` is the documented place for this, but Next bundles it for a
-runtime that cannot resolve `node:https`, which breaks the OpenSearch client in
+runtime that cannot resolve `node:https`, which breaks the MongoDB driver in
 dev. Arming from the metrics route also means polling only happens when someone
 is actually watching the dashboard.
 
@@ -210,5 +210,5 @@ last failing run proved.
 `saveUser()` coerces it to an array, and `canSeeTeam()` independently requires
 `Array.isArray`. That looks redundant, and is deliberate: the write-side fix
 does nothing for user documents already stored, and `"amc-pod-archive".includes("amc-pod")`
-is `true`. `pnpm check` writes a poisoned document straight to OpenSearch to
+is `true`. `pnpm check` writes a poisoned document straight to the database to
 exercise the second layer, since the first one otherwise hides it.

@@ -108,7 +108,7 @@ first `/api/metrics` request. Interval is `SYNC_POLL_SECONDS` (default 120,
   reloading cannot start a second one.
 - It lives here rather than in `instrumentation.ts` because Next bundles
   instrumentation for a runtime that cannot resolve `node:https`, which breaks
-  the OpenSearch client in dev.
+  the MongoDB driver in dev.
 
 ### Webhook
 

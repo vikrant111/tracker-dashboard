@@ -24,7 +24,7 @@ pages are the internals.
 ## The 60-second version
 
 Azure Boards (or an Excel upload) → normalised into one flat `Item` document →
-OpenSearch → one aggregation query fills the whole dashboard → every count is
+MongoDB → one aggregation fills the whole dashboard → every count is
 clickable through to the work items behind it.
 
 Multiple PODs share the instance. Admins see all of them; members see only the
@@ -32,7 +32,7 @@ PODs assigned to them, enforced server-side.
 
 ```
  Azure DevOps ──REST──┐
-                      ├─► normalize.ts ─► OpenSearch ─► metrics.ts ─► /api/metrics ─► dashboard
+                      ├─► normalize.ts ─► MongoDB ─► dashboard.controller ─► /api/metrics ─► board
  Excel / CSV ─upload──┘                        ▲                  └─► /api/items  ─► drill drawer
                                                │
                           poller · webhook · manual sync
@@ -41,16 +41,40 @@ PODs assigned to them, enforced server-side.
 ## Where things live
 
 ```
+src/db/           MongoDB: how the data is stored and reached
+  connect.ts      one cached connection; every entry point awaits it. Cached on
+                  globalThis because Next re-evaluates modules on hot reload
+                  while the connection survives
+  uri.ts          env -> connection string, and what it refuses (pure, testable)
+  constants/
+    collections   collection names and the prefix that shares one cluster
+    connection    timeouts, pool size, and why buffering is off
+  schemas/
+    item.schema   the work item. Dates are Date, ids are ours, strict
+    team.schema   a POD, with its Azure connection and value overrides
+    user.schema   an account and the PODs it can see
+    sync-state.schema  one watermark per POD
+  models/index.ts the compiled models, looked up before compiling so a hot
+                  reload cannot throw OverwriteModelError
+  query/
+    match         Filters -> $match. The one builder both the dashboard and the
+                  drill-down use, which is why they cannot disagree
+    stages        the reusable pipeline pieces: age, ranks, buckets, histograms
+
+src/controllers/  what routes and lib/* call
+  dashboard.controller  the whole board in one $facet
+  dashboard.shape       raw facet output -> what the panels render (pure)
+  items.controller      drill-down, export cursor, bulk upsert, deletes
+  items.shape           stored document <-> domain Item (pure)
+  teams.controller      POD persistence
+  users.controller      account persistence
+  sync-state.controller the sync watermark
+
 src/lib/          domain and data. No React, server-only
-  opensearch.ts   client, index bootstrap, narrowed search, bulk upsert
-  mappings.json   index mappings, shared with scripts/seed.mjs
-  metrics.ts      every tile and chart in one aggregation
+  metrics.ts      the dashboard's public surface, over the controller
   metrics/
     types         Filters, Bucket, Dashboard — what the board is described in
-    dates         absolute epoch bounds, never `now-7d` date math
-    query         one builder, shared by the aggregation and the drill-down
-    aggregations  the pieces of the big query, and severity's sort rank
-    list-items    the drill-down page, plus the true total
+    dates         absolute epoch bounds, never relative date math
   azure.ts        WIQL + workitemsbatch
   normalize.ts    Azure work item / spreadsheet row → Item
   normalize/
@@ -190,15 +214,15 @@ src/components/   client components, dashboard-client.tsx orchestrates
     tooltip       a label that escapes the panel through a portal
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       356 end-to-end checks against a running server
-  check-theme.mjs 668 static checks: theme tokens, contrast, source rules,
+  check.mjs       330 end-to-end checks against a running server
+  check-theme.mjs 728 static checks: theme tokens, contrast, source rules,
                   and the font switch
-  check-ui.mjs    1626 checks on client-side pure logic — it imports the real
+  check-ui.mjs    1653 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-docs.mjs  these pages still match the code
   check-env.mjs   `pnpm check:env` — what is broken on THIS machine, and how to
-                  fix it: certificates, registry, fonts, OpenSearch, config.
+                  fix it: certificates, registry, fonts, the database, config.
                   Written for a corporate laptop; changes nothing
   probe.mjs       reaching a host and saying why it failed — a TLS error and a
                   blocked host need completely different fixes

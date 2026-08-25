@@ -31,7 +31,7 @@ export async function GET(req: Request) {
   directly — both styles are fine, the message must still be prose.
 
 Handlers are **always the Node runtime**. Never add `export const runtime = "edge"`:
-the OpenSearch client needs `node:https`.
+the MongoDB driver needs Node's `net`/`tls`.
 
 ## Scoping — the security boundary
 
@@ -58,14 +58,14 @@ convenience, not enforcement.
 | Mode | Behaviour |
 |---|---|
 | `off` | `currentUser()` returns a synthetic local admin, no session lookup. Local dev only. |
-| `password` | Credentials provider, bcrypt hash in OpenSearch. |
+| `password` | Credentials provider, bcrypt hash in MongoDB. |
 | `entra` | Microsoft Entra ID SSO. |
 | `both` | Both offered on `/login`. |
 
 `entraEnabled` also requires `AUTH_MICROSOFT_ENTRA_ID_ID` to be set, so turning
 the mode on without credentials degrades rather than crashes.
 
-Role and `teamIds` are re-read from OpenSearch on every JWT refresh, so an
+Role and `teamIds` are re-read from MongoDB on every JWT refresh, so an
 access change in Admin takes effect without the user signing out. Do not move
 them into the token as write-once values.
 

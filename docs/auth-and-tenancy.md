@@ -11,7 +11,7 @@ is convenience, not a boundary.
 | Mode | Behaviour |
 |---|---|
 | `off` | `currentUser()` returns a synthetic local admin. No session lookup, `/login` redirects home. **Local development only.** |
-| `password` | Credentials provider, bcrypt (cost 10), users in OpenSearch. |
+| `password` | Credentials provider, bcrypt (cost 10), accounts in MongoDB. |
 | `entra` | Microsoft Entra ID (Azure AD) SSO. |
 | `both` | Both offered on `/login`. |
 
@@ -28,7 +28,7 @@ never constructed.
 - **member** — sees only assigned PODs. Lands on their first one. `/admin`
   redirects home.
 
-Role and `teamIds` are re-read from OpenSearch on **every JWT refresh**:
+Role and `teamIds` are re-read from MongoDB on **every JWT refresh**:
 
 ```ts
 async jwt({ token }) {
@@ -90,7 +90,7 @@ There is no `middleware.ts`. Guarding happens in two places:
 
 Middleware was skipped deliberately: NextAuth v5 on the Edge runtime would need
 the config split into an Edge-safe half, because the credentials provider reads
-OpenSearch. Two guard lines beat that split. See [decisions.md](decisions.md).
+MongoDB. Two guard lines beat that split. See [decisions.md](decisions.md).
 
 ## Sessions
 
@@ -197,7 +197,7 @@ account is the case worth stopping.
 
 > ⚠️ **In-memory, so it is per-process.** Behind several instances an attacker
 > gets `maxAttempts` per instance, and a restart forgets everything. The
-> alternative — a write to OpenSearch on every failed sign-in — hands an
+> alternative — a write to MongoDB on every failed sign-in — hands an
 > unauthenticated caller a way to make the cluster do work. For a single
 > instance the trade is right; behind a load balancer, rate-limit at the proxy
 > and treat this as the second line.

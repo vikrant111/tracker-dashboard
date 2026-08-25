@@ -37,6 +37,7 @@ import {
 } from "../src/lib/sky.ts";
 import { currentWeather, skyForCode } from "../src/lib/weather.ts";
 import { AGEING, AZURE, EXPORT, LIMITS, LOGIN, PAGE, SCENE, SESSION, TIMING, UPLOAD } from "../src/lib/constants.ts";
+import { redactUri, resolveMongoUri } from "../src/db/uri.ts";
 import { MIN_SECRET_LENGTH, resolveAuthSecret } from "../src/lib/auth-secret.ts";
 import { checkSession, secondsRemaining } from "../src/lib/session-policy.ts";
 import { authCookies } from "../src/lib/auth-cookies.ts";
@@ -1599,7 +1600,7 @@ section("constants — the hardcoded values live in one place");
   // The literals must actually be *used*, or this is a file of dead numbers.
   const users = [
     ["../src/lib/teams.ts", "LIMITS"],
-    ["../src/lib/metrics.ts", "PAGE"],
+    ["../src/controllers/dashboard.controller.ts", "PAGE"],
     ["../src/lib/azure.ts", "AZURE"],
     ["../src/lib/types.ts", "AGEING"],
     ["../src/app/api/upload/route.ts", "UPLOAD"],
@@ -2397,9 +2398,9 @@ section("health is the share of the board that is closed");
     readFileSync(new URL("../src/lib/constants.ts", import.meta.url), "utf8"),
     ...readdirSync(CONSTANTS_DIR).filter((f) => f.endsWith(".ts")).sort().map((f) => readFileSync(new URL(f, CONSTANTS_DIR), "utf8")),
   ].join("\n");
-  const metrics = readFileSync(new URL("../src/lib/metrics.ts", import.meta.url), "utf8");
+  const metrics = readFileSync(new URL("../src/controllers/dashboard.controller.ts", import.meta.url), "utf8");
 
-  check("metrics imports the score", /import \{ healthScore \} from "\.\/health"/.test(metrics));
+  check("the dashboard imports the score", /import \{ healthScore \} from "\.\.\/lib\/health\.ts"/.test(metrics));
   check("metrics keeps no copy of the arithmetic", !/closedRatio|\/ t\.total/.test(metrics));
   // The threshold still drives the aged tile and the filters, but no longer the
   // score — passing it would imply it does.
@@ -2898,7 +2899,7 @@ section("passwords can be changed, and only by the right person");
    * member changing their own password must not be able to smuggle a role.
    */
   check("setPassword touches nothing but the hash", /passwordHash: await bcrypt\.hash\(password, 10\)/.test(users));
-  check("...spreading the stored user, not the input", /putDoc\(IDX\.users, id, \{\s*\.\.\.user,/.test(users));
+  check("...spreading the stored user, not the input", /saveUserDoc\(\{\s*\.\.\.user,/.test(users));
   check("...and stamping when it changed", /passwordChangedAt: new Date\(\)\.toISOString\(\)/.test(users));
 
   // An SSO account has no local password; creating one is a second way in.
@@ -3192,7 +3193,7 @@ section("it is deployable with nothing but environment variables");
    * a production database.
    */
   check("the first admin comes from the environment", /export async function ensureFirstAdmin/.test(users));
-  check("...only when nobody exists at all", /if \(\(await countUsers\(\)\) > 0\) return;/.test(users));
+  check("...only when nobody exists at all", /insertFirstUser\(/.test(users));
   check("...and only with both variables set", /if \(!email \|\| !password\) return;/.test(users));
   check("sign-in triggers it", /await ensureFirstAdmin\(\);/.test(auth));
   check("...before the password is checked", auth.indexOf("ensureFirstAdmin()") < auth.indexOf("verifyPassword(email, password)"));
@@ -3201,7 +3202,7 @@ section("it is deployable with nothing but environment variables");
 
   check("there is a health endpoint", /export async function GET/.test(health));
   check("liveness does no I/O", /if \(!new URL\(req\.url\)\.searchParams\.has\("ready"\)\)/.test(health));
-  check("readiness pings the store", /os\(\)\.ping\(\)/.test(health));
+  check("readiness pings the store", /admin\(\)\.ping\(\)/.test(health));
   check("an unreachable store is 503, not 500", /status: "unavailable"[\s\S]{0,80}status: 503/.test(health));
 
   /*
@@ -3234,7 +3235,9 @@ section("it is deployable with nothing but environment variables");
   /* ----------------------------------------------------- what to set -- */
 
   for (const key of [
-    "OPENSEARCH_URL",
+    "MONGODB_URI",
+    "MONGODB_DB",
+    "MONGODB_COLLECTION_PREFIX",
     "AUTH_MODE",
     "AUTH_SECRET",
     "AUTH_TRUST_HOST",
@@ -3425,20 +3428,49 @@ section("the change recipes still describe the code");
    * skip.
    */
   {
-    const mappings = JSON.parse(readFileSync(new URL("../src/lib/mappings.json", import.meta.url), "utf8"));
-    const mapped = Object.keys(mappings.items?.properties ?? mappings.items?.mappings?.properties ?? {});
+    /*
+     * Under MongoDB a field that is not in the schema is **dropped on write**
+     * (`strict: true`), so the failure is even quieter than an unmapped
+     * OpenSearch field: the value never lands at all and the chart shows
+     * nothing rather than showing it wrong.
+     */
+    const schema = readFileSync(new URL("../src/db/schemas/item.schema.ts", import.meta.url), "utf8");
     const itemBlock = types.slice(types.indexOf("export type Item"));
     const declared = [...itemBlock.slice(0, itemBlock.indexOf("\n};")).matchAll(/^  (\w+)[?]?:/gm)].map((m) => m[1]);
     check("the Item block was found", declared.length >= 15, `${declared.length} fields`);
-    const missing = declared.filter((f) => !mapped.includes(f));
-    check("every Item field has an index mapping", missing.length === 0, missing.join(", "));
+    const missing = declared.filter((f) => !new RegExp(`^\\s*${f}:`, "m").test(schema));
+    check("every Item field is in the schema", missing.length === 0, missing.join(", "));
+
+    /*
+     * Dates must be stored as dates. Declared as `String` they would still save
+     * and still read back, and only the aggregation would break — `$dateTrunc`
+     * against a string returns null, so every trend bucket comes back empty
+     * while every other panel looks fine.
+     */
+    for (const field of ["createdDate", "changedDate", "closedDate"]) {
+      check(`${field} is stored as a Date`, new RegExp(`${field}: \\{ type: Date`).test(schema));
+    }
+
+    /*
+     * The deterministic id is what makes every import an upsert. Letting
+     * Mongoose generate an ObjectId instead would duplicate a row on every
+     * re-sync, and the watermark's deliberate 60-second overlap would triple
+     * the board.
+     */
+    check("the item id is ours, not an ObjectId", /_id: \{ type: String, required: true \}/.test(schema));
+    check("...and Mongoose adds none of its own", /_id: false/.test(schema));
+
+    /* The fields every panel groups or filters on need an index. */
+    for (const field of ["teamId", "createdDate", "closedDate"]) {
+      check(`${field} is indexed`, new RegExp(`index\\(\\{[^}]*${field}`).test(schema));
+    }
   }
 
   // The rule the guide leads with, and the reason the suites exist.
   check("the guide insists on running the suites", /pnpm test/.test(recipes));
   check("...and on breaking the code to prove a check bites", /break the code on purpose/i.test(recipes));
   check("it names the security boundary", /filtersFromRequest.*security boundary/s.test(recipes));
-  check("it warns that mappings are immutable", /immutable once written/i.test(recipes));
+  check("it warns that a schema field is required before the data lands", /strict/i.test(recipes));
   check("it warns about short mapping keys", /shorter than three characters/i.test(recipes));
   check("it points at the one-query rule", /Do not add a second query/i.test(recipes));
 
@@ -3558,6 +3590,80 @@ section("nothing is wider than the screen it is on");
   check("the page clips sideways overflow", (globals.match(/overflow-x:\s*clip/g) ?? []).length >= 2);
   check("...and never with hidden, which breaks sticky", !/overflow-x:\s*hidden/.test(globals));
 }
+section("the database URI is resolved, not guessed");
+{
+  /*
+   * The real module, imported. A check that reimplements what it checks tests
+   * only its own copy — this codebase shipped three knowingly-broken builds
+   * that way.
+   */
+  const ok = (env, prod = false) => resolveMongoUri(env, prod);
+
+  // A laptop with nothing configured still works.
+  const bare = ok({});
+  check("no URI in development falls back to localhost", bare.ok && bare.usedDefault, bare.ok ? bare.uri : bare.reason);
+  check("...with a real database name", bare.ok && bare.dbName.length > 0, bare.ok ? bare.dbName : "");
+
+  /*
+   * Production must never fall back. In a container, localhost is the container
+   * itself — the app would fail with ECONNREFUSED 127.0.0.1 and send people to
+   * look at the wrong machine entirely.
+   */
+  const prod = ok({}, true);
+  check("no URI in production is refused", !prod.ok);
+  check("...and the message names the variable", !prod.ok && /MONGODB_URI/.test(prod.reason), prod.reason ?? "");
+
+  // The example from the docs, shipped by accident.
+  for (const placeholder of [
+    "mongodb+srv://<username>:<password>@<cluster>",
+    "mongodb+srv://username:password@cluster.mongodb.net",
+  ]) {
+    const v = ok({ MONGODB_URI: placeholder });
+    check(`a placeholder URI is refused (${placeholder.slice(0, 34)}…)`, !v.ok);
+  }
+
+  // Wrong scheme, and a scheme with nothing after it.
+  check("a non-mongodb scheme is refused", !ok({ MONGODB_URI: "http://localhost:27017" }).ok);
+  check("a URI with no host is refused", !ok({ MONGODB_URI: "mongodb://" }).ok);
+
+  // Both real forms are accepted.
+  const plain = ok({ MONGODB_URI: "mongodb://127.0.0.1:27017" });
+  check("a plain mongodb:// URI is accepted", plain.ok && !plain.hosted);
+  const srv = ok({ MONGODB_URI: "mongodb+srv://u:p@cluster0.abcde.mongodb.net" });
+  check("a mongodb+srv:// URI is accepted", srv.ok && srv.hosted);
+
+  /*
+   * The database comes from the path when the string carries one, and
+   * MONGODB_DB overrides it — so one connection string can be pointed at a
+   * scratch database without being rewritten.
+   */
+  const withPath = ok({ MONGODB_URI: "mongodb://host:27017/from_path" });
+  check("the database is read from the path", withPath.ok && withPath.dbName === "from_path", withPath.dbName ?? "");
+  const overridden = ok({ MONGODB_URI: "mongodb://host:27017/from_path", MONGODB_DB: "explicit" });
+  check("...and MONGODB_DB wins over it", overridden.ok && overridden.dbName === "explicit", overridden.dbName ?? "");
+
+  /*
+   * An Atlas password containing / or @ is common, and naive splitting reads it
+   * as part of the host. Everything after the LAST @ is the host section.
+   */
+  const awkward = ok({ MONGODB_URI: "mongodb+srv://user:p%2Fss@word@cluster0.abcde.mongodb.net/appdb" });
+  check("a password containing @ does not confuse the parser", awkward.ok && awkward.dbName === "appdb", awkward.dbName ?? "");
+
+  // A name Mongo would reject, caught before the driver produces a worse error.
+  check("an illegal database name is refused", !ok({ MONGODB_URI: "mongodb://h:1/x", MONGODB_DB: "has space" }).ok);
+
+  /*
+   * Redaction. A connection string is printed by `pnpm check:env`, logged on
+   * failure, and pasted into support threads — the password must not travel
+   * with it.
+   */
+  const secret = "mongodb+srv://alice:hunter2@cluster0.abcde.mongodb.net/appdb";
+  const hidden = redactUri(secret);
+  check("redaction removes the password", !hidden.includes("hunter2"), hidden);
+  check("...and the username", !hidden.includes("alice"), hidden);
+  check("...but keeps the host, which is the useful part", hidden.includes("cluster0.abcde.mongodb.net"), hidden);
+}
+
 console.log("\n" + "─".repeat(60));
 console.log(failures === 0 ? `All ${checks} ui checks passed.` : `${failures} of ${checks} ui checks FAILED.`);
 process.exit(failures ? 1 : 0);

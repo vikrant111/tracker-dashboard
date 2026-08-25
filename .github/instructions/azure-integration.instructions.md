@@ -85,7 +85,7 @@ close date is decisive and beats whatever the status text says.
 
 The poller lives in `src/lib/poller.ts`, **not** `instrumentation.ts` — Next
 bundles instrumentation for a runtime that cannot resolve `node:https`, which
-breaks the OpenSearch client in dev.
+breaks the MongoDB driver in dev.
 
 ### Webhook routing
 

@@ -3,7 +3,14 @@ node_modules
 .DS_Store
 next-env.d.ts
 *.tsbuildinfo
-opensearch-data
+
+# Local secrets. .env.example is the committed template; anything
+# .local carries real values — AUTH_SECRET, ADMIN_PASSWORD, the Azure PAT.
+.env.local
+.env*.local
 
 # pnpm
 .pnpm-store
+
+# Local MongoDB data from `pnpm mongo:local`. Never committed.
+.mongo-data

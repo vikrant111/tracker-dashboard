@@ -1,6 +1,7 @@
 import { fetchWorkItems, isConnectable, queryChangedIds } from "./azure";
 import { fromAzure } from "./normalize";
-import { IDX, bulkIndex, ensureIndices, getDoc, putDoc } from "./opensearch";
+import { bulkUpsertItems } from "../controllers/items.controller.ts";
+import { findSyncState, saveSyncState } from "../controllers/sync-state.controller.ts";
 import { getTeam, listTeams } from "./teams";
 import type { Team } from "./types";
 import { TIMING } from "./constants";
@@ -37,12 +38,10 @@ function clampSince(iso: string | undefined): string {
 }
 
 export async function getSyncState(teamId: string): Promise<SyncState | null> {
-  await ensureIndices();
-  return getDoc<SyncState>(IDX.sync, teamId);
+  return findSyncState(teamId);
 }
 
 export async function syncTeam(team: Team, opts: { full?: boolean } = {}): Promise<SyncResult> {
-  await ensureIndices();
   const base = { teamId: team.id, teamName: team.name };
 
   try {
@@ -51,7 +50,7 @@ export async function syncTeam(team: Team, opts: { full?: boolean } = {}): Promi
 
     const ids = await queryChangedIds(team, since);
     if (!ids.length) {
-      await putDoc(IDX.sync, team.id, {
+      await saveSyncState(team.id, {
         teamId: team.id,
         lastChangedDate: since,
         lastRunAt: new Date().toISOString(),
@@ -62,7 +61,7 @@ export async function syncTeam(team: Team, opts: { full?: boolean } = {}): Promi
 
     const workItems = await fetchWorkItems(team, ids);
     const items = workItems.map((wi) => fromAzure(wi, team));
-    const failed = await bulkIndex(IDX.items, items);
+    const failed = await bulkUpsertItems(items);
 
     // Advance the watermark to the newest item actually indexed, minus a minute
     // of slack — Azure's ChangedDate ordering is not strict enough to trust exactly.
@@ -72,7 +71,7 @@ export async function syncTeam(team: Team, opts: { full?: boolean } = {}): Promi
     );
     const watermark = new Date(new Date(newest).getTime() - TIMING.syncOverlapMs).toISOString();
 
-    await putDoc(IDX.sync, team.id, {
+    await saveSyncState(team.id, {
       teamId: team.id,
       lastChangedDate: watermark,
       lastRunAt: new Date().toISOString(),
@@ -86,7 +85,7 @@ export async function syncTeam(team: Team, opts: { full?: boolean } = {}): Promi
     // epoch (as this once did) made the next successful run re-import the whole
     // history, which on a real board is an enormous query.
     const previous = await getSyncState(team.id).catch(() => null);
-    await putDoc(IDX.sync, team.id, {
+    await saveSyncState(team.id, {
       teamId: team.id,
       lastChangedDate: clampSince(previous?.lastChangedDate),
       lastRunAt: new Date().toISOString(),
@@ -113,7 +112,7 @@ export async function syncSingleWorkItem(teamId: string, workItemId: number): Pr
   if (!team) return false;
   const [wi] = await fetchWorkItems(team, [workItemId]);
   if (!wi) return false;
-  await bulkIndex(IDX.items, [fromAzure(wi, team)]);
+  await bulkUpsertItems([fromAzure(wi, team)]);
   return true;
 }
 

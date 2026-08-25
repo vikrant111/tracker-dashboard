@@ -59,7 +59,7 @@ the one that satisfies these wins.
 | Framework | **Next.js 15**, App Router, React 19 |
 | Language | **TypeScript**, strict |
 | Styling | **Tailwind v4** (`@tailwindcss/postcss`), tokens in `globals.css` |
-| Store | **OpenSearch** |
+| Store | **MongoDB** (Mongoose) |
 | Auth | **NextAuth v5 beta** — credentials and/or Entra ID |
 | Motion | **framer-motion** |
 | Icons | **lucide-react** |
@@ -73,7 +73,7 @@ type stripping, which is why relative imports inside a module the suites load
 must carry an explicit `.ts` extension.
 
 ```
-pnpm add next react react-dom @opensearch-project/opensearch next-auth \
+pnpm add next react react-dom mongoose next-auth \
          bcryptjs exceljs framer-motion lucide-react swr
 pnpm add -D typescript @types/node @types/react @types/react-dom \
             tailwindcss @tailwindcss/postcss
@@ -91,9 +91,9 @@ Everything else is a product decision and belongs in `src/lib/constants.ts`.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENSEARCH_URL` | `http://localhost:9200` | |
-| `OPENSEARCH_USERNAME` / `_PASSWORD` | blank | blank when the security plugin is off |
-| `OPENSEARCH_INDEX_PREFIX` | `tracker` | lets environments share a cluster |
+| `MONGODB_URI` | `mongodb://127.0.0.1:27017` | required in production |
+| `MONGODB_DB` | `pod_tracker` | Atlas strings usually omit the database |
+| `MONGODB_COLLECTION_PREFIX` | `tracker` | lets environments share a cluster |
 | `AUTH_MODE` | `password` | `off` \| `password` \| `entra` \| `both` |
 | `AUTH_SECRET` | — | `openssl rand -base64 32` |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@example.com` / `changeme` | used by `pnpm seed` |
@@ -163,7 +163,7 @@ next phase knows the last one held.
 
 ### Phase 1 — the store
 
-`src/lib/opensearch.ts`: client, index bootstrap (`ensureIndices`), a narrowed
+`src/db/connect.ts`: one cached connection (`connectToDatabase`), index creation
 `search`, and `bulkIndex`. Mappings live in `src/lib/mappings.json` so
 `scripts/seed.mjs` can create identical indices without importing TypeScript.
 
@@ -200,7 +200,10 @@ the same `buildQuery()`, which is what keeps a bar and its drawer agreeing.
 Two traps, both of which have bitten this codebase:
 
 - **Date windows are absolute epoch millis, never `now-7d` date math.**
-  OpenSearch wraps a range containing `now` in a query that throws inside a
+  Every number on one board must be measured from the same instant; `$NOW`
+  lets two panels straddle midnight and disagree by a day. The old store had a
+  sharper version of the same problem — it wrapped a range containing `now` in a
+  query that threw inside a
   filter aggregation, intermittently, depending on segment state.
 - **Ageing buckets are lower-inclusive, upper-exclusive**, and the drill-down
   must mirror that with `gte`/`lt`. Using `lte` returns one extra item and the

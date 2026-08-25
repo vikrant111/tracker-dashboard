@@ -1,11 +1,11 @@
 # POD Tracker — working instructions
 
 Ageing bugs, tickets and CRs across multiple PODs (teams). Data comes from Azure
-DevOps Boards or a spreadsheet upload, lands in OpenSearch, and is read back
+DevOps Boards or a spreadsheet upload, lands in MongoDB, and is read back
 through aggregations.
 
 **Stack:** Next.js 15 App Router (frontend *and* backend) · React 19 · TypeScript
-strict · Tailwind v4 · OpenSearch 3.x · NextAuth v5 · framer-motion · exceljs.
+strict · Tailwind v4 · MongoDB + Mongoose · NextAuth v5 · framer-motion · exceljs.
 No chart library — charts are hand-written SVG. **pnpm, never npm.**
 
 Detailed reference lives in [`docs/`](../docs/README.md). Read the page that
@@ -82,7 +82,7 @@ pnpm check invariants     # after touching anything that reads or writes items
 ```
 src/lib/            data + domain, no React
   api.ts            request → scoped Filters   ← the security boundary
-  opensearch.ts     client, index bootstrap, bulk upsert
+  (data access lives in src/db/ and src/controllers/ — see below)
   mappings.json     index mappings, shared with scripts/seed.mjs
   metrics.ts        one aggregation; metrics/ holds query, dates, list-items
   health.ts         the board score: closed ÷ total
@@ -109,7 +109,7 @@ scripts/            seed + four check suites
 **Server/client split.** `src/lib/*` is server-only apart from `palette.ts`,
 `types.ts`, `health.ts`, `greeting.ts`, `sky.ts`, `takeover.ts`, `validation.ts`,
 `suggest.ts`, `spreadsheet.ts` and `constants.ts`, which are safe to import from
-components. Never import `opensearch.ts`, `azure.ts`, `sync.ts`, `users.ts` or
+components. Never import `db/`, `controllers/`, `azure.ts`, `sync.ts`, `users.ts` or
 `session.ts` into a `"use client"` file.
 
 **File size.** Modules stay under 200 lines. A handful of screens are over and
@@ -162,7 +162,9 @@ fails loudly.
 Every number on the dashboard is clickable and must return **exactly** the count
 it displays. `pnpm check invariants` asserts that for every tile, bar and row.
 
-Date windows are absolute epoch millis, never `now-7d` date math — OpenSearch
+Date windows are absolute epoch millis, never `$NOW` — every number on one
+board must be measured from the same instant, or two panels straddle midnight
+and disagree by a day. The previous store had a sharper version: it
 wraps a range containing `now` in a query that throws inside a filter
 aggregation, intermittently. Ageing buckets are lower-inclusive and
 upper-exclusive, and the drill-down mirrors that with `gte`/`lt`.

@@ -186,34 +186,84 @@ section("Fonts");
   }
 }
 
-section("OpenSearch");
+section("Database");
 {
-  const url = env.OPENSEARCH_URL || "http://localhost:9200";
-  const res = await probe(url, { timeout: 5000 });
-  const reachable = res.kind === "http";
+  /*
+   * The URI is resolved by the app's own module, not re-implemented here — a
+   * check that reimplements what it checks tests only its copy. This is the
+   * same `resolveMongoUri` the server calls, so a rule added there is enforced
+   * here for free.
+   */
+  const { resolveMongoUri, redactUri } = await import("../src/db/uri.ts");
+  const verdict = resolveMongoUri(env, false);
+
   report(
-    reachable ? "ok" : "bad",
-    "Reachable",
-    reachable ? `${url} → HTTP ${res.status}` : `${url} → ${res.kind}`,
-    reachable
+    verdict.ok ? "ok" : "bad",
+    "MONGODB_URI",
+    verdict.ok ? `${redactUri(verdict.uri)} → ${verdict.dbName}` : verdict.reason,
+    verdict.ok
       ? null
-      : `Nothing is answering at ${url}. The dashboard cannot run without it.
+      : `Set one URL and you are done:
 
-       Without Docker, run OpenSearch from its tarball — no admin rights, no
-       daemon, and it bundles its own Java:
+         local, nothing installed   MONGODB_URI=mongodb://127.0.0.1:27017
+                                    (then run \`pnpm mongo:local\` in another terminal)
+         hosted, nothing installed  MONGODB_URI=mongodb+srv://USER:PASS@cluster.mongodb.net
 
-         1. Download the linux/macOS tar.gz or Windows zip from
-            https://opensearch.org/downloads.html
-         2. Unpack it somewhere you can write to
-         3. Disable security for a local single node, in config/opensearch.yml:
-              plugins.security.disabled: true
-              discovery.type: single-node
-         4. ./bin/opensearch          (or bin\\opensearch.bat on Windows)
-
-       Or point OPENSEARCH_URL at an instance somebody else runs — a shared dev
-       cluster or a managed one. Set OPENSEARCH_USERNAME / OPENSEARCH_PASSWORD
-       if it needs them.`,
+       Atlas has a free tier that is more than this dashboard needs:
+       https://www.mongodb.com/cloud/atlas/register`,
   );
+
+  if (verdict.ok) {
+    /*
+     * A real connection, not a TCP poke. Authentication, the IP allowlist and
+     * SRV resolution all fail *after* the socket opens, and those are the three
+     * things that actually go wrong on a first setup.
+     */
+    let mongoose = null;
+    try {
+      mongoose = (await import("mongoose")).default;
+    } catch {
+      /* reported below */
+    }
+
+    if (!mongoose) {
+      report("bad", "Reachable", "mongoose is not installed", "Run `pnpm install`.");
+    } else {
+      let detail = "";
+      let ok = false;
+      try {
+        await mongoose.connect(verdict.uri, {
+          dbName: verdict.dbName,
+          serverSelectionTimeoutMS: 6000,
+          bufferCommands: false,
+        });
+        await mongoose.connection.db.admin().ping();
+        ok = true;
+        detail = "connected";
+      } catch (err) {
+        detail = (err?.message ?? String(err)).slice(0, 120);
+      } finally {
+        await mongoose.disconnect().catch(() => {});
+      }
+
+      report(
+        ok ? "ok" : "bad",
+        "Reachable",
+        detail,
+        ok
+          ? null
+          : `The dashboard cannot run without the database. The usual causes, in order:
+
+         1. Nothing is running locally     → \`pnpm mongo:local\` (no install, no Docker)
+         2. Your IP is not allowed         → Atlas → Network Access → add current IP
+         3. The password is not encoded    → @ : / ? # % must be percent-encoded in the URI
+         4. Port 27017 is blocked          → common on a corporate network; use Atlas over
+                                             a plain mongodb:// string, or run it locally
+
+       docs/restricted-environments.md walks through all four.`,
+      );
+    }
+  }
 }
 
 section("Configuration");

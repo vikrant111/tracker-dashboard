@@ -126,7 +126,7 @@ const nextConfig: NextConfig = {
    * These read the filesystem or ship native bindings, so they must stay in
    * Node's own module system rather than being bundled.
    */
-  serverExternalPackages: ["@opensearch-project/opensearch", "exceljs", "bcryptjs"],
+  serverExternalPackages: ["mongoose", "exceljs", "bcryptjs"],
 
   /*
    * A self-contained server directory, so a container copies `.next/standalone`

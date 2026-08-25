@@ -1,5 +1,10 @@
 import { HttpError } from "./http-error";
-import { IDX, ensureIndices, getDoc, os, putDoc, searchAll } from "./opensearch";
+import {
+  deleteTeamDoc,
+  findAllTeams,
+  findTeamById,
+  saveTeamDoc,
+} from "../controllers/teams.controller.ts";
 import { AZURE, LIMITS } from "./constants";
 import { DEFAULT_FIELD_MAP, clampThreshold, type Member, type Team } from "./types";
 
@@ -86,22 +91,19 @@ async function ensureDefaultTeam(existing: Team[]): Promise<Team[]> {
 }
 
 export async function listTeams(): Promise<Team[]> {
-  await ensureIndices();
-  const teams = await searchAll<Team>(IDX.teams, { query: { match_all: {} } });
+  const teams = await findAllTeams();
   const withDefault = await ensureDefaultTeam(teams);
   return withDefault.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getTeam(id: string): Promise<Team | null> {
-  await ensureIndices();
-  return getDoc<Team>(IDX.teams, id);
+  return findTeamById(id);
 }
 
 export async function saveTeam(input: Partial<Team> & { name: string; id?: string }): Promise<Team> {
-  await ensureIndices();
   const name = input.name.trim().slice(0, MAX_NAME_LENGTH);
   const id = input.id || slugify(name);
-  const existing = await getDoc<Team>(IDX.teams, id);
+  const existing = await findTeamById(id);
 
   // Creating (no id supplied) onto a slug another POD already owns would
   // overwrite it. Renaming or editing that POD passes its id and is fine.
@@ -135,17 +137,11 @@ export async function saveTeam(input: Partial<Team> & { name: string; id?: strin
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
 
-  await putDoc(IDX.teams, id, team);
+  await saveTeamDoc(team);
   return team;
 }
 
 /** Deleting a team takes its items with it — orphaned items would skew every global count. */
 export async function deleteTeam(id: string) {
-  await ensureIndices();
-  await os().deleteByQuery({
-    index: IDX.items,
-    body: { query: { term: { teamId: id } } },
-    refresh: true,
-  });
-  await os().delete({ index: IDX.teams, id, refresh: true }).catch(() => {});
+  await deleteTeamDoc(id);
 }

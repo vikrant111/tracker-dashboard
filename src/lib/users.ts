@@ -1,25 +1,28 @@
 import bcrypt from "bcryptjs";
-import { IDX, ensureIndices, getDoc, os, putDoc, searchAll } from "./opensearch";
+import {
+  countUserDocs,
+  deleteUserDoc,
+  findAllUsers,
+  findUserById,
+  insertFirstUser,
+  saveUserDoc,
+} from "../controllers/users.controller.ts";
 import type { User } from "./types";
 import { LIMITS } from "./constants";
 
 export const userId = (email: string) => email.trim().toLowerCase();
 
 export async function getUser(email: string): Promise<User | null> {
-  await ensureIndices();
-  return getDoc<User>(IDX.users, userId(email));
+  return findUserById(userId(email));
 }
 
 export async function listUsers(): Promise<User[]> {
-  await ensureIndices();
-  const users = await searchAll<User>(IDX.users, { query: { match_all: {} } });
+  const users = await findAllUsers();
   return users.sort((a, b) => a.email.localeCompare(b.email));
 }
 
 export async function countUsers(): Promise<number> {
-  await ensureIndices();
-  const { body } = await os().count({ index: IDX.users });
-  return body.count;
+  return countUserDocs();
 }
 
 const ROLES: User["role"][] = ["admin", "member"];
@@ -42,9 +45,8 @@ export async function saveUser(input: {
   role?: User["role"];
   teamIds?: unknown;
 }): Promise<User> {
-  await ensureIndices();
   const id = userId(input.email);
-  const existing = await getDoc<User>(IDX.users, id);
+  const existing = await findUserById(id);
 
   const user: User = {
     id,
@@ -58,13 +60,12 @@ export async function saveUser(input: {
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
 
-  await putDoc(IDX.users, id, user);
+  await saveUserDoc(user);
   return user;
 }
 
 export async function deleteUser(email: string) {
-  await ensureIndices();
-  await os().delete({ index: IDX.users, id: userId(email), refresh: true }).catch(() => {});
+  await deleteUserDoc(userId(email));
 }
 
 export async function verifyPassword(email: string, password: string): Promise<User | null> {
@@ -95,12 +96,11 @@ export async function upsertSsoUser(email: string, name: string): Promise<User> 
  * through the same request.
  */
 export async function setPassword(email: string, password: string): Promise<boolean> {
-  await ensureIndices();
   const id = userId(email);
-  const user = await getDoc<User>(IDX.users, id);
+  const user = await findUserById(id);
   if (!user) return false;
 
-  await putDoc(IDX.users, id, {
+  await saveUserDoc({
     ...user,
     passwordHash: await bcrypt.hash(password, 10),
     /*
@@ -133,14 +133,26 @@ export async function ensureFirstAdmin(): Promise<void> {
   const password = process.env.ADMIN_PASSWORD?.trim();
   if (!email || !password) return;
 
-  await ensureIndices();
-  if ((await countUsers()) > 0) return;
-
   try {
-    await saveUser({ email, name: "Administrator", password, role: "admin", teamIds: [] });
-    console.info(`[auth] Created the first admin account for ${email} from the environment.`);
+    const id = userId(email);
+    /*
+     * An atomic insert rather than count-then-save. Two workers booting
+     * together both see an empty collection, and with a plain save the second
+     * overwrites the first — including its password hash. `insertFirstUser`
+     * lets the unique key reject the loser, so the race is harmless.
+     */
+    const created = await insertFirstUser({
+      id,
+      email: id,
+      name: "Administrator",
+      passwordHash: await bcrypt.hash(password, 10),
+      role: "admin",
+      teamIds: [],
+      createdAt: new Date().toISOString(),
+    });
+    if (created) console.info(`[auth] Created the first admin account for ${email} from the environment.`);
   } catch {
-    // A racing request already made it, or OpenSearch is unhappy. Either way the
-    // next sign-in attempt will find the account or fail loudly on its own.
+    // A racing request already made it, or the database is unhappy. Either way
+    // the next sign-in attempt will find the account or fail loudly on its own.
   }
 }

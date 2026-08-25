@@ -30,8 +30,9 @@ aggregation and the drill-down list — that shared path is what keeps a bar and
 its drawer consistent.
 
 `search` matches three ways: title prefix phrase, exact work item id, and a
-case-insensitive wildcard on assignee. The wildcard needs OpenSearch's nested
-option form:
+case-insensitive substring on assignee. The title is **anchored**, and the
+input is escaped and stripped of control characters — `c++` is an invalid
+pattern and BSON cannot carry a null byte inside a regex:
 
 ```ts
 { wildcard: { assignee: { value: `*${term}*`, case_insensitive: true } } }
@@ -70,7 +71,7 @@ three round trips for a list nobody scrolls past ten.
 `date_range` on `createdDate`, active items only. Bounds are **absolute epoch
 millis** computed in JS — `ageBound(n) = floorDay(daysAgo(now, n))` — never
 `now-3d/d` date math, for the reason in
-[the OpenSearch rules](../.github/instructions/opensearch.instructions.md).
+[the database rules](../.github/instructions/database.instructions.md).
 
 | Bucket | Range |
 |---|---|
@@ -252,7 +253,12 @@ of truth for the number on screen.
 
 ## Reading aggregation responses
 
-The OpenSearch client types `aggregations` as a union of every possible aggregate
-shape, which is unusable directly. `search<T>()` in `opensearch.ts` narrows once;
-`AggBucket` and the `toBuckets()` helper cover the rest. Do not spread casts
-through the file — extend the helpers.
+A `$facet` returns one document whose keys are the branches' raw output, and
+those shapes are not what the panels render. The conversion lives in
+[`dashboard.shape.ts`](../src/controllers/dashboard.shape.ts) — `toBucketList`,
+`orderedBuckets`, `fillSeries` — all pure, so the suite exercises them without a
+database. Do not spread coercion through the controller; extend the helpers.
+
+`fillSeries` is the one to know about: the pipeline cannot invent documents for
+quiet days, so without it the trend jumps between busy days and implies activity
+in between.
