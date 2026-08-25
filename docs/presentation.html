@@ -1,0 +1,1127 @@
+<title>The Reconciliation Sheet</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  /* ═══════════════════════════════════════════════════════════════════
+     Tokens — lifted from the product's own globals.css so the deck and
+     the dashboard read as one thing. Light is the base; dark redefines
+     only the tokens, never the components.
+     ═══════════════════════════════════════════════════════════════════ */
+  :root {
+    --plane: #dee9f6;
+    --plane-2: #c7dcf2;
+    --surface: #f6f9fc;
+    --panel: #ffffff;
+    --ink: #0e1a26;
+    --ink-2: #3d5266;
+    --ink-muted: #526578;
+    --hairline: rgba(14, 26, 38, 0.14);
+    --rule: rgba(14, 26, 38, 0.09);
+    --accent: #0071bb;
+    --accent-2: #0d9aa8;
+    --accent-deep: #005a96;
+    --accent-tint: rgba(0, 113, 187, 0.09);
+    --accent-line: rgba(0, 113, 187, 0.34);
+    --danger: #c0392f;
+    --danger-ink: #a32f26;
+    --danger-tint: rgba(192, 57, 47, 0.08);
+    --danger-line: rgba(192, 57, 47, 0.3);
+    --shadow: 0 1px 2px rgba(14, 26, 38, 0.05), 0 12px 32px -18px rgba(14, 26, 38, 0.35);
+    --glow: rgba(0, 113, 187, 0.16);
+
+    --display: "Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+    --body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --plane: #061524;
+      --plane-2: #030d18;
+      --surface: #172533;
+      --panel: #1c2c3c;
+      --ink: #eef4fa;
+      --ink-2: #a3b4c6;
+      --ink-muted: #9caec3;
+      --hairline: rgba(238, 244, 250, 0.16);
+      --rule: rgba(238, 244, 250, 0.1);
+      --accent: #4aa8e8;
+      --accent-2: #35c4d0;
+      --accent-deep: #7cc4f0;
+      --accent-tint: rgba(74, 168, 232, 0.12);
+      --accent-line: rgba(74, 168, 232, 0.36);
+      --danger: #ef6b5e;
+      --danger-ink: #f4877c;
+      --danger-tint: rgba(239, 107, 94, 0.1);
+      --danger-line: rgba(239, 107, 94, 0.32);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 34px -18px rgba(0, 0, 0, 0.8);
+      --glow: rgba(74, 168, 232, 0.2);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --plane: #061524;
+    --plane-2: #030d18;
+    --surface: #172533;
+    --panel: #1c2c3c;
+    --ink: #eef4fa;
+    --ink-2: #a3b4c6;
+    --ink-muted: #9caec3;
+    --hairline: rgba(238, 244, 250, 0.16);
+    --rule: rgba(238, 244, 250, 0.1);
+    --accent: #4aa8e8;
+    --accent-2: #35c4d0;
+    --accent-deep: #7cc4f0;
+    --accent-tint: rgba(74, 168, 232, 0.12);
+    --accent-line: rgba(74, 168, 232, 0.36);
+    --danger: #ef6b5e;
+    --danger-ink: #f4877c;
+    --danger-tint: rgba(239, 107, 94, 0.1);
+    --danger-line: rgba(239, 107, 94, 0.32);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 34px -18px rgba(0, 0, 0, 0.8);
+    --glow: rgba(74, 168, 232, 0.2);
+  }
+
+  /* ─────────────────────────────────────────────────────────── base ── */
+  body {
+    background: var(--plane);
+    background-image:
+      radial-gradient(1100px 620px at 78% -12%, var(--glow), transparent 62%),
+      linear-gradient(180deg, var(--plane) 0%, var(--surface) 34%, var(--surface) 100%);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+  }
+
+  .sheet {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 28px 96px;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--display);
+    font-weight: 800;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+    line-height: 1.08;
+    margin: 0;
+  }
+
+  p { margin: 0; max-width: 68ch; }
+  strong { font-weight: 600; color: var(--ink); }
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--accent-tint);
+    color: var(--accent-deep);
+    padding: 0.13em 0.42em;
+    border-radius: 3px;
+  }
+
+  /* The running motif: a mono label that names the domain, not a count. */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-deep);
+  }
+  .eyebrow.muted { color: var(--ink-muted); }
+  .eyebrow.warn { color: var(--danger-ink); }
+
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ─────────────────────────────────────────────────────────── hero ── */
+  .hero {
+    padding: 88px 0 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 34px;
+  }
+
+  .hero h1 {
+    font-size: clamp(40px, 6.4vw, 76px);
+    max-width: 17ch;
+  }
+  .hero h1 em {
+    font-style: normal;
+    color: var(--accent);
+  }
+
+  .lede {
+    font-size: clamp(18px, 2vw, 21px);
+    color: var(--ink-2);
+    max-width: 60ch;
+  }
+
+  /*
+   * The argument that started the project, as the page's thesis: four
+   * people, four counts, none of them checkable. It settles into one.
+   */
+  .argument {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .claim {
+    background: var(--surface);
+    padding: 20px 22px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .claim .who {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+  .claim .said {
+    font-family: var(--display);
+    font-size: 30px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--danger);
+  }
+  .claim .how { font-size: 13px; color: var(--ink-muted); line-height: 1.4; }
+
+  .claim.settled { background: var(--accent-tint); }
+  .claim.settled .said { color: var(--accent); }
+  .claim.settled .who { color: var(--accent-deep); }
+
+  .verdict {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-top: 4px;
+    border-top: 2px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .verdict b {
+    font-family: var(--display);
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--ink);
+  }
+
+  /* ──────────────────────────────────────────────────────── sections ── */
+  section { padding-top: 76px; }
+  .section-head {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-bottom: 30px;
+  }
+  .section-head h2 { font-size: clamp(27px, 3.4vw, 38px); max-width: 21ch; }
+  .section-head p { color: var(--ink-2); }
+
+  /* ───────────────────────────────────── the reconciliation ledger ── */
+  .ledger {
+    display: flex;
+    flex-direction: column;
+    border-top: 2px solid var(--ink);
+  }
+
+  .entry {
+    display: grid;
+    grid-template-columns: 168px 1fr 1fr;
+    gap: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .entry > * { padding: 26px 24px; }
+
+  .entry .domain {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding-left: 0;
+  }
+  .entry .domain .name {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 17px;
+    line-height: 1.2;
+  }
+
+  .entry .was {
+    border-left: 1px solid var(--rule);
+    background: var(--danger-tint);
+  }
+  .entry .now {
+    border-left: 1px solid var(--rule);
+  }
+  .entry h3 {
+    font-family: var(--body);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    margin-bottom: 8px;
+    color: var(--ink-2);
+  }
+  .entry .was h3 { color: var(--danger-ink); }
+  .entry .now h3 { color: var(--accent-deep); }
+  .entry p { font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+  .entry .now p { color: var(--ink); }
+
+  .ledger-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 18px 0 0;
+    border-top: 2px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--ink-muted);
+  }
+
+  /* ────────────────────────────────────────────────── figure plates ── */
+  /*
+   * Diagrams sit on a fixed pale plate in both themes — a technical
+   * figure, printed. It also keeps mermaid's own palette legible, since
+   * mermaid resolves its colours once and cannot follow a theme swap.
+   */
+  .plate {
+    background: #f4f8fc;
+    border: 1px solid rgba(14, 26, 38, 0.16);
+    border-radius: 5px;
+    padding: 30px 24px 22px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+  .plate .mermaid { display: flex; justify-content: center; min-width: 480px; }
+  figure { margin: 0; display: flex; flex-direction: column; gap: 12px; }
+  figcaption {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--ink-muted);
+    letter-spacing: 0.02em;
+  }
+  figcaption b { color: var(--ink-2); font-weight: 600; }
+
+  .figures { display: flex; flex-direction: column; gap: 44px; }
+
+  /* ──────────────────────────────────────────────── dashboard mock ── */
+  .mock {
+    background: var(--panel);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .mock-bar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--hairline); }
+  .mock-body {
+    display: grid;
+    grid-template-columns: minmax(190px, 250px) 1fr;
+    gap: 1px;
+    background: var(--rule);
+  }
+  .mock-cell { background: var(--panel); padding: 24px; }
+
+  .ring-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .ring { position: relative; width: 160px; height: 160px; }
+  .ring svg { transform: rotate(-90deg); }
+  .ring-mid {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+  }
+  .ring-mid .pct {
+    font-family: var(--display);
+    font-size: 42px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+  .ring-mid .pct span { font-size: 22px; color: var(--ink-muted); }
+  .ring-mid .cap {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-top: 6px;
+  }
+  .ring-check {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-2);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bars { display: flex; flex-direction: column; gap: 13px; }
+  .bar-row { display: grid; grid-template-columns: 82px 1fr 46px; align-items: center; gap: 12px; }
+  .bar-row .lbl {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar-track { height: 15px; background: var(--accent-tint); border-radius: 0 3px 3px 0; }
+  .bar-fill { height: 100%; border-radius: 0 3px 3px 0; }
+  .bar-row .val {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; padding-top: 4px; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 4px 9px;
+    border-radius: 3px;
+    border: 1px solid var(--hairline);
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.crit { border-color: var(--danger-line); color: var(--danger-ink); background: var(--danger-tint); }
+
+  .mock-note {
+    padding: 13px 18px;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-muted);
+    letter-spacing: 0.02em;
+  }
+
+  /* ────────────────────────────────────────────────────── formula ── */
+  .formula {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 26px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .formula .eq {
+    font-family: var(--mono);
+    font-size: clamp(15px, 2vw, 19px);
+    font-weight: 500;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    overflow-x: auto;
+  }
+  .formula .worked {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .formula .worked b { color: var(--accent); font-weight: 600; }
+
+  /* ──────────────────────────────────────────────────────── grids ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--hairline); border-radius: 4px; overflow: hidden; }
+  .card { background: var(--surface); padding: 24px; display: flex; flex-direction: column; gap: 9px; }
+  .card h3 { font-family: var(--display); font-size: 17px; font-weight: 600; }
+  .card p { font-size: 14.5px; color: var(--ink-2); line-height: 1.58; }
+
+  /* ──────────────────────────────────────────────────────── table ── */
+  .scroller { overflow-x: auto; border: 1px solid var(--hairline); border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; min-width: 520px; background: var(--surface); }
+  th, td { padding: 13px 18px; text-align: left; border-bottom: 1px solid var(--rule); }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    font-weight: 600;
+    background: var(--plane);
+  }
+  td { font-size: 14.5px; color: var(--ink-2); }
+  td:first-child { color: var(--ink); font-weight: 500; }
+  td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); }
+  tr:last-child td { border-bottom: none; }
+
+  /* ────────────────────────────────────────────────────── closing ── */
+  .close {
+    margin-top: 84px;
+    padding: 40px 0 0;
+    border-top: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .close h2 { font-size: clamp(24px, 3vw, 32px); }
+  .steps { display: flex; flex-direction: column; gap: 0; }
+  .step {
+    display: grid;
+    grid-template-columns: 132px 1fr;
+    gap: 18px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--rule);
+    align-items: baseline;
+  }
+  .step .k { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent-deep); }
+  .step .v { font-size: 15px; color: var(--ink-2); }
+  .step .v b { color: var(--ink); }
+
+  /* ───────────────────────────────────────────────────── responsive ── */
+  @media (max-width: 780px) {
+    body { font-size: 16px; }
+    .sheet { padding: 0 18px 64px; }
+    .hero { padding: 56px 0 28px; }
+    .entry { grid-template-columns: 1fr; }
+    .entry > * { padding: 18px 16px; }
+    .entry .domain { padding: 20px 16px 4px; background: var(--plane); }
+    .entry .was, .entry .now { border-left: none; }
+    .mock-body { grid-template-columns: 1fr; }
+    .step { grid-template-columns: 1fr; gap: 5px; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .claim { animation: settle 0.5s ease-out backwards; }
+    .claim:nth-child(1) { animation-delay: 0.05s; }
+    .claim:nth-child(2) { animation-delay: 0.13s; }
+    .claim:nth-child(3) { animation-delay: 0.21s; }
+    .claim:nth-child(4) { animation-delay: 0.29s; }
+    .claim:nth-child(5) { animation-delay: 0.45s; }
+    @keyframes settle {
+      from { opacity: 0; transform: translateY(9px); }
+      to { opacity: 1; transform: none; }
+    }
+  }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+</style>
+
+<div class="sheet">
+
+  <!-- ══════════════════════════════════════════════════════ hero ══ -->
+  <header class="hero">
+    <div class="eyebrow">POD Tracker · Ageing bugs, tickets and CRs</div>
+    <h1>Four people, four numbers, <em>one board.</em></h1>
+    <p class="lede">
+      Every team already had Azure DevOps Boards. What nobody had was an answer
+      to <strong>&ldquo;how bad is it, actually&rdquo;</strong> that two people
+      could arrive at independently and get the same figure.
+    </p>
+
+    <div class="argument">
+      <div class="claim">
+        <div class="who">Delivery lead</div>
+        <div class="said num">~40</div>
+        <div class="how">Read off a Boards widget, filtered to their own area path.</div>
+      </div>
+      <div class="claim">
+        <div class="who">QA</div>
+        <div class="said num">106</div>
+        <div class="how">Counted by hand on Tuesday. It is Thursday.</div>
+      </div>
+      <div class="claim">
+        <div class="who">Engineering</div>
+        <div class="said num">61</div>
+        <div class="how">A saved query that quietly excludes <code>Issue</code> and <code>Task</code>.</div>
+      </div>
+      <div class="claim">
+        <div class="who">Project manager</div>
+        <div class="said num">?</div>
+        <div class="how">Two of the four PODs never touched Azure at all.</div>
+      </div>
+      <div class="claim settled">
+        <div class="who">POD Tracker</div>
+        <div class="said num">106</div>
+        <div class="how">Of 244 tracked. Click it and 106 rows come back &mdash; not 105, not 108.</div>
+      </div>
+    </div>
+
+    <div class="verdict">
+      <b>The disagreement was never about the bugs.</b>
+      <span>It was about which query, whose scope, and what day it was.</span>
+    </div>
+  </header>
+
+  <!-- ═════════════════════════════════════════ what was missing ══ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow warn">The gap</div>
+      <h2>What Azure Boards did not give us</h2>
+      <p>
+        None of this is a defect in Azure DevOps. Boards is a work-item tracker,
+        and it tracks work items very well. It is not a cross-team ageing
+        dashboard, and every row below is a place where the team was doing that
+        job by hand &mdash; or not doing it.
+      </p>
+    </div>
+
+    <div class="ledger">
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Scope</div>
+          <div class="name">Four PODs, four tabs</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            Queries and widgets are scoped to a project and area path. Comparing
+            four PODs meant four saved queries, opened side by side, each with
+            its own idea of which work item types count.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            One roll-up, every POD on it, sorted by whatever you care about. Any
+            row expands in place to that POD&rsquo;s own breakdown &mdash; from the
+            same query that produced the row above it.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Ageing</div>
+          <div class="name">Age was a date, not a number</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            A column showing <em>Created Date</em>. Turning &ldquo;12 Mar&rdquo;
+            into &ldquo;waited 34 days&rdquo; is arithmetic somebody does in
+            their head, per row, every time they look.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            Age is computed at read time and bucketed &mdash; <code>0-3</code>,
+            <code>4-7</code>, <code>8-14</code>, <code>15-30</code>,
+            <code>30+</code> days. Never stored, because a stored age is wrong
+            by tomorrow morning.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Vocabulary</div>
+          <div class="name">Every board spells it differently</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            One POD writes <code>1 - Critical</code>, another <code>Blocker</code>,
+            a third <code>P1</code>. Three columns of the same thing that cannot
+            be added together, so nobody added them.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            Each board&rsquo;s words resolve into one shared vocabulary &mdash;
+            Critical, Major, Minor &mdash; per POD, with the POD&rsquo;s own
+            overrides winning. Anything unrecognised stays <code>Unknown</code>
+            rather than being guessed into a bucket.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Environment</div>
+          <div class="name">The field most boards never had</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            Most PODs have no environment field. Whether a bug came from
+            IT-UAT, BIZ-UAT, CUG or production lived in a tag, or in the area
+            path, or in the title, depending on who raised it.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            Environment falls back through the field, then tags, then area path
+            &mdash; because those are where teams actually put it. A real
+            production count exists without anybody changing their process.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Closure</div>
+          <div class="name">&ldquo;Resolved&rdquo; is not done</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            Azure stamps <code>ResolvedDate</code> the moment a developer moves a
+            card, while QA still has it. Counting resolved as closed makes the
+            burn-down look better than the release does.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            Only <code>ClosedDate</code> closes an item, and a close date beats
+            whatever the status text says. <em>For QA Validation</em> is its own
+            visible state, not a rounding error.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Trust</div>
+          <div class="name">A number you could not check</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            A widget says 31. The query behind it was written months ago by
+            someone who has left. Opening it to see what 31 means is a
+            five-minute detour, so nobody takes it.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            Every number on screen is clickable and returns
+            <strong>exactly</strong> that count. A test suite asserts the
+            agreement for every tile, bar, row and chart point on every run.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Coverage</div>
+          <div class="name">Teams that were not on Azure</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            A POD tracking work in a spreadsheet is simply absent from every
+            Boards report &mdash; and absent reads as zero, which is the most
+            expensive kind of wrong number.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            Drag in an Excel, CSV or Apple Numbers export and that POD is on the
+            same board as everyone else, under the same vocabulary. Re-upload
+            after a correction &mdash; it updates rather than duplicating.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Access</div>
+          <div class="name">All of it, or none of it</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            Area paths can be secured, but a cross-POD report is a project-level
+            artefact &mdash; so the person who needed the comparison needed
+            access to everything in it.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            A member sees the PODs they are assigned to. Scoping is enforced on
+            the server for every request &mdash; the POD picker in the UI is
+            convenience, never the boundary.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
+          <div class="eyebrow muted">Summary</div>
+          <div class="name">No single honest figure</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            Plenty of counts, no headline. &ldquo;Are we better than last
+            month?&rdquo; had no answer that survived being asked twice.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            One health figure per POD, defined as the share of tracked items
+            that are closed &mdash; arithmetic a reader can check against the
+            two numbers printed beside it.
+          </p>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="ledger-foot">
+      <span>Nine gaps &middot; all closed</span>
+      <span>Sources: Azure Boards REST &middot; Excel &middot; CSV &middot; Apple Numbers</span>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════ how it works ══ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">How it works</div>
+      <h2>Three ways in, one shape, one query out</h2>
+      <p>
+        Whatever the source, everything is flattened into a single flat item
+        document before it is stored. Every panel on the dashboard is then an
+        aggregation over that one shape &mdash; which is what makes the numbers
+        agree.
+      </p>
+    </div>
+
+    <div class="figures">
+
+      <figure>
+        <div class="plate">
+          <pre class="mermaid">
+flowchart LR
+    A["Azure Boards"] -->|"WIQL + batch"| N["normalize"]
+    B["Excel / CSV"] -->|"drag and drop"| N
+    C["Apple Numbers"] -->|"drag and drop"| N
+    N -->|"one flat item"| O[("OpenSearch")]
+    O -->|"single query"| D["Dashboard"]
+    D -->|"click any number"| L["Exact item list"]
+    style A fill:#e3eefb,stroke:#0071bb,color:#0e1a26
+    style B fill:#e3eefb,stroke:#0071bb,color:#0e1a26
+    style C fill:#e3eefb,stroke:#0071bb,color:#0e1a26
+    style N fill:#ffffff,stroke:#3d5266,color:#0e1a26
+    style O fill:#ffffff,stroke:#3d5266,color:#0e1a26
+    style D fill:#d9f2f4,stroke:#0d9aa8,color:#0e1a26
+    style L fill:#d9f2f4,stroke:#0d9aa8,color:#0e1a26
+          </pre>
+        </div>
+        <figcaption>
+          <b>Figure 1 &mdash; Every source lands on the same shape.</b>
+          A spreadsheet POD and an Azure POD are indistinguishable by the time
+          they reach a chart, which is the only reason they can be compared on one.
+        </figcaption>
+      </figure>
+
+      <figure>
+        <div class="plate">
+          <pre class="mermaid">
+flowchart TB
+    subgraph ONE["One search, size 0"]
+        Q["Filters, scoped to your PODs"]
+        Q --> S["Severity"]
+        Q --> E["Environment"]
+        Q --> T["Status"]
+        Q --> G["Ageing buckets"]
+        Q --> R["Trend"]
+        Q --> H["Health"]
+    end
+    S --> V["The card"]
+    E --> V
+    T --> V
+    G --> V
+    R --> V
+    H --> V
+    V -->|"click"| DR["Drill-down: the same filters, as a list"]
+    style ONE fill:#eef5fc,stroke:#0071bb,color:#0e1a26
+    style Q fill:#ffffff,stroke:#0071bb,color:#0e1a26
+    style V fill:#d9f2f4,stroke:#0d9aa8,color:#0e1a26
+    style DR fill:#d9f2f4,stroke:#0d9aa8,color:#0e1a26
+          </pre>
+        </div>
+        <figcaption>
+          <b>Figure 2 &mdash; Why the numbers cannot disagree.</b>
+          Every panel is an aggregation inside <em>one</em> request. Two
+          separate queries would read the index at two different moments, and
+          then two tiles start arguing on screen about the same thing.
+        </figcaption>
+      </figure>
+
+      <figure>
+        <div class="plate">
+          <pre class="mermaid">
+flowchart LR
+    W["Work item changes in Azure"] --> H["Webhook: instant"]
+    W --> P["Poller: every N seconds"]
+    W --> M["Sync button: on demand"]
+    H --> U["Upsert by deterministic id"]
+    P --> U
+    M --> U
+    U --> O[("OpenSearch")]
+    style W fill:#e3eefb,stroke:#0071bb,color:#0e1a26
+    style H fill:#ffffff,stroke:#0d9aa8,color:#0e1a26
+    style P fill:#ffffff,stroke:#0d9aa8,color:#0e1a26
+    style M fill:#ffffff,stroke:#0d9aa8,color:#0e1a26
+    style U fill:#d9f2f4,stroke:#0d9aa8,color:#0e1a26
+    style O fill:#ffffff,stroke:#3d5266,color:#0e1a26
+          </pre>
+        </div>
+        <figcaption>
+          <b>Figure 3 &mdash; Three sync paths that cannot collide.</b>
+          Document ids are deterministic, so all three converge on an upsert.
+          They can overlap, run together, or re-import the same item &mdash;
+          none of it duplicates a row.
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════ the board ══ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">The board</div>
+      <h2>What a POD looks like on it</h2>
+      <p>
+        The figure below is the shape of a single POD&rsquo;s card. The health
+        ring is deliberately checkable: divide the two numbers underneath it and
+        you get the number in the middle.
+      </p>
+    </div>
+
+    <div class="mock">
+      <div class="mock-bar">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span style="margin-left:8px">AMC POD &middot; all kinds &middot; aged after 7 days</span>
+      </div>
+
+      <div class="mock-body">
+        <div class="mock-cell">
+          <div class="ring-wrap">
+            <div class="ring">
+              <svg width="160" height="160" viewBox="0 0 160 160" role="img" aria-label="Board health: 57 percent of tracked items are closed">
+                <circle cx="80" cy="80" r="66" fill="none" stroke="var(--accent-tint)" stroke-width="15"></circle>
+                <!-- 57% of the 414.7 circumference = 236.4 -->
+                <circle cx="80" cy="80" r="66" fill="none" stroke="var(--accent)" stroke-width="15"
+                        stroke-linecap="round" stroke-dasharray="236.4 414.7"></circle>
+              </svg>
+              <div class="ring-mid">
+                <div class="pct num">57<span>%</span></div>
+                <div class="cap">Closed</div>
+              </div>
+            </div>
+            <div class="ring-check">138 closed of 244<br>106 still open</div>
+          </div>
+        </div>
+
+        <div class="mock-cell">
+          <div class="eyebrow muted" style="margin-bottom:16px">Ageing &mdash; how long open items have waited</div>
+          <div class="bars">
+            <div class="bar-row">
+              <span class="lbl">0&ndash;3 days</span>
+              <span class="bar-track"><span class="bar-fill" style="width:26%;background:var(--accent-2)"></span></span>
+              <span class="val num">18</span>
+            </div>
+            <div class="bar-row">
+              <span class="lbl">4&ndash;7 days</span>
+              <span class="bar-track"><span class="bar-fill" style="width:31%;background:var(--accent-2)"></span></span>
+              <span class="val num">21</span>
+            </div>
+            <div class="bar-row">
+              <span class="lbl">8&ndash;14 days</span>
+              <span class="bar-track"><span class="bar-fill" style="width:44%;background:var(--accent)"></span></span>
+              <span class="val num">30</span>
+            </div>
+            <div class="bar-row">
+              <span class="lbl">15&ndash;30 days</span>
+              <span class="bar-track"><span class="bar-fill" style="width:38%;background:var(--accent-deep)"></span></span>
+              <span class="val num">26</span>
+            </div>
+            <div class="bar-row">
+              <span class="lbl">30+ days</span>
+              <span class="bar-track"><span class="bar-fill" style="width:16%;background:var(--danger)"></span></span>
+              <span class="val num">11</span>
+            </div>
+          </div>
+          <div class="chips">
+            <span class="chip crit">Critical 9</span>
+            <span class="chip">Major 34</span>
+            <span class="chip">Minor 58</span>
+            <span class="chip">Unknown 5</span>
+            <span class="chip">Production 12</span>
+            <span class="chip">For QA Validation 14</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="mock-note">
+        Every figure above is a drill target. 18 + 21 + 30 + 26 + 11 = 106 &mdash; the open count on the ring.
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════════ the formula ══ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">The score</div>
+      <h2>Health, in one line of arithmetic</h2>
+      <p>
+        This started as a weighted heuristic &mdash; full marks less capped
+        penalties for aged criticals, a stale average age and an open backlog.
+        On the board above it read <strong>32</strong> where this reads
+        <strong>57</strong>, and nobody could reconstruct the gap without the
+        source code.
+      </p>
+    </div>
+
+    <div class="formula">
+      <div class="eq">health = round( closed &divide; total &times; 100 )&nbsp;&nbsp;&nbsp;where closed = total &minus; open</div>
+      <div class="worked">138 &divide; 244 &times; 100 &nbsp;&rarr;&nbsp; <b>57%</b></div>
+      <p style="font-size:15px;color:var(--ink-2)">
+        A score that has to be explained before it can be trusted is not doing
+        its job on a dashboard. Age and severity are deliberately <em>not</em> in
+        it &mdash; they sit beside the ring as <em>Critical aged</em> and
+        <em>Average age</em>, where they are named and can be read directly. The
+        score says how much is left; those two say how bad what is left has become.
+      </p>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════════ honesty ══ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">Limits</div>
+      <h2>What it refuses to do</h2>
+      <p>
+        Worth saying out loud, because each one is a place where a more
+        impressive-looking dashboard would have quietly guessed.
+      </p>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <h3>Never invent a value</h3>
+        <p>
+          A severity it does not recognise stays <code>Unknown</code>. It never
+          guesses which real one was meant, because a wrong value imported
+          silently is worse than a visible gap.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Never trust a filename</h3>
+        <p>
+          An upload is identified by its bytes, not its extension. Whoever
+          exported that file was not thinking about our parser.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Never score on age</h3>
+        <p>
+          Three criticals open for a quarter score the same as three trivial
+          items raised this morning. That is the trade the simple formula makes,
+          and the tiles beside it cover the difference.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Never widen a scope</h3>
+        <p>
+          A member assigned to no PODs gets a refusal, never an unscoped query.
+          There is one place in the codebase where scope is decided.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════════════════════ state ══ -->
+  <section>
+    <div class="section-head">
+      <div class="eyebrow">Where it stands</div>
+      <h2>Built, checked, and ready to deploy</h2>
+      <p>
+        Every check in the suites below corresponds to a bug that was real at
+        some point, so a failure means something regressed rather than that the
+        check is fussy.
+      </p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Suite</th><th>Covers</th><th style="text-align:right">Checks</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Client logic</td><td>The health arithmetic, the dial, the greeting scene</td><td class="n">1,626</td></tr>
+          <tr><td>Theme &amp; source rules</td><td>Light/dark token parity, contrast, chart palette safety</td><td class="n">627</td></tr>
+          <tr><td>Documentation</td><td>The written docs still match the code they describe</td><td class="n">363</td></tr>
+          <tr><td>End-to-end</td><td>Aggregations agree with their drill-downs, validation, POD scoping</td><td class="n">343</td></tr>
+          <tr><td><strong>Total</strong></td><td>Runs on one command, before every release</td><td class="n"><strong>2,959</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════ close ══ -->
+  <div class="close">
+    <div class="eyebrow">To go live</div>
+    <h2>Environment values, then deploy</h2>
+    <p style="color:var(--ink-2)">
+      The application is configured. Nothing else needs building &mdash; the
+      remaining work is supplying real values and pointing it at the org.
+    </p>
+
+    <div class="steps">
+      <div class="step">
+        <span class="k">Azure</span>
+        <span class="v">Organisation URL, project name, and a personal access token with <b>Work Items (Read)</b>. Set per POD in Admin, or once in the environment for all of them.</span>
+      </div>
+      <div class="step">
+        <span class="k">Search</span>
+        <span class="v">An OpenSearch endpoint and credentials. Indices are created on first run &mdash; there is no migration step.</span>
+      </div>
+      <div class="step">
+        <span class="k">Sign-in</span>
+        <span class="v">Password accounts, Microsoft Entra ID SSO, or both. The first person to sign in with SSO becomes the administrator.</span>
+      </div>
+      <div class="step">
+        <span class="k">Secret</span>
+        <span class="v">A session signing secret of at least 32 characters. The app <b>refuses to start</b> in production without a real one, rather than falling back to a default that anyone reading the repository would know.</span>
+      </div>
+      <div class="step">
+        <span class="k">Live updates</span>
+        <span class="v">Optional. A webhook token gives instant updates from Azure; without it, the poller and the sync button still keep the board current.</span>
+      </div>
+    </div>
+  </div>
+
+</div>
