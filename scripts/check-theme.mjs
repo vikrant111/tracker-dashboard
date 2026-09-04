@@ -183,12 +183,41 @@ function contrast(a, b) {
   return (x + 0.05) / (y + 0.05);
 }
 
-/** Chart marks need 3:1 against their own surface; body text needs 4.5:1. */
-const FLOORS = [
-  ["--ink", 7, "primary text"],
-  ["--ink-2", 4.5, "secondary text"],
-  ["--ink-muted", 4.5, "muted text — used for small labels"],
-];
+/**
+ * Contrast floors, **per theme** — because the two have different problems.
+ *
+ * Light was raised after a projector demo. A projector has far less effective
+ * contrast than the monitor a theme is designed on, so tokens that pass AA on a
+ * laptop can be absent on a wall. Muted text at 4.5:1 was the worst of it: the
+ * eyebrows, hints and axis ticks, which is most of the words on the board.
+ *
+ * Dark keeps the lower floors on purpose. Its pale inks are measured against
+ * every panel background including a **bright afternoon sky**, where pale text
+ * is legitimately at its worst — demanding 7:1 there would force the whole dark
+ * palette to white and flatten its hierarchy, to fix a case that projects well
+ * already.
+ */
+const FLOORS_BY_THEME = {
+  light: [
+    ["--ink", 7, "primary text"],
+    ["--ink-2", 7, "secondary text"],
+    ["--ink-muted", 6.5, "muted text — small labels, and the first thing a projector loses"],
+    ["--accent-ink", 7, "link and action text"],
+    ["--danger-ink", 7, "destructive action text"],
+    ["--st-good-ink", 4.5, "status, as type"],
+    ["--st-warning-ink", 4.5, "status, as type — the fill is 1.74:1 and unreadable as a word"],
+    ["--st-serious-ink", 4.5, "status, as type"],
+    ["--st-critical-ink", 4.5, "status, as type"],
+    ["--rank-1", 4.5, "leaderboard rank"],
+    ["--rank-2", 4.5, "leaderboard rank"],
+    ["--rank-3", 4.5, "leaderboard rank"],
+  ],
+  dark: [
+    ["--ink", 7, "primary text"],
+    ["--ink-2", 4.5, "secondary text"],
+    ["--ink-muted", 4.5, "muted text — used for small labels"],
+  ],
+};
 
 /** Composite `fg` at alpha `a` over `bg`, both hex. */
 function over(fg, a, bg) {
@@ -286,7 +315,7 @@ for (const [themeName, tokens] of [
   section(`contrast — ${themeName}`);
   const surface = hex(tokens["--surface"]);
   const stops = surfaceRange(tokens);
-  for (const [token, floor, what] of FLOORS) {
+  for (const [token, floor, what] of FLOORS_BY_THEME[themeName] ?? FLOORS_BY_THEME.dark) {
     const c = hex(tokens[token]);
     if (!c) {
       check(`${token} is a literal hex`, false, tokens[token]);
@@ -297,17 +326,21 @@ for (const [themeName, tokens] of [
     check(`${token} >= ${floor}:1 across the panel gradient (${what})`, worst >= floor, `${worst.toFixed(2)}:1`);
   }
 
-  // Series slots carry meaning, so each must clear 3:1 — except where the
-  // documented relief rule applies (visible labels), which light mode relies on.
-  const relief = themeName === "light";
+  /*
+   * Every series slot clears 3:1 on **both** surfaces.
+   *
+   * Light used to run under a documented relief rule — a mark below 3:1 was
+   * legal as long as it shipped with a visible label — and three of the five
+   * sat between 2 and 3, the yellow at 2.05. That is fine on a monitor and
+   * useless on a projector, where the fill is simply gone and the label points
+   * at nothing. The palette was re-picked and re-validated as a set rather than
+   * eyeballed: lightness band, chroma floor, CVD separation and normal-vision
+   * separation all still pass, and the CVD margin came out better than before.
+   */
   for (let i = 1; i <= 5; i++) {
     const c = hex(tokens[`--series-${i}`]);
     const ratio = contrast(c, surface);
-    check(
-      `--series-${i} contrast on ${themeName} surface`,
-      relief ? ratio >= 2 : ratio >= 3,
-      `${ratio.toFixed(2)}:1${relief && ratio < 3 ? " (below 3:1 — relief rule: visible labels required)" : ""}`,
-    );
+    check(`--series-${i} contrast on ${themeName} surface`, ratio >= 3, `${ratio.toFixed(2)}:1`);
   }
 
   // The ordinal ageing ramp must be monotonic, or "older" stops reading as a direction.
@@ -638,6 +671,62 @@ section("the font switch survives a machine with no network");
       inGoogle && inVendor,
       "google=" + inGoogle + " vendor=" + inVendor,
     );
+  }
+}
+
+section("a status colour used as a word uses the ink, not the fill");
+{
+  /*
+   * The split exists because the two jobs have different floors. As a mark a
+   * status colour needs 3:1 and must stay recognisably itself; as a word it
+   * needs 4.5:1, and on the light surface the warning yellow is **1.74:1**.
+   * That was the band label under the POD name, and on a projector it was not
+   * there at all.
+   *
+   * Nothing about the token values stops somebody wiring the fill back into
+   * text, so this reads the source.
+   */
+  const bands = readFileSync(join(here, "../src/components/health-dial-bands.ts"), "utf8");
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const bandSrc = strip(bands);
+
+  /*
+   * Only the band *values*. The `Band` type declares `ink: string`, which this
+   * matched on the first run — a check reporting "string" is not a STATUS_INK
+   * is technically right and completely useless.
+   */
+  const inks = [...bandSrc.matchAll(/ink:\s*(STATUS[A-Za-z_.]*|[A-Za-z_][A-Za-z_.]*)/g)]
+    .map((m) => m[1])
+    .filter((v) => v !== "string");
+  check("every band carries a text ink", inks.length >= 4, `${inks.length} bands`);
+  const wrong = inks.filter((v) => !v.startsWith("STATUS_INK."));
+  check("...and every one of them is a STATUS_INK", wrong.length === 0, wrong.join(", "));
+
+  /*
+   * And the other direction: a component may use a fill for a mark, but the
+   * moment it becomes `color:` it must be an ink. `band.color` as text is the
+   * exact line that shipped.
+   */
+  const componentDir = join(here, "../src/components");
+  /*
+   * `.tsx` only. `health-dial-bands.ts` is data, where `color:` is a field name
+   * holding the mark colour — flagging that was this check's first false
+   * positive. What matters is a *rendered* style, which only appears in JSX.
+   */
+  const files = readdirSync(componentDir).filter((f) => f.endsWith(".tsx"));
+  const offenders = [];
+  for (const f of files) {
+    const text = strip(readFileSync(join(componentDir, f), "utf8"));
+    if (/color:\s*band\.color/.test(text)) offenders.push(`${f}: color: band.color`);
+    if (/color:\s*STATUS\.[a-z]/.test(text)) offenders.push(`${f}: color: STATUS.*`);
+  }
+  check("no component paints text with a status fill", offenders.length === 0, offenders.slice(0, 3).join(" · "));
+
+  /* The tokens themselves must exist in every theme, or the ink resolves to nothing. */
+  for (const state of ["good", "warning", "serious", "critical"]) {
+    const token = `--st-${state}-ink`;
+    check(`${token} is defined in light`, token in light, light[token] ?? "missing");
+    check(`${token} is defined in both dark blocks`, token in darkMedia && token in darkAttr);
   }
 }
 

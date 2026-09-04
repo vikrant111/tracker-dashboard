@@ -1,18 +1,21 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, Hourglass, ListChecks, Server } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import type { Dashboard } from "@/lib/metrics";
-import { STATUS } from "@/lib/palette";
-import { REFRESH_MS, SWR_OPTIONS, fetcher, isApiKey } from "@/lib/swr";
+import { REFRESH_MS, SWR_OPTIONS, failureReason, fetcher, isApiKey } from "@/lib/swr";
 import type { Kind } from "@/lib/types";
 import type { Weather } from "@/lib/weather";
 import { BreakdownCard } from "./breakdown-card";
 import { DrillProvider } from "./drill-drawer";
 import { HealthRing } from "./health-ring";
+import { SearchScopeNote } from "./search-scope-note";
+import { useSearchScope } from "./use-search-scope";
+import { breakdownPanels } from "./breakdown-panels";
 import { Leaderboard } from "./leaderboard";
+import { agedPhrase } from "@/lib/metrics/threshold";
+import { useScrollToTopOnScopeChange } from "./use-scroll-to-top";
 import { Footer } from "./footer";
 import { ParallaxBackdrop } from "./parallax-backdrop";
 import { SkyBackdrop } from "./sky-backdrop";
@@ -63,8 +66,30 @@ export function DashboardClient({
     return q;
   }, [teamId, kind, search]);
 
+  /*
+   * Whether the board is narrowed. An empty result then reads as "nothing
+   * matched" rather than "nothing tracked" — different problems, different
+   * ways out, and only one of them is the reader's mistake.
+   */
+  const filtered = Boolean(search.trim()) || kind !== "all";
+  const clearFilters = () => {
+    setSearch("");
+    setKind("all");
+  };
+
+  /*
+   * Follow the search to the POD that holds the answer.
+   *
+   * Scoping means a search only ever looks inside the selected POD, so looking
+   * for somebody on another one returned an empty board. This moves there
+   * instead, and the note below names any other POD the same search finds.
+   */
+  const pickTeam = useCallback((next: string) => setTeamId(next), []);
+  const scope = useSearchScope({ search, teamId, onSwitch: pickTeam });
+  useScrollToTopOnScopeChange(teamId);
+
   const { mutate: mutateAll } = useSWRConfig();
-  const { data, isLoading, mutate } = useSWR<Payload>(
+  const { data, error, isLoading, mutate } = useSWR<Payload>(
     `/api/metrics?${new URLSearchParams(baseQuery)}`,
     fetcher,
     SWR_OPTIONS,
@@ -173,61 +198,37 @@ export function DashboardClient({
               }
             />
           </Panel>
-        ) : data?.error ? (
+        ) : failureReason(error, data) ? (
           <Panel className="mt-10 p-8">
-            <Empty title="Could not load the dashboard" hint={data.error} />
+            <Empty title="Could not load the dashboard" hint={failureReason(error, data)!} />
           </Panel>
         ) : !data && isLoading ? (
           <SkeletonBoard />
         ) : data ? (
           <div className="flex flex-col gap-4">
+            {search.trim() && (
+              <SearchScopeNote
+                term={search.trim()}
+                current={scope.current}
+                others={scope.others}
+                onPick={pickTeam}
+              />
+            )}
             <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-              <HealthRing ref={setSkyAnchor} data={data} podName={podName} userName={userName} weather={weather} />
-              <Leaderboard assignees={data.assignees} thresholdDays={data.thresholdDays} />
+              <HealthRing
+                ref={setSkyAnchor} data={data} podName={podName} userName={userName}
+                weather={weather} filtered={filtered} onClearFilters={clearFilters}
+                scope={{ term: search.trim(), match: scope.current, others: scope.others }}
+              />
+              <Leaderboard assignees={data.assignees} agedNote={agedPhrase(data)} />
             </div>
 
             <StatRail data={data} />
 
             <div className="grid items-start gap-4 lg:grid-cols-2">
-              <BreakdownCard
-                dimension="severity"
-                icon={AlertTriangle}
-                hue={STATUS.critical}
-                eyebrow="Severity"
-                title="How bad is what is open"
-                note="Counts include closed items. Click a row for titles and links."
-                buckets={data.severity}
-              />
-              <BreakdownCard
-                dimension="status"
-                icon={ListChecks}
-                hue={"var(--series-1)"}
-                eyebrow="Bug status"
-                title="Where items are sitting"
-                note="Status is mapped from your board's own states. Click through for the list."
-                buckets={data.status}
-                delay={0.05}
-              />
-              <BreakdownCard
-                dimension="environment"
-                icon={Server}
-                hue={"var(--series-3)"}
-                eyebrow="Environment"
-                title="Where they were raised"
-                note="Read from the environment field, then tags, then area path."
-                buckets={data.environment}
-                delay={0.1}
-              />
-              <BreakdownCard
-                dimension="ageing"
-                icon={Hourglass}
-                hue={"var(--series-4)"}
-                eyebrow="Ageing"
-                title="How long open items have waited"
-                note={`Open items only. Anything past ${data.thresholdDays} days counts as aged.`}
-                buckets={data.ageing}
-                delay={0.15}
-              />
+              {breakdownPanels(data).map((panel, i) => (
+                <BreakdownCard key={panel.dimension} {...panel} delay={i * 0.05} />
+              ))}
             </div>
 
             <TrendChart daily={data.trend.daily} weekly={data.trend.weekly} />
@@ -236,7 +237,6 @@ export function DashboardClient({
               <TeamRollup
                 teams={data.teams}
                 names={data.teamNames}
-                thresholdDays={data.thresholdDays}
                 onPick={setTeamId}
               />
             )}

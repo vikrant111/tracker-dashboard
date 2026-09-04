@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { KeyRound, Download, FileText, LogOut, RefreshCw, Settings, Sparkles, Upload } from "lucide-react";
+import { KeyRound, LogOut, Settings, Sparkles } from "lucide-react";
 import { UPLOAD } from "@/lib/constants";
 import Link from "next/link";
 import { useRef, useState } from "react";
@@ -9,6 +9,7 @@ import type { Kind } from "@/lib/types";
 import { SearchBox } from "./search-box";
 import { ThemeToggle } from "./theme-toggle";
 import { Button, Menu, MenuItem, MenuSection, SegmentedControl } from "./ui";
+import { BoardActions } from "./topbar-actions";
 import { ChangePassword } from "./change-password";
 
 export type TeamOption = { id: string; name: string };
@@ -154,6 +155,7 @@ export function Topbar({
           <input
             ref={fileRef}
             type="file"
+            disabled={!isAdmin}
             accept={UPLOAD.accept}
             className="hidden"
             onChange={(e) => {
@@ -175,43 +177,17 @@ export function Topbar({
            * reader needs at a glance: search, theme, and the way out.
            */}
           <Menu label="For you" icon={<Sparkles size={15} />}>
-            <MenuSection label="This board">
-              <MenuItem
-                icon={<RefreshCw size={15} className={syncing ? "animate-spin" : ""} />}
-                label={syncing ? "Syncing" : "Sync now"}
-                hint={lastSyncedAt ? `Last synced ${new Date(lastSyncedAt).toLocaleString()}` : "Pull from Azure Boards"}
-                onClick={onSync}
-                disabled={syncing}
-                busy={syncing}
-                tone="primary"
-              />
-              <MenuItem
-                icon={<Download size={15} />}
-                label="Download report"
-                hint="This view as .xlsx — same filters, same columns"
-                href={`/api/export?${new URLSearchParams(baseQuery)}`}
-                download
-                disabled={!teamId && !canSeeAllPods}
-              />
-              {/* For anyone without Excel. CSV opens anywhere and re-uploads
-                  through exactly the same column mapping. */}
-              <MenuItem
-                icon={<FileText size={15} />}
-                label="Download as CSV"
-                hint="Opens in Numbers, Sheets, anything"
-                href={`/api/export?${new URLSearchParams({ ...baseQuery, format: "csv" })}`}
-                download
-                disabled={!teamId && !canSeeAllPods}
-              />
-              <MenuItem
-                icon={<Upload size={15} />}
-                label={uploading ? "Uploading" : "Upload a spreadsheet"}
-                hint={teamId ? "Excel or CSV — only a Title column is required" : "Pick a POD first"}
-                onClick={() => fileRef.current?.click()}
-                disabled={uploading || !teamId}
-                busy={uploading}
-              />
-            </MenuSection>
+            <BoardActions
+              teamId={teamId}
+              baseQuery={baseQuery}
+              canSeeAllPods={canSeeAllPods}
+              isAdmin={isAdmin}
+              onSync={onSync}
+              syncing={syncing}
+              lastSyncedAt={lastSyncedAt}
+              uploading={uploading}
+              onPickFile={() => fileRef.current?.click()}
+            />
 
             {/* Filters live up on the bar once there is room for them. */}
             <div className="sm:hidden">

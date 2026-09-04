@@ -38,6 +38,19 @@ import {
 import { currentWeather, skyForCode } from "../src/lib/weather.ts";
 import { AGEING, AZURE, EXPORT, LIMITS, LOGIN, PAGE, SCENE, SESSION, TIMING, UPLOAD } from "../src/lib/constants.ts";
 import { redactUri, resolveMongoUri } from "../src/db/uri.ts";
+import { debugMode, redact } from "../src/lib/azure-debug.ts";
+import { canSeeTeam } from "../src/lib/team-access.ts";
+import { adminsAfter, refuseIfLastAdmin } from "../src/lib/admin-guard.ts";
+import { passwordActionLabel, refuseLocalPassword } from "../src/lib/password-policy.ts";
+import { matchesFilters } from "../src/db/query/predicate.ts";
+import { buildMatch } from "../src/db/query/match.ts";
+import { dateFields, fromStored, fromStoredDoc, toDocument, toStoredRow } from "../src/db/document.ts";
+import { ItemModel, SyncStateModel, TeamModel, UserModel } from "../src/db/models/index.ts";
+import { agreedThreshold, teamThresholds, thresholdFor, widestThreshold } from "../src/lib/metrics/threshold.ts";
+import { SEVERITIES, clampSeverityThresholds } from "../src/lib/types.ts";
+import { aggregateDashboard } from "../src/controllers/dashboard.aggregate.ts";
+import { describeEmpty } from "../src/components/health-empty-copy.ts";
+import { filterRoster } from "../src/lib/roster.ts";
 import { MIN_SECRET_LENGTH, resolveAuthSecret } from "../src/lib/auth-secret.ts";
 import { checkSession, secondsRemaining } from "../src/lib/session-policy.ts";
 import { authCookies } from "../src/lib/auth-cookies.ts";
@@ -47,6 +60,8 @@ import { MIN_PASSWORD, isEmail, validateTeam, validateUser, validatePasswordChan
 import { detectSheet, isLegacyXls, isZip, whyNotReadable } from "../src/lib/spreadsheet.ts";
 import { readNumbers } from "../src/lib/numbers.ts";
 import { endLabelPositions } from "../src/components/trend-end-labels.ts";
+import { shouldScrollToTop } from "../src/components/use-scroll-to-top.ts";
+import { failureReason } from "../src/lib/swr.ts";
 import { closedRatio, healthScore } from "../src/lib/health.ts";
 import { LEGACY, numbersBundle, stringCell, zip } from "./lib/numbers-fixture.mjs";
 import { highlight, suggest } from "../src/lib/suggest.ts";
@@ -153,6 +168,23 @@ function valueAt(dx, dy) {
 
 let failures = 0;
 let checks = 0;
+/**
+ * The bar as it actually renders.
+ *
+ * Its actions moved into `topbar-actions.tsx` when uploading became an admin's
+ * right, and these checks are about what the reader is offered — not which file
+ * holds it. The `<BoardActions />` call is replaced by that component's own
+ * JSX, so "inside the menu" and "left on the bar" still mean what they say;
+ * concatenating the two files instead would put every action *after* `</Menu>`
+ * and quietly invert the answer.
+ */
+function topbarSource() {
+  const bar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const actions = readFileSync(new URL("../src/components/topbar-actions.tsx", import.meta.url), "utf8");
+  const body = actions.slice(actions.indexOf("<MenuSection"), actions.lastIndexOf("</MenuSection>") + 14);
+  return bar.replace(/<BoardActions[\s\S]*?\/>/, body);
+}
+
 function check(label, pass, detail = "") {
   checks++;
   if (!pass) {
@@ -1600,7 +1632,7 @@ section("constants — the hardcoded values live in one place");
   // The literals must actually be *used*, or this is a file of dead numbers.
   const users = [
     ["../src/lib/teams.ts", "LIMITS"],
-    ["../src/controllers/dashboard.controller.ts", "PAGE"],
+    ["../src/controllers/dashboard.aggregate.ts", "PAGE"],
     ["../src/lib/azure.ts", "AZURE"],
     ["../src/lib/types.ts", "AGEING"],
     ["../src/app/api/upload/route.ts", "UPLOAD"],
@@ -1741,7 +1773,7 @@ section("the upload format is documented and matches the importer");
   check("a worked example is given", /\| 10432 \|/.test(doc));
 
   // ...and it is reachable from the app, not only from the repository.
-  const topbar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const topbar = topbarSource();
   check("the format is on the upload control", /[Oo]nly a Title column is required/.test(topbar));
   check("the picker uses the shared accept list", topbar.includes("accept={UPLOAD.accept}"));
 }
@@ -1815,7 +1847,7 @@ section("the search suggests predictably");
 section("the search box itself");
 {
   const box = readFileSync(new URL("../src/components/search-box.tsx", import.meta.url), "utf8");
-  const topbar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const topbar = topbarSource();
 
   // Typing used to fire a request per keystroke, each re-keying SWR and
   // re-rendering every panel on the board. That is most of what made it heavy.
@@ -1982,7 +2014,7 @@ section("the export route and its button");
   check("the filename is bounded", /\.slice\(0, \d+\)/.test(route));
   check("the filename carries the date", route.includes("toISOString().slice(0, 10)"));
 
-  const topbar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const topbar = topbarSource();
   check("there is a download button", topbar.includes("/api/export?"));
   check("it downloads the filtered view", topbar.includes("new URLSearchParams(baseQuery)"));
   // A real link, so the browser streams the file to disk rather than the page
@@ -2096,7 +2128,7 @@ section("the For you menu");
 
 section("what stays on the bar, and what folds away");
 {
-  const topbar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const topbar = topbarSource();
 
   check("the menu is labelled For you", topbar.includes('<Menu label="For you"'));
 
@@ -2345,7 +2377,45 @@ section("health is the share of the board that is closed");
   check("138 closed of 244 reads 57", healthScore({ total: 244, active: 106 }) === 57, `=${healthScore({ total: 244, active: 106 })}`);
   check("72 closed of 120 reads 60", healthScore({ total: 120, active: 48 }) === 60);
   check("3 closed of 5 reads 60", healthScore({ total: 5, active: 2 }) === 60);
-  check("the score is closed over tracked, rounded", healthScore({ total: 244, active: 106 }) === Math.round((138 / 244) * 100));
+  /*
+   * Literals, not a re-derivation. This check used to compute its own expected
+   * value as `Math.round((138 / 244) * 100)` — the same expression the score
+   * used — so it agreed with the arithmetic instead of testing it, and stayed
+   * green through the rounding bug below.
+   */
+  check("the score is closed over tracked, rounded", healthScore({ total: 244, active: 106 }) === 57);
+
+  /*
+   * The half-way case, which is where the two ways of writing this diverge.
+   *
+   * 207 closed of 360 is exactly 57.5%. Written as `round((207/360) * 100)` it
+   * gives **57**, because that product is `57.49999999999999` in binary
+   * floating point — while a reader dividing the two numbers printed beside the
+   * dial gets 58. Scaling before dividing keeps it exact.
+   *
+   * This is not a rounding preference. The score exists so it can be checked by
+   * hand; one that cannot be is the weighted heuristic it replaced.
+   */
+  check("207 closed of 360 reads 58, not 57", healthScore({ total: 360, active: 153 }) === 58, `=${healthScore({ total: 360, active: 153 })}`);
+  check("1 closed of 8 reads 13 (12.5 rounds up)", healthScore({ total: 8, active: 7 }) === 13, `=${healthScore({ total: 8, active: 7 })}`);
+  check("3 closed of 8 reads 38 (37.5 rounds up)", healthScore({ total: 8, active: 5 }) === 38, `=${healthScore({ total: 8, active: 5 })}`);
+
+  /*
+   * The property behind those three, over every board small enough to enumerate:
+   * the score must equal the exact percentage rounded, never the float product.
+   */
+  {
+    const wrong = [];
+    for (let total = 1; total <= 400; total++) {
+      for (let active = 0; active <= total; active++) {
+        const closed = total - active;
+        // Exact, via integers — no division until the last step.
+        const expected = Math.round((closed * 100) / total);
+        if (healthScore({ total, active }) !== expected) wrong.push(`${closed}/${total}`);
+      }
+    }
+    check("every board up to 400 items scores its exact percentage", wrong.length === 0, wrong.slice(0, 3).join(", "));
+  }
 
   /*
    * What the score deliberately cannot see. Age and severity moved out of it
@@ -2359,11 +2429,25 @@ section("health is the share of the board that is closed");
   /* ------------------------------------------------------------- guards -- */
 
   // An empty board is not unhealthy, it is empty — and 0/0 is not a number.
+  /*
+   * The *ratio* still treats an empty board as fully closed — nothing tracked,
+   * nothing outstanding. That is the arithmetic, and it is unchanged.
+   */
   check("an empty board is fully closed", closedRatio({ total: 0, active: 0 }) === 1);
-  check("an empty board scores 100", healthScore({ total: 0, active: 0 }) === 100);
+  /*
+   * The *score*, though, is null — because zero items is not a score.
+   *
+   * This used to be 100. On an empty POD that was arguable; under a filter it
+   * was simply wrong, and it was reported from a real board: a search matching
+   * somebody who belonged to a different POD returned no items, and the card
+   * answered with a green 100% over the selected POD's name. The most
+   * reassuring number on the dashboard, for a question with no answer.
+   */
+  check("an empty board has no score at all", healthScore({ total: 0, active: 0 }) === null);
+  check("...and the card is told so, not given a number", healthScore({ total: 0, active: 0 }) !== 100);
   // Nothing tracked but something open is incoherent — a half-written
   // aggregation. Dividing by the zero would put Infinity on the dial.
-  check("open items with nothing tracked still scores 100", healthScore({ total: 0, active: 5 }) === 100);
+  check("open items with nothing tracked has no score", healthScore({ total: 0, active: 5 }) === null);
   // More open than tracked would make `closed` negative and the score < 0.
   check("more open than tracked cannot go negative", healthScore({ total: 5, active: 500 }) === 0);
   check("...and its ratio is floored at zero", closedRatio({ total: 5, active: 500 }) === 0);
@@ -2372,18 +2456,47 @@ section("health is the share of the board that is closed");
   check("...and its ratio is capped at one", closedRatio({ total: 5, active: -20 }) === 1);
 
   check("the score is always a whole number", Number.isInteger(healthScore({ total: 7, active: 2 })));
+
+  /*
+   * The screen half of the same rule. `health === null` must reach a card that
+   * says so — coercing it anywhere (`?? 100`, `Number(health)`, `!health`)
+   * puts the fake reading straight back.
+   */
+  {
+    const ring = readFileSync(new URL("../src/components/health-ring.tsx", import.meta.url), "utf8");
+    const empty = readFileSync(new URL("../src/components/health-empty.tsx", import.meta.url), "utf8");
+    const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+    check("the ring returns early on a null score", /data\.health === null/.test(strip(ring)));
+    check("...to a card that says nothing matched", /HealthEmpty/.test(strip(ring)));
+    check("...and never coerces it to a number", !/health \?\? |Number\(data\.health\)/.test(strip(ring)));
+    check("the empty card names the POD it searched", /podName/.test(empty));
+    /*
+     * It used to assert the card said "search is scoped to the selected POD".
+     * That advice was the bug: it appeared under a note saying the person had
+     * been *found* here. What matters is that the card explains itself from the
+     * resolved search rather than guessing.
+     */
+    check("...and explains itself from the resolved search", /describeEmpty/.test(empty));
+    check("...and draws no ring, which would read as zero", !/HealthDial/.test(empty));
+
+    const types = readFileSync(new URL("../src/lib/metrics/types.ts", import.meta.url), "utf8");
+    check("the payload admits there may be no score", /health: number \| null/.test(types));
+  }
   check("the score stays within 0..100", [0, 1, 3, 7, 244, 9999].every((total) =>
     [0, 1, 2, 5, 100, 9999].every((active) => {
       const s = healthScore({ total, active });
+      // No items means no score; that case is asserted on its own above.
+      if (s === null) return true;
       return Number.isFinite(s) && s >= 0 && s <= 100;
     })));
 
   for (const [label, bad] of [["null", null], ["undefined", undefined], ["an empty object", {}]]) {
-    check(`${label} totals score 100 without throwing`, healthScore(bad) === 100);
+    check(`${label} totals have no score, and do not throw`, healthScore(bad) === null);
   }
-  check("NaN fields cannot reach the score", healthScore({ total: NaN, active: NaN }) === 100);
-  check("string fields cannot reach the score", healthScore({ total: "5", active: "2" }) === 100);
-  check("an Infinite total cannot reach the score", healthScore({ total: Infinity, active: 5 }) === 100);
+  check("NaN fields cannot reach the score", healthScore({ total: NaN, active: NaN }) === null);
+  check("string fields cannot reach the score", healthScore({ total: "5", active: "2" }) === null);
+  check("an Infinite total cannot reach the score", healthScore({ total: Infinity, active: 5 }) === null);
 
   /* --------------------------------------------------------- the wiring -- */
 
@@ -2399,12 +2512,13 @@ section("health is the share of the board that is closed");
     ...readdirSync(CONSTANTS_DIR).filter((f) => f.endsWith(".ts")).sort().map((f) => readFileSync(new URL(f, CONSTANTS_DIR), "utf8")),
   ].join("\n");
   const metrics = readFileSync(new URL("../src/controllers/dashboard.controller.ts", import.meta.url), "utf8");
+  const agg = readFileSync(new URL("../src/controllers/dashboard.aggregate.ts", import.meta.url), "utf8");
 
   check("the dashboard imports the score", /import \{ healthScore \} from "\.\.\/lib\/health\.ts"/.test(metrics));
   check("metrics keeps no copy of the arithmetic", !/closedRatio|\/ t\.total/.test(metrics));
   // The threshold still drives the aged tile and the filters, but no longer the
   // score — passing it would imply it does.
-  check("the score is called with totals alone", /healthScore\(totals\)/.test(metrics));
+  check("the score is called with totals alone", /healthScore\(board\.totals\)/.test(metrics));
 
   /*
    * The penalty model is gone, not merely unused. Dead constants and an
@@ -2417,7 +2531,16 @@ section("health is the share of the board that is closed");
   check("there is no scoring mode left to switch", !health.includes("HealthMode") && !constants.includes("HealthMode"));
   check("there is no penalty breakdown left", !/healthPenalties|HealthBreakdown/.test(health));
   check("nothing still imports the removed constants", !/HEALTH/.test(health));
-  check("one scoring expression, not two", (health.match(/Math\.round\(closedRatio/g) ?? []).length === 1);
+  /*
+   * One place does the clamping, and one place rounds. Pinned to the helper
+   * rather than to a spelling of the expression — the previous version asserted
+   * the exact text `Math.round(closedRatio`, which made a correctness fix look
+   * like a violation.
+   */
+  check("the clamping happens in one place", (health.match(/function counts\(/g) ?? []).length === 1);
+  check("both public functions go through it", (health.match(/counts\(t\)/g) ?? []).length === 2);
+  check("nothing rounds a ratio that was already divided", !/Math\.round\(closedRatio/.test(health));
+  check("the percentage is scaled before it is divided", /closed \* 100\) \/ c\.total|c\.closed \* 100/.test(health));
 
   /*
    * The ring reads as a percentage, not as "N OF 100".
@@ -2580,7 +2703,7 @@ section("a Numbers file is read, not refused");
 section("the report downloads as CSV too");
 {
   const route = readFileSync(new URL("../src/app/api/export/route.ts", import.meta.url), "utf8");
-  const topbar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  const topbar = topbarSource();
 
   // Not everybody has Excel, and CSV is the format nothing can refuse.
   check("CSV is an option", route.includes('searchParams.get("format") === "csv"'));
@@ -2902,9 +3025,22 @@ section("passwords can be changed, and only by the right person");
   check("...spreading the stored user, not the input", /saveUserDoc\(\{\s*\.\.\.user,/.test(users));
   check("...and stamping when it changed", /passwordChangedAt: new Date\(\)\.toISOString\(\)/.test(users));
 
-  // An SSO account has no local password; creating one is a second way in.
+  /*
+   * An SSO account has no local password, and creating one is a second way in —
+   * one that outlives the person being disabled with the provider.
+   *
+   * The **self** route still refuses on a missing hash outright: somebody
+   * changing their own password has to know their current one, and an SSO user
+   * has none, so there is no ambiguity to resolve.
+   *
+   * The **admin** route cannot be that blunt. An account with no hash is either
+   * an SSO account or one created with the field left blank, and refusing both
+   * made the second unrecoverable. It defers to `password-policy.ts`, which
+   * turns on whether SSO is configured at all.
+   */
   check("the self route refuses SSO accounts", /user\.passwordHash[\s\S]{0,200}single sign-on/.test(self));
-  check("the admin route refuses them too", /user\.passwordHash[\s\S]{0,200}single sign-on/.test(byAdmin));
+  check("the admin route defers to the policy", /refuseLocalPassword\(/.test(byAdmin));
+  check("...and still protects a real SSO account", /ssoEnabled: entraEnabled/.test(byAdmin));
 
   // With auth off there are no accounts, so there is nothing to change.
   check("both routes refuse when auth is off", /AUTH_MODE === "off"/.test(self) && /AUTH_MODE === "off"/.test(byAdmin));
@@ -3202,7 +3338,7 @@ section("it is deployable with nothing but environment variables");
 
   check("there is a health endpoint", /export async function GET/.test(health));
   check("liveness does no I/O", /if \(!new URL\(req\.url\)\.searchParams\.has\("ready"\)\)/.test(health));
-  check("readiness pings the store", /admin\(\)\.ping\(\)/.test(health));
+  check("readiness pings the store", /store\.ping\(\)/.test(health));
   check("an unreachable store is 503, not 500", /status: "unavailable"[\s\S]{0,80}status: 503/.test(health));
 
   /*
@@ -3662,6 +3798,1139 @@ section("the database URI is resolved, not guessed");
   check("redaction removes the password", !hidden.includes("hunter2"), hidden);
   check("...and the username", !hidden.includes("alice"), hidden);
   check("...but keeps the host, which is the useful part", hidden.includes("cluster0.abcde.mongodb.net"), hidden);
+}
+
+section("an empty board says why, and never contradicts the note above it");
+{
+  const pod = (over = {}) => ({ teamId: "amc-pod", name: "AMC POD", items: 0, people: [], ...over });
+  const say = (over) => describeEmpty({ podName: "AMC POD", term: "nantha", match: null, others: [], ...over });
+
+  /*
+   * The reported bug, exactly. nantha was added to AMC POD and had no items, so
+   * the search *found* her here — and the card said "nothing matches, switch
+   * PODs or pick All PODs", directly under a note reading "found in AMC POD".
+   * Two parts of one screen disagreeing about the same fact.
+   */
+  {
+    const s = say({ match: pod({ people: ["nantha"] }) });
+    check("a roster-only person is not treated as a miss", /roster/i.test(s.heading), s.heading);
+    check("...the card names them", s.body.includes("nantha"), s.body);
+    check("...and says they are on THIS pod", s.body.includes("AMC POD"), s.body);
+    check("...never tells them to switch PODs", !/switch PODs|pick All PODs/i.test(s.body), s.body);
+    check("...and does not call it a mismatch", !/No items match/i.test(s.heading), s.heading);
+  }
+
+  // The same, when they are on more than one POD: name the others, still no scolding.
+  {
+    const s = say({
+      match: pod({ people: ["nantha"] }),
+      others: [{ teamId: "lc", name: "LC", items: 0, people: ["nantha"] }],
+    });
+    check("a person on two PODs has the other named", s.body.includes("LC"), s.body);
+    check("...still without telling them to switch", !/switch PODs/i.test(s.body), s.body);
+  }
+
+  // Found here with items, but another filter removed them all.
+  {
+    const s = say({ match: pod({ items: 12, people: [] }) });
+    check("filters hiding real items say so", /filters/i.test(s.body), s.body);
+    check("...and say how many are behind them", s.body.includes("12"), s.body);
+  }
+
+  // Not here, but reachable — point at the real place.
+  {
+    const s = say({ others: [{ teamId: "lc", name: "LC", items: 3, people: [] }] });
+    check("a match elsewhere is named", /Not in this POD/i.test(s.heading) && s.body.includes("LC"), s.body);
+  }
+
+  // Searched, genuinely nowhere.
+  {
+    const s = say({ term: "zzzznope" });
+    check("nothing anywhere says exactly that", /any POD you can see/i.test(s.body), s.body);
+    check("...and suggests the one thing left", /spelling|clear the search/i.test(s.body), s.body);
+  }
+
+  // No search at all — the POD is simply empty, which is not a failed search.
+  {
+    const s = say({ term: "" });
+    check("an untouched empty POD is not a search miss", /Nothing tracked yet/i.test(s.heading), s.heading);
+    check("...and is told how to fill it", /Azure|spreadsheet/i.test(s.body), s.body);
+  }
+
+  /*
+   * Every branch must produce real copy. An empty string renders as a blank gap
+   * under a heading, which reads as a broken card rather than an explanation.
+   */
+  for (const [label, over] of [
+    ["roster only", { match: pod({ people: ["x"] }) }],
+    ["items behind filters", { match: pod({ items: 5 }) }],
+    ["elsewhere", { others: [{ teamId: "lc", name: "LC", items: 1, people: [] }] }],
+    ["nowhere", {}],
+    ["no search", { term: "" }],
+  ]) {
+    const s = say(over);
+    check(`${label}: has a heading and a body`, s.heading.length > 3 && s.body.length > 20, `${s.heading} / ${s.body.slice(0, 40)}`);
+  }
+}
+
+section("the leaderboard's roster half obeys the search");
+{
+  /*
+   * The other half of the same screenshot: searching one person listed the
+   * whole roster at zero, because the aggregation filtered its items by the
+   * search and the roster did not. The board claimed six people when the reader
+   * had asked about one.
+   */
+  const people = [
+    { name: "Ananya Rao" },
+    { name: "nantha", email: "nantha@x.com" },
+    { name: "Priya Nair" },
+  ];
+  check("no search keeps the whole roster", filterRoster(people, "").length === 3);
+  check("undefined keeps the whole roster", filterRoster(people, undefined).length === 3);
+  check("a search narrows it to the person asked about", filterRoster(people, "nantha").length === 1);
+  check("...case-insensitively, like the item search", filterRoster(people, "NANTHA").length === 1);
+  check("...on a partial name, like the item search", filterRoster(people, "nanth").length === 1);
+  /*
+   * And it is a plain substring, exactly like the assignee half of the item
+   * search — "nan" is inside "Ananya" as well, so it matches both. Narrower
+   * matching here would disagree with the items beside it.
+   */
+  check("...as a substring, matching whoever it matches", filterRoster(people, "nan").length === 2);
+  check("...and on the email too", filterRoster(people, "nantha@x.com").length === 1);
+  /*
+   * A term matching no name folds in nobody — right, because the rows that
+   * survive are then only people whose *items* matched. Searching a bug title
+   * must not repopulate the leaderboard with everyone.
+   */
+  check("a term matching no name folds in nobody", filterRoster(people, "Login fails on submit").length === 0);
+}
+
+section("a lookup key is a string before it is a query");
+{
+  /*
+   * Mongo accepts an operator object exactly where an id was expected, and
+   * `{"$ne": null}` then matches the **first document in the collection**
+   * rather than nothing. A query string cannot carry one; a JSON body can, and
+   * every write route takes a JSON body.
+   *
+   * The routes validate at the boundary, so this is the second layer — the same
+   * shape as the two guards on `teamIds`, and for the same reason: the outer
+   * one hides the inner one, so removing the inner one changes nothing
+   * observable and a behavioural check cannot see it. Verified by hand that it
+   * does real work: with it removed, `POST /api/sync` with
+   * `{"teamId": {"$ne": null}}` returned 200 and named a POD the caller never
+   * asked for.
+   */
+  const dir = new URL("../src/controllers/", import.meta.url);
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  const lookups = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".controller.ts"))) {
+    const src = strip(readFileSync(new URL(file, dir), "utf8"));
+    // Every function that reaches the driver with an id it was handed.
+    for (const m of src.matchAll(/export async function (\w+)\(([^)]*)\)[\s\S]*?\n\}/g)) {
+      const [body, name, args] = [m[0], m[1], m[2]];
+      /*
+       * Any function that hands a caller-supplied key to the store. The shape
+       * changed when the drivers were introduced — it used to be `findById(`
+       * on a model — so this matches the store's own vocabulary instead.
+       */
+      if (!/store\.\w+\.(byId|remove|save)\(|_id:\s*(id|teamId|email)\b/.test(body)) continue;
+      const key = /\b(id|teamId|email)\s*:/.exec(args)?.[1];
+      if (!key) continue;
+      lookups.push({ file, name, key, guarded: new RegExp(`typeof ${key} !== "string"`).test(body) });
+    }
+  }
+
+  check("controllers do look documents up by a caller-supplied id", lookups.length >= 3, `${lookups.length} found`);
+  const unguarded = lookups.filter((l) => !l.guarded).map((l) => `${l.file}:${l.name}(${l.key})`);
+  check("every one of them refuses a non-string first", unguarded.length === 0, unguarded.join(", "));
+}
+
+section("one person, several PODs — the board follows the work");
+{
+  const pod = (name, items, people = ["nantha"]) => ({ teamId: name.toLowerCase().replace(/ /g, "-"), name, items, people });
+  const say = (over) => describeEmpty({ podName: "AMC POD", term: "nantha", match: null, others: [], ...over });
+
+  /*
+   * The reported shape: nantha is on AMC and Payments, with nothing on AMC and
+   * two bugs on Payments. Standing on AMC, "also on Payments POD" is the half
+   * of the answer that does not help — knowing there is somewhere else to look
+   * is not the same as knowing it is worth looking.
+   */
+  {
+    const s = say({ match: pod("AMC POD", 0), others: [pod("Payments POD", 2), pod("LC", 0)] });
+    check("the empty POD says where the work actually is", s.body.includes("Payments POD"), s.body);
+    check("...with the count, not just the name", /2 items in Payments POD/.test(s.body), s.body);
+    check("...and does not lead with a POD that is also empty", !/2 items in LC/.test(s.body), s.body);
+    check("...and says how to get there", /note above/.test(s.body), s.body);
+  }
+
+  // Several PODs with work: name the busiest, mention the rest.
+  {
+    const s = say({ match: pod("AMC POD", 0), others: [pod("Ops POD", 5), pod("Payments POD", 2)] });
+    check("the busiest other POD is named first", s.body.indexOf("Ops POD") < s.body.indexOf("Payments POD"), s.body);
+    check("...and the others are not dropped", s.body.includes("Payments POD"), s.body);
+  }
+
+  // Every other POD is also empty — say so, rather than implying work elsewhere.
+  {
+    const s = say({ match: pod("AMC POD", 0), others: [pod("LC", 0)] });
+    check("all-empty elsewhere is stated plainly", /nothing assigned there either/.test(s.body), s.body);
+    check("...and no phantom count is invented", !/\d+ items? in/.test(s.body), s.body);
+  }
+
+  // The only POD they are on, with nothing yet: a new joiner, not a problem.
+  {
+    const s = say({ match: pod("LC", 0), podName: "LC", others: [] });
+    check("a lone empty POD reads as a new joiner", /Items appear here as they are assigned/.test(s.body), s.body);
+    check("...and points nowhere, because there is nowhere", !/note above/.test(s.body), s.body);
+  }
+
+  /*
+   * Singular and plural. "1 items in Payments POD" is the kind of thing a
+   * reader stops trusting the rest of the card over.
+   */
+  {
+    const one = say({ match: pod("AMC POD", 0), others: [pod("Payments POD", 1)] });
+    check("one item reads as '1 item'", /1 item in Payments POD/.test(one.body), one.body);
+    check("...and not '1 items'", !/1 items/.test(one.body), one.body);
+  }
+}
+
+section("the search matcher orders PODs by where the work is");
+{
+  /*
+   * `findPodsMatching` sorts busiest-first, which is what makes the auto-switch
+   * land somewhere useful: with nantha on two PODs and items on only one, the
+   * board must open the one holding the bugs, not the one holding her name.
+   *
+   * The sort is exercised directly — the controller needs a database, but the
+   * comparator is the part that decides where a reader ends up.
+   */
+  const byWork = (a, b) => b.items - a.items || a.name.localeCompare(b.name);
+  const sorted = [
+    { name: "AMC POD", items: 0 },
+    { name: "Payments POD", items: 2 },
+    { name: "LC", items: 0 },
+  ].sort(byWork);
+
+  check("the POD with items comes first", sorted[0].name === "Payments POD", sorted.map((s) => s.name).join(" > "));
+  check("...and roster-only PODs sort after it", sorted.slice(1).every((s) => s.items === 0));
+  check("...alphabetically among themselves, so the order is stable", sorted[1].name === "AMC POD", sorted[1].name);
+
+  // The controller must actually use that comparator, not merely define one.
+  const src = readFileSync(new URL("../src/controllers/search.controller.ts", import.meta.url), "utf8");
+  check("the matcher sorts by items, then name", /b\.items - a\.items \|\| a\.name\.localeCompare\(b\.name\)/.test(src));
+  check("...and never returns a POD it found nothing in", /if \(!items && !people\.length\) continue;/.test(src));
+}
+
+section("the Azure debug output never carries a credential");
+{
+  /*
+   * The whole point of this logging is that somebody pastes it into a chat to
+   * ask what a field means. A PAT is a bearer credential with read access to
+   * every work item in the organisation, and `Basic base64(":" + pat)` is
+   * trivially reversible — so it must not be able to reach the output no matter
+   * what is handed to the logger.
+   */
+  const secret = "ghp_realLookingPersonalAccessToken1234";
+  const encoded = Buffer.from(`:${secret}`).toString("base64");
+
+  const dangerous = [
+    `Authorization: Basic ${encoded}`,
+    `https://dev.azure.com/org/_apis/wit/wiql?pat=${secret}`,
+    `{"access_token":"${secret}"}`,
+    `{"pat":"${secret}"}`,
+    `failed for token=${secret} on retry`,
+    `password=${secret}&next=/`,
+  ];
+
+  for (const input of dangerous) {
+    const out = redact(input);
+    check(`redacted: ${input.slice(0, 34)}…`, !out.includes(secret), out.slice(0, 60));
+    check(`...and the base64 form too`, !out.includes(encoded), out.slice(0, 60));
+  }
+
+  /* It must still be readable afterwards, or people stop pasting it at all. */
+  const kept = redact(`WIQL project=Payments types=[Bug] → 42 ids in 91ms`);
+  check("ordinary output survives redaction", kept.includes("42 ids") && kept.includes("Payments"), kept);
+
+  /*
+   * And the logger is off unless asked. A sync runs on a timer, so a default of
+   * "on" writes a block every poll interval forever — and at `full` it writes
+   * real work item titles into whatever collects the logs.
+   */
+  check("debug is off with nothing set", debugMode({}) === "off");
+  check("...off for an unknown value", debugMode({ AZDO_DEBUG: "loud" }) === "off");
+  check("...and off for the empty string", debugMode({ AZDO_DEBUG: "" }) === "off");
+
+  check("summary is opt-in", debugMode({ AZDO_DEBUG: "summary" }) === "summary");
+  check("full is opt-in", debugMode({ AZDO_DEBUG: "full" }) === "full");
+  /* `1` and `true` are what people actually type; they get the safe level. */
+  for (const truthy of ["1", "true", "on", "TRUE", " summary "]) {
+    const mode = debugMode({ AZDO_DEBUG: truthy });
+    check(`AZDO_DEBUG=${truthy.trim() || "(blank)"} never means full`, mode !== "full", mode);
+  }
+
+  /*
+   * `full` prints real titles and real people's names. It must be reachable
+   * only by naming it — no alias, no truthy shortcut.
+   */
+  const reachesFull = ["1", "true", "on", "yes", "verbose", "debug", "all"].filter(
+    (v) => debugMode({ AZDO_DEBUG: v }) === "full",
+  );
+  check("nothing but the word 'full' turns on full", reachesFull.length === 0, reachesFull.join(", "));
+
+  /* The client must route its logging through the redactor, not console.log. */
+  const src = readFileSync(new URL("../src/lib/azure-debug.ts", import.meta.url), "utf8");
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const body = strip(src);
+  const bare = [...body.matchAll(/console\.(info|log|warn|error)\(([^)]*)\)/g)].filter(
+    (m) => !/redact\(/.test(m[2]),
+  );
+  check("every line printed goes through redact()", bare.length === 0, bare.map((m) => m[0].slice(0, 40)).join(" · "));
+
+  const azure = strip(readFileSync(new URL("../src/lib/azure.ts", import.meta.url), "utf8"));
+  check("the client itself prints nothing directly", !/console\./.test(azure));
+  check("...and never logs the auth header", !/authHeader\([^)]*\)[^;]*console/.test(azure));
+}
+
+section("a stored teamIds that is not an array grants nothing");
+{
+  /*
+   * The guard that stops `"amc-pod-archive".includes("amc-pod")` — which is
+   * `true` — from granting a POD nobody assigned.
+   *
+   * Tested directly rather than through a server with a deliberately corrupted
+   * record. That version wrote raw to the database to bypass `saveUser`'s
+   * sanitising, which made it specific to whichever store was underneath: on
+   * Mongo the schema simply cast the string back into an array and the poison
+   * never landed, so the check quietly stopped testing anything.
+   */
+  const member = (teamIds) => ({ role: "member", teamIds });
+
+  check("an array grants what it lists", canSeeTeam(member(["amc-pod"]), "amc-pod"));
+  check("...and nothing it does not", !canSeeTeam(member(["amc-pod"]), "payments-pod"));
+
+  /* The substring accident, in every shape it can be stored as. */
+  check("a bare string grants nothing", !canSeeTeam(member("amc-pod-archive"), "amc-pod"));
+  check("...even when it is exactly the id", !canSeeTeam(member("amc-pod"), "amc-pod"));
+  for (const bad of [null, undefined, 0, 42, true, {}, { 0: "amc-pod" }, "amc-pod,payments-pod"]) {
+    check(`teamIds=${JSON.stringify(bad) ?? "undefined"} grants nothing`, !canSeeTeam(member(bad), "amc-pod"));
+  }
+
+  /* An admin sees every POD, whatever their teamIds says. */
+  check("an admin is not narrowed by teamIds", canSeeTeam({ role: "admin", teamIds: [] }, "anything"));
+  check("...even with a malformed one", canSeeTeam({ role: "admin", teamIds: "junk" }, "anything"));
+
+  /* The rule must stay this shape — the isArray test is the whole guard. */
+  const src = readFileSync(new URL("../src/lib/team-access.ts", import.meta.url), "utf8");
+  check("the guard still tests for an array", /Array\.isArray\(user\.teamIds\)/.test(src));
+}
+
+section("the storage drivers agree, and the store is not treated as source");
+{
+  /*
+   * The rule the whole two-driver design rests on: a driver **fetches**, it
+   * never aggregates. One implementation of every number means `DB_DRIVER=json`
+   * and `DB_DRIVER=mongodb` cannot disagree about a figure — which is the only
+   * way "swap the storage later" is safe to offer.
+   */
+  const storeDir = new URL("../src/db/store/", import.meta.url);
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const read = (f) => strip(readFileSync(new URL(f, storeDir), "utf8"));
+
+  for (const driver of ["json-store.ts", "mongo-store.ts", "memory-store.ts"]) {
+    const src = read(driver);
+    check(`${driver} does not aggregate`, !/\$facet|aggregateDashboard|reduce\(\(acc/.test(src), driver);
+  }
+
+  const agg = strip(readFileSync(new URL("../src/controllers/dashboard.aggregate.ts", import.meta.url), "utf8"));
+  check("the aggregation reads no store", !/getStore|ItemModel|readCollection/.test(agg));
+  check("...and takes the items it is given", /items: ItemDoc\[\]/.test(agg));
+
+  /*
+   * The JSON driver's file layer. Each of these was a real defect that produced
+   * *intermittent* wrong data, which is the worst kind to ship.
+   */
+  const files = read("json-files.ts");
+  check("reads are not cached", !/cache\.(get|set)\(/.test(files), "a stale read is worse than a slow one");
+  check("writes are atomic, via rename", /renameSync\(tmp, path\)/.test(files));
+  check("...to a uniquely named temp file", /randomUUID\(\)/.test(files), "two writers once shared one temp path");
+  check("the write queue is shared across module instances", /globalThis[\s\S]{0,120}__podTrackerFileQueues/.test(files));
+  check("every mutation takes the cross-process lock", /withLock\(name/.test(files));
+
+  const lock = read("json-lock.ts");
+  check("the lock waits asynchronously", /await sleep\(/.test(lock), "a spin-wait blocks the work it waits for");
+  check("...and never spins on the clock", !/while \(Date\.now\(\) < /.test(lock));
+  check("staleness is judged by mtime, not file contents", /statSync\(path\)\.mtimeMs/.test(lock));
+  check("...and the lock is released in a finally", /finally \{[\s\S]{0,80}release\(/.test(lock));
+
+  /*
+   * The one that cost the most to find.
+   *
+   * `DB_store/` lives inside the project, deliberately — a clone has to carry
+   * its data. But the dev server watches the project, so **every write looked
+   * like a source edit**: Next recompiled, rewrote its own manifests, and any
+   * request in flight died on `SyntaxError: Unexpected end of JSON input`.
+   * Unrelated routes failed at random, only ever on the file driver.
+   */
+  const config = strip(readFileSync(new URL("../next.config.ts", import.meta.url), "utf8"));
+  check("the data store is excluded from the file watcher", /DB_store/.test(config));
+  check("...and so is the local database directory", /\.mongo-data/.test(config));
+  check("...without dropping node_modules from the ignore list", /node_modules/.test(config));
+
+  /* Both drivers must offer the identical surface, or a swap is not a swap. */
+  const surface = (src) => [...src.matchAll(/^\s{6}async (\w+)\(/gm)].map((m) => m[1]).sort().join(",");
+  check("json and mongo expose the same operations", surface(read("json-store.ts")) === surface(read("mongo-store.ts")),
+    `${surface(read("json-store.ts"))} vs ${surface(read("mongo-store.ts"))}`);
+
+  /* The default has to be the one that needs nothing installed. */
+  const index = read("index.ts");
+  check("json is the default driver", /if \(!raw\) return \{ ok: true, driver: "json" \}/.test(index));
+  check("an unknown DB_DRIVER is refused, not guessed", /ok: false/.test(index));
+}
+
+section("granting a POD looks like something you can do");
+{
+  /*
+   * The control always worked — the chips were buttons that toggled access.
+   * Nothing said so: every POD rendered as the same muted pill, granted and
+   * not-granted looked alike, and it read as a list of PODs the person happens
+   * to be on. It was reported as a missing feature.
+   *
+   * So state is carried by more than a tint, and these keep it that way.
+   */
+  const src = readFileSync(new URL("../src/app/admin/panels/pod-access.tsx", import.meta.url), "utf8");
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const ui = strip(src);
+
+  check("each POD is a real button", /<button/.test(ui));
+  check("...announced as a toggle", /aria-pressed=\{on\}/.test(ui));
+  check("...with a title saying which way it goes", /Revoke \$\{team\.name\}|Grant \$\{team\.name\}/.test(ui));
+
+  /*
+   * Not colour alone — the same rule the charts follow. A tint that shifts by a
+   * few percent is invisible on a projector and to a colourblind reader, and it
+   * was invisible on a laptop too.
+   */
+  check("granted shows a tick", /<Check /.test(ui));
+  check("not granted shows a plus", /<Plus /.test(ui));
+  check("the two states differ by border, not just background", /border-dashed/.test(ui) && /border-\[var\(--accent-line\)\]/.test(ui));
+
+  check("there is an All/None shortcut", /onAll|onNone/.test(ui));
+  check("...and every control disables while saving", (ui.match(/disabled=\{busy\}/g) ?? []).length >= 2);
+
+  /* And the copy must describe what the control actually is. */
+  const panel = readFileSync(new URL("../src/app/admin/panels/people-panel.tsx", import.meta.url), "utf8");
+  check("the panel says the PODs are clickable", /click a POD to grant or revoke/i.test(panel));
+  check("...and the panel uses the control", /<PodAccess/.test(panel));
+}
+
+section("the instance can never be left without an admin");
+{
+  /*
+   * Demoting the last admin is a one-way door: every admin route then answers
+   * "Admins only." — including the one that would put the role back. The only
+   * way out is editing the store by hand.
+   *
+   * Found by doing it: `POST /api/users {role:"member"}` on the only admin
+   * succeeded, and the next request was refused.
+   */
+  const users = [
+    { email: "a@x.com", role: "admin" },
+    { email: "b@x.com", role: "member" },
+  ];
+
+  check("the only admin cannot be demoted", Boolean(refuseIfLastAdmin(users, "a@x.com", "demote")));
+  check("...nor deleted", Boolean(refuseIfLastAdmin(users, "a@x.com", "delete")));
+  check("...and the refusal says what to do first", /make somebody else an admin first/i.test(refuseIfLastAdmin(users, "a@x.com", "demote") ?? ""));
+
+  /* A member is never blocked, however few admins there are. */
+  check("demoting a member is not blocked", refuseIfLastAdmin(users, "b@x.com", "demote") === null);
+  check("deleting a member is not blocked", refuseIfLastAdmin(users, "b@x.com", "delete") === null);
+
+  /* With a second admin, the first is free to go. */
+  const two = [...users, { email: "c@x.com", role: "admin" }];
+  check("one of two admins may be demoted", refuseIfLastAdmin(two, "a@x.com", "demote") === null);
+  check("...and the count is of the others", adminsAfter(two, "a@x.com") === 1, `${adminsAfter(two, "a@x.com")}`);
+  check("an unknown address blocks nothing", refuseIfLastAdmin(users, "nobody@x.com", "delete") === null);
+
+  /* Case and whitespace must not smuggle a lockout past the guard. */
+  check("the email match ignores case", Boolean(refuseIfLastAdmin(users, "A@X.COM", "demote")));
+  check("...and surrounding space", Boolean(refuseIfLastAdmin(users, "  a@x.com  ", "demote")));
+
+  /* The route has to actually consult it, on both paths. */
+  const route = readFileSync(new URL("../src/app/api/users/route.ts", import.meta.url), "utf8");
+  check("the save path checks before demoting", /body\.role === "member"[\s\S]{0,160}refuseIfLastAdmin/.test(route));
+  check("the delete path checks too", /DELETE[\s\S]*refuseIfLastAdmin\([\s\S]{0,60}"delete"\)/.test(route));
+}
+
+section("an account created without a password can still be given one");
+{
+  /*
+   * Reported from a real instance: a member was added with the password field
+   * left blank, and then could not sign in — and there was no way to fix it.
+   * The key icon only appeared for accounts that *already had* a password, and
+   * the API refused to set one on an account without a hash.
+   *
+   * That refusal was right for a genuine SSO account and wrong for this. They
+   * look identical in storage, so the rule turns on whether SSO is configured
+   * at all.
+   */
+  const at = (hasPassword, ssoEnabled) => refuseLocalPassword({ hasPassword, ssoEnabled }, "x@y.com");
+
+  check("no password, no SSO on the instance -> allowed", at(false, false) === null);
+  check("no password, SSO configured -> refused", Boolean(at(false, true)));
+  check("has a password, no SSO -> allowed", at(true, false) === null);
+  check("has a password, SSO configured -> allowed", at(true, true) === null, "an ordinary reset is never blocked");
+
+  /*
+   * The refusal has to explain itself. "Cannot do that" on the one screen that
+   * could fix a locked-out colleague is where an admin gives up.
+   */
+  const refusal = at(false, true) ?? "";
+  check("the refusal names the account", refusal.includes("x@y.com"), refusal.slice(0, 50));
+  check("...and says where the password actually lives", /identity provider/i.test(refusal));
+  check("...and why a local one would be worse", /second way in|outlives/i.test(refusal));
+
+  /* The two actions are different promises and must read differently. */
+  check("an account with no password is offered 'Set'", /^Set/.test(passwordActionLabel(false)), passwordActionLabel(false));
+  check("...and one with a password, 'Reset'", /^Reset/.test(passwordActionLabel(true)), passwordActionLabel(true));
+
+  /* The route must consult the policy rather than re-deciding. */
+  const route = readFileSync(new URL("../src/app/api/users/password/route.ts", import.meta.url), "utf8");
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  check("the route uses the policy", /refuseLocalPassword\(/.test(strip(route)));
+  check("...and passes the instance's SSO state", /ssoEnabled: entraEnabled/.test(strip(route)));
+  check("...and no longer refuses on a missing hash alone", !/if \(!user\.passwordHash\) \{[\s\S]{0,80}status: 400/.test(strip(route)));
+
+  /*
+   * And the screen. The control was gated on `hasPassword`, which hid it from
+   * exactly the person who needed it.
+   */
+  const panel = strip(readFileSync(new URL("../src/app/admin/panels/people-panel.tsx", import.meta.url), "utf8"));
+  check("the password control is not hidden by hasPassword", !/\{user\.hasPassword && \(/.test(panel));
+  check("...and its label follows the account's state", /passwordActionLabel\(user\.hasPassword\)/.test(panel));
+  check("a row says when an account cannot sign in", /cannot sign in yet/i.test(panel));
+  check("...shown only for accounts without one", /!user\.hasPassword &&/.test(panel));
+}
+
+section("aged means what each POD says it means");
+{
+  /*
+   * "Aged" is per POD: one board calls a week old, another a month. With a
+   * single POD selected that is just its own setting; across **all** PODs every
+   * item must still be judged by the board it came from.
+   *
+   * It was not. A POD set to 30 days had its items counted as aged after 7 the
+   * moment the picker said "All PODs", so the whole reported 5 critical-aged
+   * where the parts summed to 3 — two views of the same board disagreeing.
+   */
+  const now = Date.UTC(2026, 0, 31);
+  const DAY = 86_400_000;
+  const item = (teamId, ageDays) => ({
+    teamId,
+    isActive: true,
+    severity: "Critical",
+    createdDate: new Date(now - ageDays * DAY),
+    workItemId: "1",
+    title: "",
+    assignee: "",
+  });
+
+  const byTeam = { fast: 7, slow: 30 };
+  const unscoped = { agedOnly: true, thresholdDays: 7, thresholdByTeam: byTeam };
+
+  check("a 10-day item on a 7-day POD is aged", matchesFilters(item("fast", 10), unscoped, now));
+  check("...and the same item on a 30-day POD is not", !matchesFilters(item("slow", 10), unscoped, now));
+  check("...until it passes that POD's own line", matchesFilters(item("slow", 40), unscoped, now));
+  check("a fresh item is aged nowhere", !matchesFilters(item("fast", 3), unscoped, now));
+
+  /* A POD the map does not mention falls back rather than vanishing. */
+  check("an unknown POD uses the default", matchesFilters(item("mystery", 10), unscoped, now));
+
+  /* With one POD selected, its own threshold governs. */
+  const scoped = { agedOnly: true, teamId: "slow", thresholdDays: 30, thresholdByTeam: byTeam };
+  check("a selected POD uses its own threshold", !matchesFilters(item("slow", 10), scoped, now));
+
+  /* Closed work is never aged, whatever the threshold says. */
+  check("a closed item is never aged", !matchesFilters({ ...item("fast", 99), isActive: false }, unscoped, now));
+
+  /*
+   * The aggregation has to agree with the filter, or the tile and the drawer it
+   * opens disagree — which is the whole thing this dashboard is for.
+   */
+  const board = aggregateDashboard({
+    items: [item("fast", 10), item("slow", 10), item("slow", 40), item("fast", 3)],
+    now,
+    thresholdDays: 7,
+    thresholdByTeam: byTeam,
+  });
+  check("the tile counts the same two", board.totals.criticalAged === 2, `${board.totals.criticalAged}`);
+
+  const matched = [item("fast", 10), item("slow", 10), item("slow", 40), item("fast", 3)].filter((i) =>
+    matchesFilters(i, unscoped, now),
+  );
+  check("...and the drill-down returns exactly those", matched.length === board.totals.criticalAged, `${matched.length}`);
+
+  /* Per-POD rows use their own line too. */
+  const slow = board.teams.find((t) => t.teamId === "slow");
+  check("a POD's own row uses its own threshold", slow?.criticalAged === 1, `${slow?.criticalAged}`);
+
+  /* And the request layer has to supply the map at all. */
+  const api = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+  check("every accessible POD's threshold is sent", /thresholdByTeam: Object\.fromEntries\(/.test(api));
+  check("...built from the teams the caller can see", /const visible = await accessibleTeams\(user\)/.test(api));
+  check("...and that is what the map is built from", /visible\.map\(\(t\) => \[t\.id, clampThreshold\(t\.ageingThresholdDays\)\]\)/.test(api));
+}
+
+/* ------------------------------------------------------------------ */
+/* Ageing by severity                                                  */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * A POD may hold one severity to a tighter clock than the rest.
+   *
+   * Three things then have to agree about the same item: the JSON driver's
+   * predicate, the Mongo `$match`, and the aggregation that prints the tile.
+   * They are checked against each other here rather than each against its own
+   * idea of the rule — a check that reimplements the precedence would only
+   * prove its own copy is self-consistent.
+   */
+  const now = Date.UTC(2026, 0, 31);
+  const DAY = 86_400_000;
+  const it = (teamId, severity, ageDays) => ({
+    teamId,
+    severity,
+    isActive: true,
+    createdDate: new Date(now - ageDays * DAY),
+    workItemId: "1",
+    title: "",
+    assignee: "",
+  });
+
+  // `fast` holds Critical to 2 days; everything else on it waits 7. `slow`
+  // tunes nothing and waits 30.
+  const rules = {
+    thresholdDays: 7,
+    thresholdByTeam: { fast: 7, slow: 30 },
+    severityThresholds: { fast: { Critical: 2 } },
+  };
+
+  // -- precedence, at the source ------------------------------------------
+  check("a tuned severity beats the POD's threshold", thresholdFor(rules, "fast", "Critical") === 2);
+  check("an untuned severity uses the POD's", thresholdFor(rules, "fast", "Minor") === 7);
+  check("an untuned POD uses its own", thresholdFor(rules, "slow", "Critical") === 30);
+  check("an unknown POD falls back to the board", thresholdFor(rules, "nobody", "Critical") === 7);
+  check(
+    "a severity nobody tuned falls back, not to zero",
+    thresholdFor({ thresholdDays: 7, severityThresholds: {} }, "fast", "Critical") === 7,
+  );
+
+  // -- a stored value that should not be there -----------------------------
+  /*
+   * Thresholds are clamped on the way in, but `DB_store/` is a folder of JSON
+   * somebody can open in an editor, and a document can predate a rule. A string
+   * or a NaN reaching the date maths would become `now - NaN` and mark every
+   * open item aged, which is a silently wrong board rather than an error.
+   */
+  const junk = { thresholdDays: 7, thresholdByTeam: { fast: 7 }, severityThresholds: { fast: {} } };
+  for (const [label, bad] of [
+    ["a string", "soon"],
+    ["a NaN", NaN],
+    ["Infinity", Infinity],
+    ["zero", 0],
+    ["a negative", -3],
+    ["null", null],
+    ["an object", {}],
+  ]) {
+    junk.severityThresholds.fast.Critical = bad;
+    const days = thresholdFor(junk, "fast", "Critical");
+    check(`${label} threshold falls back instead of poisoning the maths`, days === 7, `${days}`);
+  }
+  junk.severityThresholds.fast.Critical = 400;
+  check("an out-of-range stored value is clamped, not used raw", thresholdFor(junk, "fast", "Critical") === AGEING.max);
+  check("a fractional stored value is truncated", thresholdFor({ ...rules, severityThresholds: { fast: { Critical: 2.9 } } }, "fast", "Critical") === 2);
+
+  /* And nothing here throws on rubbish it was never meant to see. */
+  check("no rules at all still answers", thresholdFor({}, "fast", "Critical") === AGEING.defaultThresholdDays);
+  check("a null team id still answers", thresholdFor(rules, null, "Critical") === 7);
+  check("a missing severity still answers", thresholdFor(rules, "fast", undefined) === 7);
+  check("a non-array team list is handled", teamThresholds(rules, null).length === 0);
+  check("...and so is an empty one in widestThreshold", widestThreshold(rules, [], SEVERITIES) === 7);
+  check("agreedThreshold with no PODs falls back", agreedThreshold(rules, [], "Critical") === 7);
+
+  // -- the predicate the JSON driver runs ---------------------------------
+  const aged = { agedOnly: true, ...rules };
+  check("a 3-day critical is aged on a 2-day rule", matchesFilters(it("fast", "Critical", 3), aged, now));
+  check("...but a 3-day minor on the same POD is not", !matchesFilters(it("fast", "Minor", 3), aged, now));
+  check("...and that minor ages on the POD's own line", matchesFilters(it("fast", "Minor", 9), aged, now));
+  check(
+    "a POD that tunes nothing is untouched by another's rule",
+    !matchesFilters(it("slow", "Critical", 3), aged, now),
+  );
+
+  // -- the tile, and the drawer behind it ---------------------------------
+  const sample = [
+    it("fast", "Critical", 3), // aged: past fast's 2-day critical rule
+    it("fast", "Critical", 1), // not: inside it
+    it("fast", "Minor", 3), // not: minors wait 7
+    it("slow", "Critical", 3), // not: slow waits 30
+    it("slow", "Critical", 40), // aged
+  ];
+  const board = aggregateDashboard({ items: sample, now, ...rules });
+  check("the critical tile counts two", board.totals.criticalAged === 2, `${board.totals.criticalAged}`);
+
+  const drilled = sample.filter((i) => matchesFilters(i, { ...aged, severity: "Critical" }, now));
+  check(
+    "...and the drill-down returns exactly those",
+    drilled.length === board.totals.criticalAged,
+    `${drilled.length}`,
+  );
+
+  const fastRow = board.teams.find((t) => t.teamId === "fast");
+  check("a POD's row carries the severity's own clock", fastRow?.criticalThresholdDays === 2, `${fastRow?.criticalThresholdDays}`);
+  check("...and counts by it", fastRow?.criticalAged === 1, `${fastRow?.criticalAged}`);
+
+  // -- what the tile is allowed to *say* ----------------------------------
+  check("the tile names no number when PODs disagree", board.criticalThresholdDays === null);
+  check("the board reports that a severity is tuned", board.severityTuned === true);
+
+  const agreed = aggregateDashboard({
+    items: [it("fast", "Critical", 3), it("fast", "Minor", 3)],
+    now,
+    ...rules,
+  });
+  check("...and names one when only one POD has items", agreed.criticalThresholdDays === 2, `${agreed.criticalThresholdDays}`);
+
+  const plain = aggregateDashboard({ items: [it("slow", "Critical", 40)], now, thresholdDays: 7, thresholdByTeam: { slow: 30 } });
+  check("an untuned board says so", plain.severityTuned === false);
+  check("...and names its POD's number", plain.criticalThresholdDays === 30, `${plain.criticalThresholdDays}`);
+
+  /*
+   * A POD with no items must not make the number ambiguous — otherwise adding
+   * an empty POD with a different rule would blank a tile that was correct.
+   */
+  const empty = aggregateDashboard({
+    items: [it("fast", "Critical", 3)],
+    now,
+    thresholdDays: 7,
+    thresholdByTeam: { fast: 7, slow: 30, ghost: 99 },
+    severityThresholds: { fast: { Critical: 2 } },
+  });
+  check("an empty POD does not blank the tile", empty.criticalThresholdDays === 2, `${empty.criticalThresholdDays}`);
+
+  // -- the Mongo clause, evaluated against the same items ------------------
+  /*
+   * `buildMatch` cannot be run against a live driver here, so its aged `$or` is
+   * evaluated directly: team equality, the `$nin` on severity, and the date
+   * bound. If this and `matchesFilters` ever disagree, the Mongo board and the
+   * JSON board are counting different items — which is the failure this whole
+   * file exists to catch.
+   */
+  const evalAged = (doc, item) => {
+    const branches = doc.$or ?? [doc];
+    return branches.some((b) => {
+      if (b.teamId && b.teamId !== item.teamId) return false;
+      if (typeof b.severity === "string" && b.severity !== item.severity) return false;
+      if (b.severity?.$nin && b.severity.$nin.includes(item.severity)) return false;
+      return item.createdDate.getTime() <= b.createdDate.$lte.getTime();
+    });
+  };
+
+  const stage = buildMatch(aged, now);
+  const agedClause = (stage.$and ?? [stage]).find((c) => c.$or || c.createdDate);
+  const mongoSaid = sample.filter((i) => evalAged(agedClause, i));
+  const jsonSaid = sample.filter((i) => matchesFilters(i, aged, now));
+  check(
+    "the Mongo clause and the JSON predicate agree item for item",
+    mongoSaid.length === jsonSaid.length && mongoSaid.every((i, n) => i === jsonSaid[n]),
+    `mongo ${mongoSaid.length} · json ${jsonSaid.length}`,
+  );
+
+  /*
+   * The `$nin` is what stops an item matching twice — once under its tuned
+   * rule and again under its POD's catch-all. Two branches matching one
+   * document is harmless to `$or`, but its absence would mean the catch-all
+   * bound applies to a severity that set its own, which is a wrong answer.
+   */
+  const catchAll = (agedClause.$or ?? []).find((b) => b.teamId === "fast" && b.severity?.$nin);
+  check("a tuned POD's catch-all excludes what it tuned", catchAll?.severity?.$nin?.includes("Critical") === true);
+  check(
+    "...and an untuned POD needs no exclusion",
+    (agedClause.$or ?? []).some((b) => b.teamId === "slow" && b.severity === undefined),
+  );
+
+  /* One POD selected: the picker's POD is the only one asked about. */
+  const scopedStage = buildMatch({ agedOnly: true, teamId: "fast", ...rules }, now);
+  const scopedClause = (scopedStage.$and ?? [scopedStage]).find((c) => c.$or || c.createdDate);
+  check(
+    "a selected POD builds only its own branches",
+    (scopedClause.$or ?? [scopedClause]).every((b) => b.teamId === "fast" || b.teamId === undefined),
+  );
+  check(
+    "...still counting its tuned severity by the tuned rule",
+    evalAged(scopedClause, it("fast", "Critical", 3)) && !evalAged(scopedClause, it("fast", "Minor", 3)),
+  );
+
+  /* No PODs at all — a caller with no access must still produce a valid bound. */
+  const bare = buildMatch({ agedOnly: true, thresholdDays: 7 }, now);
+  check("no accessible PODs still yields one bound", JSON.stringify(bare).includes("createdDate"));
+
+  // -- what is allowed to be stored ---------------------------------------
+  check("a blank override is dropped, not clamped", clampSeverityThresholds({ Critical: "" }).Critical === undefined);
+  check("an unknown severity is dropped", clampSeverityThresholds({ Sev1: 3 }).Sev1 === undefined);
+  check("a real override survives", clampSeverityThresholds({ Critical: 2 }).Critical === 2);
+  check("nonsense is dropped rather than becoming a bound", clampSeverityThresholds({ Critical: "soon" }).Critical === undefined);
+  check("a value under the floor is clamped up", clampSeverityThresholds({ Critical: 0 }).Critical === AGEING.min);
+  check("a value over the ceiling is clamped down", clampSeverityThresholds({ Minor: 9999 }).Minor === AGEING.max);
+  check("a non-object is an empty map", Object.keys(clampSeverityThresholds("nope")).length === 0);
+  check("an array is an empty map", Object.keys(clampSeverityThresholds([2, 3])).length === 0);
+
+  // -- and what the form refuses before sending ---------------------------
+  const team = (severityThresholdDays) => ({ name: "AMC POD", ageingThresholdDays: 7, severityThresholdDays });
+  check("a blank override is valid", validateTeam(team({ Critical: "" })) === null);
+  check("no overrides at all is valid", validateTeam(team({})) === null);
+  check("a sensible override is valid", validateTeam(team({ Critical: 2 })) === null);
+  check("zero days is refused", /between/.test(validateTeam(team({ Critical: 0 })) ?? ""));
+  check("...and says which severity", /Critical/.test(validateTeam(team({ Critical: 0 })) ?? ""));
+  check("a fractional day is refused", /whole number/.test(validateTeam(team({ Minor: 1.5 })) ?? ""));
+  check("an unknown severity is refused", /not a severity/.test(validateTeam(team({ Sev1: 3 })) ?? ""));
+
+  /* The panel has to actually be mounted, or none of the above is reachable. */
+  const identity = readFileSync(new URL("../src/app/admin/panels/pod-identity.tsx", import.meta.url), "utf8");
+  check("the admin panel mounts the severity editor", /<SeverityThresholds\b/.test(identity));
+
+  const editor = readFileSync(new URL("../src/app/admin/panels/severity-thresholds.tsx", import.meta.url), "utf8");
+  check("clearing a field removes the override", /delete next\[severity\]/.test(editor));
+  check("...rather than storing a zero", !/=\s*0\b/.test(editor));
+  check("every severity is offered", SEVERITIES.every(() => /SEVERITIES\.map/.test(editor)));
+  check("the blank shows what it inherits", /placeholder=\{String\(AGEING\.defaultThresholdDays\)\}/.test(editor));
+
+  /*
+   * The POD-level ageing box is gone from the form. It duplicated these four —
+   * every item has one of these severities — so it could only agree with them
+   * or silently overrule them, with nothing on screen saying which.
+   */
+  check("there is no second ageing control", !/label="Ageing threshold"/.test(identity));
+  check("...and the form no longer writes one", !/patch\(\{ ageingThresholdDays/.test(identity));
+  check("...and the severity hint does not point at one", !/draft\.ageingThresholdDays/.test(editor));
+
+  /*
+   * Removing the POD-level box must not move anybody's clock.
+   *
+   * A POD that had set one is folded into the severities that were inheriting
+   * it, so it ages exactly as before — now visibly. A POD sitting on the
+   * default has nothing to fold and keeps an empty map, which is what keeps
+   * "aged means open past 7 days" true on screen for the common case.
+   */
+  const teamsSrc = readFileSync(new URL("../src/lib/teams.ts", import.meta.url), "utf8");
+  check("a customised POD default is folded into its severities", /function foldPodDefault\(/.test(teamsSrc));
+  check("...and only when it differs from the default", /if \(podDefault === DEFAULT_THRESHOLD_DAYS\) return overrides;/.test(teamsSrc));
+  check("...covering every severity", /SEVERITIES\.map\(\(s\) => \[s, overrides\[s\] \?\? podDefault\]\)/.test(teamsSrc));
+  check("...and the stored default is pinned so the fold cannot repeat", /ageingThresholdDays: DEFAULT_THRESHOLD_DAYS,/.test(teamsSrc));
+
+  /*
+   * The board reports the widest rule in play, not the pinned default —
+   * otherwise a POD that allows a month is tinted "serious" at a fortnight by a
+   * number nothing on it is measured by.
+   */
+  const monthly = { thresholdDays: 7, thresholdByTeam: { slow: 7 }, severityThresholds: { slow: { Critical: 30, Major: 30, Minor: 30, Unknown: 30 } } };
+  const monthlyBoard = aggregateDashboard({ items: [it("slow", "Critical", 3)], now, ...monthly });
+  check("the board reports the widest rule in play", monthlyBoard.thresholdDays === 30, `${monthlyBoard.thresholdDays}`);
+  check("...and an untuned board still reports its own", plain.thresholdDays === 30, `${plain.thresholdDays}`);
+  const sevenBoard = aggregateDashboard({ items: [it("fast", "Minor", 3)], now, thresholdDays: 7, thresholdByTeam: { fast: 7 } });
+  check("...and a default board still says 7", sevenBoard.thresholdDays === 7, `${sevenBoard.thresholdDays}`);
+
+  /*
+   * The controller has to forward what the request layer sent.
+   *
+   * It copied the ageing rules field by field, so the per-severity map reached
+   * the store's filter but not the aggregation: the drawer applied the tuned
+   * rule and the tile applied the POD's. Caught end-to-end, not here — this is
+   * the guard that stops it coming back.
+   */
+  const controller = readFileSync(new URL("../src/controllers/dashboard.controller.ts", import.meta.url), "utf8");
+  check("the controller forwards the ageing rules whole", /aggregateDashboard\(\{ \.\.\.f,/.test(controller));
+  check("...rather than naming them one at a time", !/thresholdByTeam: f\.thresholdByTeam/.test(controller));
+
+  /* And the request layer has to send the map. */
+  const apiSrc = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+  check("per-severity overrides reach the query", /severityThresholds:\s*Object\.fromEntries\(/.test(apiSrc));
+  check("...cleaned on the way out", /clampSeverityThresholds\(t\.severityThresholdDays\)/.test(apiSrc));
+  check("...and PODs that tune nothing are dropped", /filter\(\(\[, map\]\) => Object\.keys\(map\)\.length > 0\)/.test(apiSrc));
+}
+
+/* ------------------------------------------------------------------ */
+/* Uploading is an admin's job                                         */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * An upload is a bulk write to a board other people are measured by: a row
+   * sharing an id overwrites the item already there. Reading a POD and
+   * rewriting it are different rights, and only the second is an admin's.
+   */
+  const route = readFileSync(new URL("../src/app/api/upload/route.ts", import.meta.url), "utf8");
+  check("the upload route requires an admin", /await requireAdmin\(\)/.test(route));
+  check("...and no longer settles for any signed-in user", !/requireUser\(\)/.test(route));
+  check("...while still checking the POD", /canSeeTeam\(user, teamId\)/.test(route));
+
+  const actions = readFileSync(new URL("../src/components/topbar-actions.tsx", import.meta.url), "utf8");
+  check("the upload control is hidden from members", /isAdmin && \(\s*<MenuItem[\s\S]{0,200}Upload a spreadsheet/.test(actions));
+  const bar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  check("...and the file input with it", /type="file"[\s\S]{0,60}disabled=\{!isAdmin\}/.test(bar));
+  check("...and downloading is not gated with it", /Download report/.test(actions) && !/isAdmin && \(\s*<MenuItem[\s\S]{0,120}Download report/.test(actions));
+
+  /* Export is deliberately not admin-only: reading your own POD is a read. */
+  const exportRoute = readFileSync(new URL("../src/app/api/export/route.ts", import.meta.url), "utf8");
+  check("downloading stays open to members", /requireUser\(\)/.test(exportRoute));
+}
+
+/* ------------------------------------------------------------------ */
+/* One schema, every driver                                            */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * The promise this section defends: a document the JSON driver accepts is one
+   * MongoDB would accept, and one it refuses MongoDB would refuse.
+   *
+   * That is what makes "we will add a real database later" a configuration
+   * change instead of a migration. Every check below runs the shipped
+   * `toDocument`, so it is testing the gate the drivers actually use rather
+   * than a description of it.
+   */
+  const item = (over = {}) => ({
+    id: "amc:1",
+    workItemId: "1",
+    teamId: "amc",
+    source: "excel",
+    kind: "bug",
+    title: "A bug",
+    severity: "Critical",
+    environment: "Production",
+    status: "Open",
+    createdDate: "2026-01-01T00:00:00.000Z",
+    isActive: true,
+    ...over,
+  });
+
+  // -- what gets through, and in what shape -------------------------------
+  const ok = toDocument(ItemModel, item(), "amc:1");
+  check("a good item passes", ok.doc !== null && ok.error === null, ok.error ?? "");
+  check("...and keeps its id", ok.doc?._id === "amc:1" && ok.doc?.id === "amc:1");
+  check("...with the date cast to a Date", ok.doc?.createdDate instanceof Date);
+  check("...and schema defaults filled in", Array.isArray(ok.doc?.tags) && ok.doc?.priority === null);
+
+  /*
+   * Casting, not merely checking. A spreadsheet column arrives as text; Mongo
+   * would store a number, so the file driver must too, or the same board sorts
+   * differently on the two.
+   */
+  const cast = toDocument(ItemModel, item({ priority: "3" }), "amc:1");
+  check("a numeric string is cast to a number", cast.doc?.priority === 3, `${typeof cast.doc?.priority}`);
+
+  /*
+   * An undeclared key is dropped rather than stored. Mongo's `strict: true`
+   * drops it; a file store that kept it would hold data that vanishes on the
+   * day of the migration, which is the worst day to discover it.
+   */
+  const extra = toDocument(ItemModel, item({ notAField: "kept?" }), "amc:1");
+  check("a key the schema does not declare is dropped", extra.doc !== null && !("notAField" in extra.doc));
+
+  // -- what gets refused --------------------------------------------------
+  const bad = toDocument(ItemModel, item({ severity: "Blocker" }), "amc:1");
+  check("a severity outside the vocabulary is refused", bad.doc === null);
+  check("...and the message names the field", /severity/.test(bad.error ?? ""), bad.error ?? "");
+
+  const noDate = toDocument(ItemModel, item({ createdDate: undefined }), "amc:1");
+  check("a missing createdDate is refused", noDate.doc === null, JSON.stringify(noDate.doc));
+  const noKind = toDocument(ItemModel, item({ kind: "epic" }), "amc:1");
+  check("a kind outside the vocabulary is refused", noKind.doc === null);
+  const noSource = toDocument(ItemModel, item({ source: "jira" }), "amc:1");
+  check("an unknown source is refused", noSource.doc === null);
+
+  /* Rubbish in the id position, which is where a bad import lands first. */
+  check("a missing id is refused", toDocument(ItemModel, item(), "").doc === null);
+  check("a non-string id is refused", toDocument(ItemModel, item(), 7).doc === null);
+  check("a null document is refused", toDocument(ItemModel, null, "amc:1").doc === null);
+  check("a string document is refused", toDocument(ItemModel, "nope", "amc:1").doc === null);
+  check("an array document is refused", toDocument(ItemModel, [1, 2], "amc:1").doc !== undefined);
+
+  // -- the same gate on the other collections -----------------------------
+  const team = toDocument(TeamModel, { id: "amc", name: "AMC POD", severityThresholdDays: { Critical: 2 }, junk: 1 }, "amc");
+  check("a POD passes and keeps its severity rules", team.doc?.severityThresholdDays?.Critical === 2, team.error ?? "");
+  check("...and loses a field the schema never declared", team.doc !== null && !("junk" in team.doc));
+  check("...and an empty rule map survives", toDocument(TeamModel, { id: "a", name: "A", severityThresholdDays: {} }, "a").doc?.severityThresholdDays !== undefined);
+
+  const user = toDocument(UserModel, { id: "a@b.com", email: "a@b.com", role: "wizard" }, "a@b.com");
+  check("an unknown role is refused", user.doc === null, JSON.stringify(user.doc));
+  const member = toDocument(UserModel, { id: "a@b.com", email: "a@b.com" }, "a@b.com");
+  check("a role-less account defaults to member", member.doc?.role === "member", member.error ?? "");
+  check("...and to no PODs", Array.isArray(member.doc?.teamIds) && member.doc?.teamIds.length === 0);
+
+  // -- dates survive the file round trip ----------------------------------
+  /*
+   * JSON has no date type. The list of fields to convert is read off the
+   * schema, so adding a date field to a schema is all it takes — there is no
+   * second list to keep in step, which is exactly the kind of pair that rots.
+   */
+  check("the date fields are read from the schema", dateFields(ItemModel).sort().join(",") === "changedDate,closedDate,createdDate");
+  check("...and a schema with no dates reports none", dateFields(UserModel).length === 0);
+
+  const row = toStoredRow(ItemModel, ok.doc, "amc:1");
+  check("a stored row holds ISO strings", typeof row.createdDate === "string" && row.createdDate.endsWith("Z"));
+  check("...and an absent date stays null", row.closedDate === null);
+
+  const back = fromStoredDoc(ItemModel, row);
+  check("reading it back gives a Date", back?.createdDate instanceof Date);
+  check("...with the same instant", back?.createdDate?.getTime() === ok.doc?.createdDate?.getTime());
+  check("an unreadable row reads as null, not a crash", fromStoredDoc(ItemModel, undefined) === null);
+
+  /*
+   * An item keeps `_id`; a POD does not.
+   *
+   * `ItemDoc` declares `_id` and the Mongo driver returns it, so the file
+   * driver has to as well — otherwise the same item comes back with a different
+   * set of keys depending on which driver is configured. The domain types
+   * (`Team`, `User`, `SyncState`) carry no storage id, and both drivers drop it
+   * for them. This one was found by storing the same document through both
+   * drivers and diffing the result, not by reading the code.
+   */
+  check("an item keeps its _id, as the Mongo driver returns it", back !== null && back._id === "amc:1");
+  check("...and a POD does not", fromStored(TeamModel, { _id: "amc", id: "amc", name: "A" })?._id === undefined);
+
+  /*
+   * A date that cannot be parsed becomes null rather than an Invalid Date.
+   * Invalid Dates propagate silently through arithmetic as NaN and turn every
+   * age on the board into a blank.
+   */
+  const broken = fromStored(ItemModel, { ...row, closedDate: "not a date" });
+  check("an unparseable date becomes null", broken?.closedDate === null);
+
+  // -- and every driver actually uses it ----------------------------------
+  /*
+   * The gate only holds if nothing writes around it. These read the shipped
+   * drivers rather than trusting that they were wired up.
+   */
+  for (const [label, file] of [
+    ["the json driver", "../src/db/store/json-store.ts"],
+    ["the json collections", "../src/db/store/json-collections.ts"],
+    ["the mongo driver", "../src/db/store/mongo-store.ts"],
+    ["the mongo collections", "../src/db/store/mongo-collections.ts"],
+    ["the memory driver", "../src/db/store/memory-store.ts"],
+  ]) {
+    const src = readFileSync(new URL(file, import.meta.url), "utf8");
+    check(`${label} writes through the schema gate`, /toDocument[<(]/.test(src), file);
+    check(`${label} does not write a raw object`, !/\{ \.\.\.(doc|team|user|state), _id:/.test(src), file);
+  }
+
+  /* And every collection the store exposes has a schema behind it. */
+  const storeTypes = readFileSync(new URL("../src/db/store/types.ts", import.meta.url), "utf8");
+  for (const name of ["items", "teams", "users", "sync"]) {
+    check(`${name} is part of the store contract`, new RegExp(`\\n  ${name}:`).test(storeTypes));
+  }
+  check("...and there is a model for each", [ItemModel, TeamModel, UserModel, SyncStateModel].every((m) => m?.schema?.paths));
+}
+
+/* ------------------------------------------------------------------ */
+/* Changing POD returns you to the top                                 */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * "Open this POD's dashboard" sits at the bottom of an expanded roll-up row.
+   * It swapped the whole board and left the scroll position alone — and since
+   * the roll-up only renders for "All PODs" it unmounted, the page got shorter,
+   * and the reader was left mid-page looking at a different board. Reported as
+   * "the dashboard opened correctly but stayed where it was".
+   */
+  check("a real scope change scrolls", shouldScrollToTop("", "amc-pod", 800));
+  check("...and so does switching between PODs", shouldScrollToTop("amc-pod", "payments-pod", 800));
+  check("...and going back to all PODs", shouldScrollToTop("amc-pod", "", 800));
+
+  /* Already at the top: scrolling there would be an animation to nowhere. */
+  check("no scroll when already at the top", !shouldScrollToTop("", "amc-pod", 0));
+
+  /*
+   * The same POD is not a scope change. React can re-run an effect without the
+   * value moving, and yanking the reader to the top mid-read would be worse
+   * than the bug this fixes.
+   */
+  check("no scroll when the POD did not change", !shouldScrollToTop("amc-pod", "amc-pod", 800));
+  check("...even at the very bottom of a long board", !shouldScrollToTop("amc-pod", "amc-pod", 99999));
+
+  /* Nothing here trusts the number it is given. */
+  check("a missing scroll position does not scroll", !shouldScrollToTop("", "amc-pod", undefined));
+  check("a NaN scroll position does not scroll", !shouldScrollToTop("", "amc-pod", NaN));
+  check("a negative scroll position does not scroll", !shouldScrollToTop("", "amc-pod", -20));
+
+  const hook = readFileSync(new URL("../src/components/use-scroll-to-top.ts", import.meta.url), "utf8");
+  check("the first render does not scroll", /const previous = useRef\(scope\)/.test(hook));
+  check("reduced motion gets an instant jump", /behavior: reduced \? "auto" : "smooth"/.test(hook));
+  check("it does not assume a window", /typeof window === "undefined"/.test(hook));
+
+  /* And the board actually calls it, on the value every switch path sets. */
+  const client = readFileSync(new URL("../src/components/dashboard-client.tsx", import.meta.url), "utf8");
+  check("the dashboard uses it", /useScrollToTopOnScopeChange\(teamId\)/.test(client));
+  /*
+   * Keyed on `teamId` rather than wired to one button, so the roll-up link, the
+   * POD picker and the search following a name into another POD all get it.
+   */
+  check("...so the roll-up link is covered", /onPick=\{setTeamId\}/.test(client));
+  check("...and the POD picker", /onTeam=\{setTeamId\}/.test(client));
+  check("...and the search auto-switch", /onSwitch: pickTeam/.test(client));
+}
+
+/* ------------------------------------------------------------------ */
+/* A request that never arrived is not "no data"                       */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * Two different failures reach a panel:
+   *
+   *   data.error  the server answered and refused, and said why
+   *   error       the request never got an answer — a restart, a dropped
+   *               connection, a proxy returning a login page
+   *
+   * Only the first was ever read. The second rendered a bare "Could not load
+   * this POD." on the roll-up and, in the drawer, "Nothing matches" — which is
+   * a claim about the data made when nothing was known about the data at all.
+   * Seen for real: the dev server was restarted under an open tab and the row
+   * sat dead with nothing to act on.
+   */
+  check("a server refusal is reported", failureReason(undefined, { error: "No access to that POD." }) === "No access to that POD.");
+  check("a dead connection is reported too", failureReason(new Error("Failed to fetch"), undefined) === "Failed to fetch");
+  check("...and beats a stale body", failureReason(new Error("Failed to fetch"), { error: "old" }) === "Failed to fetch");
+  check("a non-Error rejection still says something", failureReason("boom", undefined) === "boom");
+  check("success is not a failure", failureReason(undefined, { totals: {} }) === null);
+  check("...and neither is no data yet", failureReason(undefined, undefined) === null);
+
+  /* Every panel that fetches has to read both. */
+  for (const [label, file] of [
+    ["the roll-up row", "../src/components/team-rollup-detail.tsx"],
+    ["the dashboard", "../src/components/dashboard-client.tsx"],
+    ["the drill-down drawer", "../src/components/drill-drawer.tsx"],
+  ]) {
+    const src = readFileSync(new URL(file, import.meta.url), "utf8");
+    check(`${label} reads both failures`, /failureReason\(error, data\)/.test(src), file);
+    check(`${label} takes error from SWR`, /\{ data, error/.test(src), file);
+  }
+
+  /* The roll-up row is the one that had no way out. */
+  const detail = readFileSync(new URL("../src/components/team-rollup-detail.tsx", import.meta.url), "utf8");
+  check("the failed row offers a retry", /onClick=\{\(\) => mutate\(\)\}/.test(detail));
+  check("...and says it is retrying on its own", /Retrying on its own/.test(detail));
+
+  /*
+   * And the fetcher no longer swallows a non-JSON answer into a bare
+   * SyntaxError. A dev server mid-restart and a proxy login page both land here.
+   */
+  const swr = readFileSync(new URL("../src/lib/swr.ts", import.meta.url), "utf8");
+  check("the fetcher checks the body parsed", /body && typeof body === "object"/.test(swr));
+  check("...and throws something worth showing", /It may be restarting/.test(swr));
+  check("...naming the status when there is one", /res\.status\} \$\{res\.statusText/.test(swr));
 }
 
 console.log("\n" + "─".repeat(60));

@@ -9,6 +9,8 @@ import { useDrill } from "./drill-drawer";
 import { Greeting } from "./greeting";
 import type { Weather } from "@/lib/weather";
 import { HealthDial, bandFor } from "./health-dial";
+import { HealthEmpty } from "./health-empty";
+import type { PodMatch } from "@/controllers/search.controller";
 import { healthDrivers } from "./health-drivers";
 import { Tooltip } from "./ui";
 import { AgeingSpine } from "./ageing-spine";
@@ -18,12 +20,21 @@ export function HealthRing({
   podName,
   userName,
   weather,
+  filtered,
+  scope,
+  onClearFilters,
   ref,
 }: {
   data: Dashboard;
   podName: string;
   userName: string;
   weather: Weather | null;
+  /** True when a search or filter narrowed the board, rather than it being empty. */
+  filtered: boolean;
+  /** What was searched, and how this POD matched — so an empty board can say why. */
+  scope: { term: string; match: PodMatch | null; others: PodMatch[] };
+  /** Clears the search, offered only when something is filtering. */
+  onClearFilters?: () => void;
   /**
    * The scroll takeover measures this card to know where its sky starts, so the
    * background it grows into begins exactly on this card's edges.
@@ -35,6 +46,30 @@ export function HealthRing({
   // display-only — nothing downstream of it touches data.
   const [explored, setExplored] = useState<number | null>(null);
   const exploring = explored !== null;
+
+  /*
+   * Nothing tracked means there is no score, so nothing to draw a ring for.
+   *
+   * `data.health` is null in exactly that case. Showing 100% instead — which is
+   * what this did — put the most reassuring figure on the dashboard over a
+   * question that had no answer: a search matching nobody in the selected POD
+   * read as a perfect board.
+   */
+  if (data.health === null) {
+    return (
+      <HealthEmpty
+        ref={ref}
+        podName={podName}
+        userName={userName}
+        weather={weather}
+        term={scope.term}
+        match={scope.match}
+        others={scope.others}
+        onClear={filtered ? onClearFilters : undefined}
+      />
+    );
+  }
+
   const band = bandFor(explored ?? data.health);
 
   /*
@@ -71,7 +106,7 @@ export function HealthRing({
             className="glow-sm inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold"
             style={{
               background: `color-mix(in srgb, ${band.color} 18%, transparent)`,
-              color: band.color,
+              color: band.ink,
               "--hue": band.color,
             } as React.CSSProperties}
           >
@@ -81,15 +116,15 @@ export function HealthRing({
           <h1 className="mt-2.5 font-[family-name:var(--font-display)] text-[clamp(1.6rem,6vw,2.25rem)] leading-tight font-bold tracking-tight break-words">
             {podName}
           </h1>
-          <p className="mt-1 text-base font-semibold" style={{ color: band.color }}>
+          <p className="mt-1 text-base font-semibold" style={{ color: band.ink }}>
             {band.label}
           </p>
 
           {exploring ? (
             /* While scrubbing, say plainly that this is hypothetical. */
             <p className="mt-3 max-w-xs text-sm leading-relaxed text-[var(--ink-2)]">
-              At <span className="font-semibold" style={{ color: band.color }}>{explored}%</span> the board would read{" "}
-              <span className="font-semibold" style={{ color: band.color }}>{band.label.toLowerCase()}</span>.{" "}
+              At <span className="font-semibold" style={{ color: band.ink }}>{explored}%</span> the board would read{" "}
+              <span className="font-semibold" style={{ color: band.ink }}>{band.label.toLowerCase()}</span>.{" "}
               <span className="text-[var(--ink-muted)]">Release to return to {data.health}%.</span>
             </p>
           ) : (

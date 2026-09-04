@@ -78,6 +78,20 @@ Every panel that reads the API shares one policy, in
 [`src/lib/swr.ts`](../src/lib/swr.ts): the same `refreshInterval`, the same
 deduping window, the same `keepPreviousData`.
 
+Two different failures reach a panel, and both are now read. `data.error` is the
+server answering and refusing, with a reason worth showing. SWR's `error` is the
+request never getting an answer at all — a restarted server, a dropped
+connection, a proxy returning a login page. Only the first used to be read, so a
+dead connection showed a bare "Could not load this POD." on the roll-up and
+"Nothing matches" in the drawer, which is a claim about the data made when
+nothing about the data was known. `failureReason(error, data)` returns whichever
+applies, and the roll-up row offers a retry alongside it.
+
+The fetcher no longer calls `.json()` blindly either. A body that parses is
+handed back so panels keep reading `data.error`; anything else throws a sentence
+naming the status, rather than a bare `SyntaxError` from parsing an HTML error
+page.
+
 That is not tidiness. The dashboard polls every 30s; before this, the drawer and
 the expanded POD rows had **no** refresh at all. A sync landing while a drawer
 was open left a tile reading 45 above a list still showing 42 — two numbers on

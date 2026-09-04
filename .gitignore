@@ -14,3 +14,10 @@ next-env.d.ts
 
 # Local MongoDB data from `pnpm mongo:local`. Never committed.
 .mongo-data
+
+# The json driver writes here. The demo data IS committed, deliberately: a
+# clone must run with no database. A real deployment either sets
+# DB_STORE_DIR outside the repo, or uses DB_DRIVER=mongodb.
+# Lock and temp files never are.
+DB_store/.*.lock
+DB_store/.*.tmp

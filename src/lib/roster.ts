@@ -37,6 +37,26 @@ export type Ranked = {
 const key = (s: string | undefined) => String(s ?? "").trim().toLowerCase();
 
 /**
+ * The roster, narrowed to a search — because the leaderboard beside it already is.
+ *
+ * Without this, searching for one person listed the **whole** roster at zero:
+ * the aggregation filtered its items by the search term, the roster did not,
+ * and every other member of the POD appeared as "0 items". The board then said
+ * six people were on it when the reader had asked about one.
+ *
+ * Matching mirrors the assignee half of the item search exactly — a
+ * case-insensitive substring on the name — so the two halves of the leaderboard
+ * agree about who the search is about. A term that matches no name (someone
+ * searching a bug title) folds in nobody, which is also right: the rows that
+ * survive are then only people whose *items* matched.
+ */
+export function filterRoster(people: RosterPerson[], search: string | undefined): RosterPerson[] {
+  const term = key(search);
+  if (!term) return people;
+  return people.filter((p) => key(p.name).includes(term) || key(p.email).includes(term));
+}
+
+/**
  * Match a roster entry to an aggregated row.
  *
  * Email first — it is the only identifier both sides genuinely share. Azure

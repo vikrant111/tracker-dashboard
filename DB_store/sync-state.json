@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "collection": "sync",
+  "updatedAt": "2026-09-04T13:05:33.637Z",
+  "rows": [
+    {
+      "_id": "amc-pod",
+      "teamId": "amc-pod",
+      "lastChangedDate": "2025-09-04T13:05:33.636Z",
+      "lastRunAt": "2026-09-04T13:05:33.636Z",
+      "lastResult": "error: Team \"AMC POD\" has no Azure connection. Add org URL, project and PAT on the team, or set AZDO_ORG_URL / AZDO_PROJECT / AZDO_PAT."
+    }
+  ]
+}

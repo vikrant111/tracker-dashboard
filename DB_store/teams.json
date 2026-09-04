@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "collection": "teams",
+  "updatedAt": "2026-09-04T13:05:33.770Z",
+  "rows": [
+    {
+      "id": "tm",
+      "name": "TM",
+      "description": "trading mall",
+      "members": [
+        {
+          "name": "bharani",
+          "email": "b@gmail.com",
+          "designation": "SDM",
+          "role": "lead"
+        },
+        {
+          "name": "chythra",
+          "email": "c@gmail.com",
+          "designation": "DMT",
+          "role": "member"
+        }
+      ],
+      "azure": {
+        "orgUrl": "",
+        "project": "",
+        "pat": "",
+        "areaPath": "",
+        "workItemTypes": [
+          "Bug",
+          "Issue",
+          "Task",
+          "User Story"
+        ]
+      },
+      "fieldMap": {
+        "severity": "Microsoft.VSTS.Common.Severity",
+        "environment": "Custom.Environment",
+        "status": "System.State"
+      },
+      "valueMap": {
+        "severity": {},
+        "environment": {},
+        "status": {}
+      },
+      "ageingThresholdDays": 7,
+      "createdAt": "2026-09-04T09:21:57.499Z",
+      "_id": "tm"
+    },
+    {
+      "id": "payments-pod",
+      "name": "Payments POD",
+      "description": "Collections and settlement",
+      "members": [
+        {
+          "name": "Kabir Menon",
+          "email": "kabir.menon@example.com",
+          "designation": "POD Lead",
+          "role": "lead"
+        },
+        {
+          "name": "Tara Bose",
+          "email": "tara.bose@example.com",
+          "designation": "Senior Engineer",
+          "role": "member"
+        },
+        {
+          "name": "Arjun Pillai",
+          "email": "arjun.pillai@example.com",
+          "designation": "QA Engineer",
+          "role": "member"
+        }
+      ],
+      "azure": {
+        "orgUrl": "",
+        "project": "",
+        "pat": "",
+        "areaPath": "Demo\\Payments",
+        "workItemTypes": [
+          "Bug",
+          "Issue",
+          "Task",
+          "User Story"
+        ]
+      },
+      "fieldMap": {
+        "severity": "Microsoft.VSTS.Common.Severity",
+        "environment": "Custom.Environment",
+        "status": "System.State"
+      },
+      "valueMap": {
+        "severity": {},
+        "environment": {},
+        "status": {}
+      },
+      "ageingThresholdDays": 7,
+      "createdAt": "2026-09-04T09:12:24.276Z",
+      "_id": "payments-pod"
+    },
+    {
+      "_id": "amc-pod",
+      "id": "amc-pod",
+      "name": "AMC POD",
+      "description": "Asset management console",
+      "members": [
+        {
+          "name": "Ananya Rao",
+          "email": "ananya.rao@example.com",
+          "designation": "POD Lead",
+          "role": "lead"
+        },
+        {
+          "name": "Vikram Shetty",
+          "email": "vikram.shetty@example.com",
+          "designation": "Senior Engineer",
+          "role": "member"
+        },
+        {
+          "name": "Priya Nair",
+          "email": "priya.nair@example.com",
+          "designation": "QA Engineer",
+          "role": "member"
+        },
+        {
+          "name": "Rohit Malhotra",
+          "email": "rohit.malhotra@example.com",
+          "designation": "Engineer",
+          "role": "member"
+        },
+        {
+          "name": "Sneha Iyer",
+          "email": "sneha.iyer@example.com",
+          "designation": "Business Analyst",
+          "role": "member"
+        }
+      ],
+      "azure": {
+        "orgUrl": "",
+        "project": "",
+        "pat": "",
+        "areaPath": "Demo\\AMC",
+        "workItemTypes": [
+          "Bug",
+          "Issue",
+          "Task",
+          "User Story"
+        ]
+      },
+      "fieldMap": {
+        "severity": "Microsoft.VSTS.Common.Severity",
+        "environment": "Custom.Environment",
+        "status": "System.State"
+      },
+      "valueMap": {
+        "severity": {},
+        "environment": {},
+        "status": {}
+      },
+      "ageingThresholdDays": 7,
+      "severityThresholdDays": {},
+      "createdAt": "2026-09-04T09:12:24.276Z"
+    }
+  ]
+}

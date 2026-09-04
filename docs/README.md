@@ -41,7 +41,25 @@ PODs assigned to them, enforced server-side.
 ## Where things live
 
 ```
-src/db/           MongoDB: how the data is stored and reached
+src/db/           storage. Two drivers behind one interface, picked by DB_DRIVER
+  store/
+    types         what a driver must provide. It fetches; it never aggregates,
+                  so both drivers produce identical numbers by construction
+    index         driver selection: json (default) | mongodb | memory
+    json-store    the file driver: DB_store/*.json, nothing installed
+    json-files    read fresh, write atomically, one writer at a time
+    json-lock     a lock that holds across processes, and waits without
+                  blocking the event loop
+    json-paths    where DB_store lives and what each file is called
+    json-rowops   upsert/remove for the three small keyed collections
+    json-collections  PODs, accounts and watermarks for the file driver
+    memory-store  the same contract in memory; for bisecting a failure
+    mongo-store   the same contract against a real cluster
+    mongo-collections  the same three collections, against Mongo
+  query/
+    predicate     what a filter *means*, as a function — the JSON driver runs
+                  this, and it mirrors the Mongo $match exactly
+  connect.ts      the Mongo connection, when that driver is selected
   connect.ts      one cached connection; every entry point awaits it. Cached on
                   globalThis because Next re-evaluates modules on hot reload
                   while the connection survives
@@ -56,6 +74,10 @@ src/db/           MongoDB: how the data is stored and reached
     sync-state.schema  one watermark per POD
   models/index.ts the compiled models, looked up before compiling so a hot
                   reload cannot throw OverwriteModelError
+  document.ts     the one gate every write passes through, on every driver.
+                  Casts, defaults and validates against the schemas above —
+                  without a connection — so what the file driver stores is what
+                  MongoDB would store, and what it refuses MongoDB refuses
   query/
     match         Filters -> $match. The one builder both the dashboard and the
                   drill-down use, which is why they cannot disagree
@@ -63,9 +85,19 @@ src/db/           MongoDB: how the data is stored and reached
 
 src/controllers/  what routes and lib/* call
   dashboard.controller  the whole board in one $facet
-  dashboard.shape       raw facet output -> what the panels render (pure)
+  dashboard.aggregate   every number on the board, computed once, from a list
+                        of items — the only implementation, so switching driver
+                        cannot move a figure
+  dashboard.shape       raw output -> what the panels render (pure)
+  dashboard.parts       the loops the board is assembled from (pure)
+  metrics/threshold     how old is old: POD default, per-severity override,
+                        board fallback — the one resolver all of them ask
   items.controller      drill-down, export cursor, bulk upsert, deletes
   items.shape           stored document <-> domain Item (pure)
+  search.controller     which PODs a search finds anything in — items *and*
+                        rosters, so a person with no assigned work is findable
+  dashboard.roster      the leaderboard's roster half, narrowed by the same
+                        search the items were
   teams.controller      POD persistence
   users.controller      account persistence
   sync-state.controller the sync watermark
@@ -76,6 +108,8 @@ src/lib/          domain and data. No React, server-only
     types         Filters, Bucket, Dashboard — what the board is described in
     dates         absolute epoch bounds, never relative date math
   azure.ts        WIQL + workitemsbatch
+  azure-debug.ts  what the client prints about what it fetched, and the
+                  redactor that keeps a PAT out of it (AZDO_DEBUG)
   normalize.ts    Azure work item / spreadsheet row → Item
   normalize/
     vocabulary    a board's own words → ours, in three passes
@@ -84,6 +118,13 @@ src/lib/          domain and data. No React, server-only
   poller.ts       background timer
   teams.ts users.ts   document CRUD
   session.ts      auth helpers, errorResponse
+  team-access.ts  whether a user may see a POD — its own pure module, so the
+                  Array.isArray guard can be tested without the auth stack
+  admin-guard.ts  refuses to leave the instance with no admin — demoting the
+                  last one locks everybody out of the route that would undo it
+  password-policy.ts  when an admin may set somebody else's password. An account
+                  with no hash is either an SSO account or one created with the
+                  field left blank; the rule turns on whether SSO is configured
   auth-secret.ts  refuses to boot on a missing or placeholder AUTH_SECRET
   auth-cookies.ts httpOnly / SameSite / Secure, stated so they can be checked
   session-policy.ts  idle and absolute timeouts, and what ends a session early
@@ -107,6 +148,9 @@ src/lib/          domain and data. No React, server-only
                                                          (client-safe, pure)
   validation.ts   what a form must satisfy before it is worth sending; the
                   server re-checks everything    (client-safe, pure)
+  validation-team the POD form's own rules, including per-severity ageing
+  validation-email  the address test both of them need, in one place so they
+                  do not have to import each other
   spreadsheet.ts  what an uploaded file actually is, from its bytes — so a
                   CSV from Numbers or Sheets works without Excel installed
                                                          (client-safe, pure)
@@ -150,10 +194,14 @@ src/app/admin/
   panels/
     blank-team    what "New POD" starts from
     field         one labelled input, and the member-row updater
-    pod-identity  a POD's name, description and ageing threshold
+    pod-identity  a POD's name, description and ageing thresholds
+    severity-thresholds  the POD's ageing rules, one box per severity; blank
+                  means the default, and stays blank
     pod-members   who is in it
     pod-azure     the Boards connection, field mapping and sync controls
     people-panel  who can sign in, what they see, and their passwords
+    pod-access    granting and revoking a member's PODs: a tick when granted, a
+                  plus when not, so the control does not read as a static list
     add-person-form  the row that adds one
     use-reset-password  an admin setting somebody else's password
     pod-list      every POD, and which one is open
@@ -175,9 +223,23 @@ src/components/   client components, dashboard-client.tsx orchestrates
   health-dial-bands  what each score means, and the ring's geometry
   use-dial-scrub  dragging the ring to scrub a hypothetical score
   health-drivers  the three numbers beside the ring; only one moves it
+  health-empty    the card when nothing matched — a dash, not a fake 100%, and
+                  it says the search is scoped to the selected POD
+  breakdown-panels  the four breakdown cards as data, not four blocks of JSX
+  use-search-scope  asks where a search finds anything, and follows it there —
+                    once per term, so picking a POD by hand still sticks
+  search-scope-note the banner naming the POD a search landed on, with the
+                    other matching PODs as buttons that switch to them
+  health-empty-copy which of the five empty boards this is, and what to say —
+                    pure, so the suite exercises every branch
   use-focus-trap  keeps Tab inside an open dialog, Escape closes it
   ageing-spine    open work across the ageing buckets, as one bar
   leaderboard-load-bar  one person's open work split by severity
+  topbar-actions        what the reader may *do* to this board; uploading is
+                        gated to admins here and again on the route
+  use-scroll-to-top     changing POD returns the reader to the top — the whole
+                        board changed, and the roll-up they clicked from is
+                        gone (client-safe rule, pure)
   skeleton-board  the board's shape before its numbers arrive
   greeting        the sky: places the sun and moon, assembles the scene
   greeting-card   the reader's name and caption over it
@@ -217,7 +279,7 @@ scripts/
   check.mjs       330 end-to-end checks against a running server
   check-theme.mjs 728 static checks: theme tokens, contrast, source rules,
                   and the font switch
-  check-ui.mjs    1653 checks on client-side pure logic — it imports the real
+  check-ui.mjs    1660 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-docs.mjs  these pages still match the code
@@ -226,9 +288,17 @@ scripts/
                   Written for a corporate laptop; changes nothing
   probe.mjs       reaching a host and saying why it failed — a TLS error and a
                   blocked host need completely different fixes
+  azure-probe.mjs `pnpm azure:probe` — read-only: what Azure sends, how much of
+                  it, which fields are on every item and which are not, and what
+                  normalize() makes of them. Never writes, never moves a watermark
   vendor-fonts.mjs
                   `pnpm fonts:vendor` — downloads the typefaces into
                   src/fonts/files/ so a build never needs Google
+  parity.mjs      `pnpm parity` — writes one POD and one item through the
+                  configured driver and prints what came back. Run it under
+                  DB_DRIVER=json and again under DB_DRIVER=mongodb: the two
+                  outputs must be identical, or the data does not move cleanly.
+                  Cleans up after itself
   test.mjs        runs every suite, managing the dev server itself
   lib/
     numbers-fixture.mjs

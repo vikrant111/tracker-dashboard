@@ -68,7 +68,12 @@ export function StatRail({ data }: { data: Dashboard }) {
     {
       label: "Critical aged",
       value: t.criticalAged,
-      note: `critical and open past ${data.thresholdDays} days`,
+      /* `null` means the PODs in scope disagree, and no single number is
+         honest — describe the rule instead of naming one. */
+      note:
+        data.criticalThresholdDays === null
+          ? "critical and open past each POD's threshold"
+          : `critical and open past ${data.criticalThresholdDays} days`,
       query: { severity: "Critical", agedOnly: "true" },
       Icon: AlertOctagon,
       hue: t.criticalAged > 0 ? STATUS.critical : STATUS.good,

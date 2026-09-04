@@ -21,7 +21,7 @@ ramp are built from:
 | 100 | `#d0e8ff` | | 450 | `#0c70b6` ← brand |
 | 200 | `#93cafe` | | 500 | `#08609d` |
 | 250 | `#6bb7fd` | | 550 | `#065085` |
-| 300 | `#38a4fd` | | 600 | `#04426f` |
+| 300 | `#3394e5` | | 600 | `#04426f` |
 | 350 | `#1393ed` | | 650 | `#02355b` |
 | 400 | `#0f80d0` | | 700 | `#012847` |
 
@@ -73,8 +73,8 @@ chart. Keep them separate: chrome may be retuned freely, data colour may not.
 | Chart surface (glass over plane) | `--surface` `#f6f9fc` | `#172533` |
 | Solid popovers, drawers, menus | `--panel` `#ffffff` | `#0d1b2b` |
 | Primary ink | `--ink` `#0e1a26` | `#eef4fa` |
-| Secondary ink | `--ink-2` `#3d5266` | `#a3b4c6` |
-| Muted ink | `--ink-muted` `#526578` | `#9caec3` |
+| Secondary ink | `--ink-2` `#374a5c` | `#a3b4c6` |
+| Muted ink | `--ink-muted` `#404f5d` | `#9caec3` |
 | Hairline / gridline | `--hairline`, `--grid` | |
 | Translucent fills | `--wash`, `--wash-2`, `--wash-3` | |
 | Accent | `--accent` `#0071bb` (brand) → `--accent-2` `#0d9aa8` | `#1393ed` → `#2bc0d0` |
@@ -937,17 +937,28 @@ surface.
 
 | Slot | Light (`#f6f9fc`) | Dark (`#172533`) |
 |---|---|---|
-| 1 brand blue | `#0c70b6` | `#1393ed` |
-| 2 orange | `#eb6834` | `#d95926` |
-| 3 aqua | `#1baf7a` | `#199e70` |
-| 4 yellow | `#eda100` | `#c98500` |
-| 5 magenta | `#e87ba4` | `#d55181` |
+| 1 brand blue | `#0c70b6` (4.96:1) | `#1393ed` |
+| 2 orange | `#d1541f` (3.98:1) | `#d95926` |
+| 3 aqua | `#14906a` (3.80:1) | `#199e70` |
+| 4 yellow | `#a37000` (4.08:1) | `#c98500` |
+| 5 magenta | `#cc5580` (3.84:1) | `#d55181` |
 
-On the **light** surface, aqua (2.66:1), yellow (2.05:1) and magenta (2.55:1)
-fall under 3:1. That is the documented **relief rule**, not an oversight: it
-obligates visible labels or a table view, which is why every breakdown row
-carries its label and count as text, and the trend chart carries direct
-end-labels. Do not add a light-mode chart that leans on fill colour alone.
+**Every slot clears 3:1 on both surfaces.** Light did not always: aqua, yellow
+and magenta sat between 2 and 3 — the yellow at **2.05:1** — under a documented
+*relief rule*, which permitted a mark under 3:1 as long as it shipped with a
+visible label.
+
+That rule was retired after a projector demo. It is defensible on a monitor and
+useless on a wall: a projector has far less effective contrast, the fill simply
+disappears, and a label pointing at nothing is not a chart.
+
+The replacements were **re-validated as a set**, not eyeballed — lightness band,
+chroma floor, CVD separation and normal-vision separation all pass, and the
+colourblind margin came out *better* than before (worst adjacent ΔE 9.6 protan,
+against 9.1 previously). Slot order is unchanged.
+
+Labels are still mandatory. They were never only a contrast remedy — they are
+what keeps identity off colour alone for a colourblind reader.
 
 > **Slot order is the colourblind-safety mechanism, not a preference.**
 > Reordering `SERIES` silently invalidates the validation. If a dimension
@@ -969,7 +980,7 @@ carrying the most presence against its own surface. The direction therefore
 
 | Bucket | Light | Dark |
 |---|---|---|
-| 0–3 days | `#38a4fd` | `#08609d` |
+| 0–3 days | `#3394e5` (3.05:1) | `#08609d` |
 | 4–7 days | `#0f80d0` | `#0f80d0` |
 | 8–14 days | `#08609d` | `#38a4fd` |
 | 15–30 days | `#04426f` | `#93cafe` |
@@ -993,11 +1004,11 @@ validator — that is the authority on CVD separation. Re-run it from the skill
 whenever a data colour or a surface changes:
 
 ```bash
-node scripts/validate_palette.js "#0c70b6,#eb6834,#1baf7a,#eda100,#e87ba4" \
+node scripts/validate_palette.js "#0c70b6,#d1541f,#14906a,#a37000,#cc5580" \
   --mode light --surface "#f6f9fc"
 node scripts/validate_palette.js "#1393ed,#d95926,#199e70,#c98500,#d55181" \
   --mode dark  --surface "#172533"
-node scripts/validate_palette.js "#38a4fd,#0f80d0,#08609d,#04426f,#012847" \
+node scripts/validate_palette.js "#3394e5,#0f80d0,#08609d,#04426f,#012847" \
   --mode light --surface "#f6f9fc" --ordinal
 node scripts/validate_palette.js "#08609d,#0f80d0,#38a4fd,#93cafe,#d0e8ff" \
   --mode dark  --surface "#172533" --ordinal

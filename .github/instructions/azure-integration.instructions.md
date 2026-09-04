@@ -19,6 +19,28 @@ Credentials resolve per team, falling back to env:
 `team.azure.orgUrl || AZDO_ORG_URL`, same for project and PAT. Missing
 credentials throw `AzureError` with a sentence naming the team.
 
+### Seeing what actually came back
+
+```bash
+pnpm azure:probe                # counts, timings, field shape, read-only
+pnpm azure:probe --full         # plus one whole work item, before and after
+AZDO_DEBUG=summary pnpm dev     # the same during a real sync
+```
+
+The probe exists because a **sync only fetches what changed** since its
+watermark, which on a settled board is nothing — so turning the env var on and
+waiting shows an empty run. The probe asks for a fixed window instead.
+
+The number worth reading is the **fill percentage**: a field on 57% of items
+cannot carry a filter for the whole board. That is how `environment` turned out
+to be missing from most boards, which is why it falls back to tags and then the
+area path.
+
+**The PAT never reaches the output.** Everything printed goes through `redact()`
+in `azure-debug.ts`, and `full` — which prints real titles and real names — is
+reachable only by writing the word `full`; `1`, `true` and `on` all mean
+`summary`. Checks enforce both.
+
 ### WIQL quirks
 
 - Timestamps must be `yyyy-MM-ddTHH:mm:ssZ`. Millisecond ISO is rejected — use

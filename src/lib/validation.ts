@@ -14,81 +14,14 @@
  * rather than a copy of them.
  */
 
-import { AGEING, LIMITS } from "./constants.ts";
+import { LIMITS } from "./constants.ts";
 
-/**
- * Deliberately loose.
- *
- * The full grammar for a valid address is notoriously baroque, and a strict
- * pattern's failure mode is rejecting somebody's real address — which is worse
- * than accepting a typo the server will reject anyway. Something, an `@`,
- * something, a dot, something.
- */
-export const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/* The POD form's rules live next door — same contract, re-exported so every
+ * existing `@/lib/validation` import is unchanged. */
+export { validateTeam, type MemberDraft, type TeamDraft } from "./validation-team.ts";
+export { EMAIL, isEmail } from "./validation-email.ts";
 
-export const isEmail = (value: unknown): boolean => EMAIL.test(String(value ?? "").trim());
-
-export type MemberDraft = {
-  name?: string;
-  email?: string;
-  designation?: string;
-  role?: string;
-};
-
-export type TeamDraft = {
-  name?: string;
-  description?: string;
-  ageingThresholdDays?: number;
-  members?: MemberDraft[];
-};
-
-/**
- * A POD, before it is saved.
- *
- * Blank member rows are *not* an error — the form starts with one and the save
- * path strips them. Only a row somebody has half-filled is a problem, because
- * that is a person they meant to add and would otherwise lose silently.
- */
-export function validateTeam(draft: TeamDraft | null | undefined): string | null {
-  if (!draft) return "Nothing to save.";
-
-  const name = String(draft.name ?? "").trim();
-  if (!name) return "Give the POD a name.";
-  if (name.length > LIMITS.teamName) return `The POD name is longer than ${LIMITS.teamName} characters.`;
-
-  const threshold = draft.ageingThresholdDays;
-  if (threshold !== undefined) {
-    if (!Number.isFinite(threshold) || !Number.isInteger(threshold)) {
-      return "The ageing threshold must be a whole number of days.";
-    }
-    if (threshold < AGEING.min || threshold > AGEING.max) {
-      return `The ageing threshold must be between ${AGEING.min} and ${AGEING.max} days.`;
-    }
-  }
-
-  const members = Array.isArray(draft.members) ? draft.members : [];
-  for (const [i, member] of members.entries()) {
-    const memberName = String(member?.name ?? "").trim();
-    const email = String(member?.email ?? "").trim();
-
-    // Entirely empty is the blank row the form ships with. Skip it.
-    if (!memberName && !email) continue;
-
-    const where = `Member ${i + 1}`;
-    if (!memberName) return `${where} has an email but no name. Names must match Azure Boards.`;
-    if (email && !isEmail(email)) return `${where}: "${email}" is not an email address.`;
-    if (memberName.length > LIMITS.personName) return `${where}'s name is too long.`;
-  }
-
-  // Two people on one email would both match the same work items.
-  const emails = members
-    .map((m) => String(m?.email ?? "").trim().toLowerCase())
-    .filter(Boolean);
-  const duplicate = emails.find((e, i) => emails.indexOf(e) !== i);
-  if (duplicate) return `Two members share the email ${duplicate}.`;
-
-  return null;
-}
+import { isEmail } from "./validation-email.ts";
 
 export type UserDraft = {
   email?: string;

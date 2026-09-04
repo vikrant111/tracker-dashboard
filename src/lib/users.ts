@@ -18,7 +18,18 @@ export async function getUser(email: string): Promise<User | null> {
 
 export async function listUsers(): Promise<User[]> {
   const users = await findAllUsers();
-  return users.sort((a, b) => a.email.localeCompare(b.email));
+  /*
+   * Sorted defensively. One record with no email used to throw out of
+   * `localeCompare` and take the **entire** user list with it — and with it the
+   * admin page, on which the only way to fix the record lives.
+   *
+   * That matters more since the store can be plain JSON files: they are meant
+   * to be looked at, and a hand-edited row with a missing field is a normal
+   * accident rather than a corrupted database.
+   */
+  return users
+    .filter((u) => u && typeof u.email === "string" && u.email)
+    .sort((a, b) => a.email.localeCompare(b.email));
 }
 
 export async function countUsers(): Promise<number> {

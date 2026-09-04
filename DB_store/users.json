@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "collection": "users",
+  "updatedAt": "2026-09-04T13:05:38.024Z",
+  "rows": [
+    {
+      "id": "admin@example.com",
+      "email": "admin@example.com",
+      "name": "Administrator",
+      "passwordHash": "$2b$10$HWxdtmygeM9xn17mN/mrHup5OgB5qgFoS6UAN2LMnm.bNtISQhaK2",
+      "role": "admin",
+      "teamIds": [],
+      "createdAt": "2026-09-04T09:12:24.275Z",
+      "_id": "admin@example.com"
+    },
+    {
+      "id": "vikrant@gmail.com",
+      "email": "vikrant@gmail.com",
+      "name": "Vikrant Tiwari",
+      "passwordHash": "$2b$10$T1CRc1ixIp3dCOhKp5lw3uniDRh./svKT5FBUlRbl/bN4hQ8EAreW",
+      "role": "member",
+      "teamIds": [
+        "amc-pod",
+        "payments-pod"
+      ],
+      "createdAt": "2026-09-04T09:18:59.240Z",
+      "passwordChangedAt": "2026-09-04T10:01:30.969Z",
+      "_id": "vikrant@gmail.com"
+    },
+    {
+      "_id": "test@gmail.com",
+      "id": "test@gmail.com",
+      "email": "test@gmail.com",
+      "name": "test",
+      "passwordHash": null,
+      "role": "member",
+      "teamIds": [
+        "amc-pod",
+        "payments-pod"
+      ],
+      "createdAt": "2026-09-04T09:19:38.575Z"
+    }
+  ]
+}

@@ -51,7 +51,7 @@ const RANK_GLOW = ["var(--rank-1)", "var(--rank-2)", "var(--rank-3)"];
 /** Roughly six and a half rows, so the seventh peeks and the list reads as scrollable. */
 const LIST_MAX_HEIGHT = "26rem";
 
-export function Leaderboard({ assignees, thresholdDays }: { assignees: AssigneeStat[]; thresholdDays: number }) {
+export function Leaderboard({ assignees, agedNote }: { assignees: AssigneeStat[]; agedNote: string }) {
   const [sort, setSort] = useState<SortKey>("total");
   const [query, setQuery] = useState("");
   const drill = useDrill();
@@ -82,7 +82,7 @@ export function Leaderboard({ assignees, thresholdDays }: { assignees: AssigneeS
       />
 
       <p className="-mt-3 mb-3 text-xs text-[var(--ink-muted)]">
-        Ranked by {active.describe}. Bar shows open items by severity; aged means open more than {thresholdDays} days.
+        Ranked by {active.describe}. Bar shows open items by severity; aged means open {agedNote}.
       </p>
 
       <div className="relative mb-3">

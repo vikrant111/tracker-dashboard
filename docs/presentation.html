@@ -636,6 +636,33 @@
 
       <div class="entry">
         <div class="domain">
+          <div class="eyebrow muted">Urgency</div>
+          <div class="name">One clock for every severity</div>
+        </div>
+        <div class="was">
+          <h3>On the board</h3>
+          <p>
+            &ldquo;Old&rdquo; was whatever each person decided it was. A
+            Critical sitting for three days and a Minor sitting for three days
+            looked identical in a query, so a board could either nag about
+            Minors or stay quiet about Criticals &mdash; never neither.
+          </p>
+        </div>
+        <div class="now">
+          <h3>In the tracker</h3>
+          <p>
+            An admin sets ageing per severity, per POD &mdash; Critical at two
+            days while Minors get a fortnight. Across all PODs every item is judged by the
+            board it came from, so the roll-up total is the sum of its rows.
+            Where the PODs disagree, the tile says
+            <em>past each POD&rsquo;s threshold</em> rather than naming a number
+            it cannot stand behind.
+          </p>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="domain">
           <div class="eyebrow muted">Vocabulary</div>
           <div class="name">Every board spells it differently</div>
         </div>
@@ -1081,11 +1108,11 @@ flowchart LR
           <tr><th>Suite</th><th>Covers</th><th style="text-align:right">Checks</th></tr>
         </thead>
         <tbody>
-          <tr><td>Client logic</td><td>The health arithmetic, the dial, the greeting scene</td><td class="n">1,653</td></tr>
+          <tr><td>Client logic</td><td>The health arithmetic, the dial, the greeting scene</td><td class="n">1,660</td></tr>
           <tr><td>Theme &amp; source rules</td><td>Light/dark token parity, contrast, chart palette safety</td><td class="n">728</td></tr>
           <tr><td>Documentation</td><td>The written docs still match the code they describe</td><td class="n">394</td></tr>
           <tr><td>End-to-end</td><td>Aggregations agree with their drill-downs, validation, POD scoping</td><td class="n">330</td></tr>
-          <tr><td><strong>Total</strong></td><td>Runs on one command, before every release</td><td class="n"><strong>3,105</strong></td></tr>
+          <tr><td><strong>Total</strong></td><td>Runs on one command, before every release</td><td class="n"><strong>3,112</strong></td></tr>
         </tbody>
       </table>
     </div>

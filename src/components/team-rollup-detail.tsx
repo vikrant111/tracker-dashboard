@@ -10,7 +10,7 @@ import { motion } from "framer-motion";
 import { ArrowUpRight } from "lucide-react";
 import useSWR from "swr";
 import type { Dashboard } from "@/lib/metrics";
-import { SWR_OPTIONS, fetcher } from "@/lib/swr";
+import { REFRESH_MS, SWR_OPTIONS, failureReason, fetcher } from "@/lib/swr";
 import { ENV_COLOR, SEVERITY_COLOR, ageTint, colorFor } from "@/lib/palette";
 import { useDrill } from "./drill-drawer";
 import { Tooltip } from "./ui";
@@ -21,7 +21,7 @@ import { Tooltip } from "./ui";
  */
 export function PodDetail({ teamId, name, onSwitch }: { teamId: string; name: string; onSwitch: () => void }) {
   const drill = useDrill();
-  const { data, isLoading } = useSWR<Dashboard & { error?: string }>(
+  const { data, error, isLoading, mutate } = useSWR<Dashboard & { error?: string }>(
     `/api/metrics?teamId=${encodeURIComponent(teamId)}`,
     fetcher,
     SWR_OPTIONS,
@@ -36,8 +36,29 @@ export function PodDetail({ teamId, name, onSwitch }: { teamId: string; name: st
       </div>
     );
   }
-  if (!data || data.error) {
-    return <p className="px-3 py-4 text-xs text-[var(--ink-muted)]">{data?.error ?? "Could not load this POD."}</p>;
+  /*
+   * Why it failed, and a way out.
+   *
+   * SWR's `error` was ignored here, so a request that never reached the server —
+   * a restart, a dropped connection — rendered a bare "Could not load this POD."
+   * with nothing to act on. It does retry on its own, but a reader watching a
+   * dead row has no way to know that.
+   */
+  const failure = failureReason(error, data);
+  if (failure || !data) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-4 text-xs text-[var(--ink-muted)]">
+        <span>{failure ?? "Could not load this POD."}</span>
+        <button
+          type="button"
+          onClick={() => mutate()}
+          className="font-medium text-[var(--accent-ink)] underline-offset-2 transition-colors hover:underline"
+        >
+          Try again
+        </button>
+        <span>Retrying on its own every {Math.round(REFRESH_MS / 1000)}s.</span>
+      </div>
+    );
   }
 
   const groups = [

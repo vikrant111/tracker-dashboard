@@ -1,4 +1,5 @@
-import { AUTH_MODE } from "@/auth";
+import { AUTH_MODE, entraEnabled } from "@/auth";
+import { refuseLocalPassword } from "@/lib/password-policy";
 import { errorResponse, requireAdmin } from "@/lib/session";
 import { getUser, setPassword } from "@/lib/users";
 import { validatePasswordReset } from "@/lib/validation";
@@ -37,17 +38,19 @@ export async function POST(req: Request) {
     if (!user) return Response.json({ error: `No account for ${email}.` }, { status: 404 });
 
     /*
-     * An SSO account's password lives with the identity provider. Giving it a
-     * local one here would quietly create a second way in — one that survives
-     * the person being disabled in Entra, which is the opposite of what an
-     * admin doing this expects.
+     * An account with no hash is either an SSO account or one somebody created
+     * with the password field left blank. They look identical here, so the rule
+     * turns on whether SSO is configured at all — see `password-policy.ts`.
+     *
+     * This used to refuse both, which made a mistyped account unrecoverable:
+     * the only way back was deleting the person and recreating them, losing
+     * their role and every POD they could see.
      */
-    if (!user.passwordHash) {
-      return Response.json(
-        { error: `${email} signs in with single sign-on. Their password is managed by the identity provider, not here.` },
-        { status: 400 },
-      );
-    }
+    const refusal = refuseLocalPassword(
+      { hasPassword: Boolean(user.passwordHash), ssoEnabled: entraEnabled },
+      email,
+    );
+    if (refusal) return Response.json({ error: refusal }, { status: 400 });
 
     const changed = await setPassword(email, next);
     if (!changed) return Response.json({ error: `No account for ${email}.` }, { status: 404 });

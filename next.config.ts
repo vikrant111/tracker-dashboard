@@ -155,7 +155,32 @@ const nextConfig: NextConfig = {
    * consulted, and the Google branch compiles and fetches anyway. This matches
    * on the *resolved* file instead, which nothing gets in front of.
    */
+  /*
+   * Do not treat the data store as source.
+   *
+   * The `json` driver writes `DB_store/*.json`, which lives inside the project
+   * — deliberately, so a clone carries its data. But the dev server watches the
+   * project, so **every write looked like a source edit**: Next recompiled,
+   * rewrote its own manifests, and any request in flight hit a half-written one
+   * and died on `SyntaxError: Unexpected end of JSON input`.
+   *
+   * That surfaced as unrelated routes failing at random, only ever on the file
+   * driver, and it was the whole of it.
+   */
   webpack: (config, { webpack }) => {
+    /*
+     * Next's default `ignored` may be a string, a RegExp or an array, so it is
+     * replaced rather than spread — spreading a string produced
+     * "Invalid attempt to spread non-iterable instance" and the dev server
+     * refused to start at all.
+     *
+     * `node_modules` is restored explicitly because replacing the default drops
+     * it, and watching it would be far worse than what this is fixing.
+     */
+    config.watchOptions = {
+      ...(typeof config.watchOptions === "object" && config.watchOptions ? config.watchOptions : {}),
+      ignored: ["**/node_modules/**", "**/.git/**", "**/.next/**", "**/DB_store/**", "**/.mongo-data/**"],
+    };
     config.plugins.push(
       new webpack.NormalModuleReplacementPlugin(
         /[\\/]src[\\/]fonts[\\/]index\.ts$/,

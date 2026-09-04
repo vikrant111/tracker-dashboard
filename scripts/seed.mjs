@@ -1,19 +1,18 @@
 /**
- * Bootstraps MongoDB: creates the indexes, the first admin, and (unless
- * --no-demo) a worked example POD with enough realistic history that every
- * tile, chart and drill-down on the dashboard has something to show.
+ * Fills the store: the first admin, and (unless --no-demo) a worked example POD
+ * with enough realistic history that every tile, chart and drill-down has
+ * something to show.
  *
  *   pnpm seed
- *   pnpm seed --no-demo     only indexes + admin
- *   pnpm seed --reset       drop the collections first
+ *   pnpm seed --no-demo     only the admin
+ *   pnpm seed --reset       empty the store first
  *
- * Imports the real models rather than talking to the driver directly, so the
- * schema the seed writes and the schema the app reads cannot drift apart.
+ * Works against whichever driver `DB_DRIVER` selects — files under `DB_store/`
+ * by default, a real cluster with `DB_DRIVER=mongodb`. It goes through the same
+ * store the app does, so what it writes and what the app reads cannot drift.
  */
 import bcrypt from "bcryptjs";
-import { connectToDatabase, disconnectFromDatabase, ensureIndexes } from "../src/db/connect.ts";
-import { ItemModel, TeamModel, UserModel, SyncStateModel } from "../src/db/models/index.ts";
-import { describeConnection } from "../src/db/connect.ts";
+import { getStore } from "../src/db/store/index.ts";
 
 /** Deterministic PRNG so re-seeding produces the same board. */
 let seed = 20260822;
@@ -178,44 +177,28 @@ async function main() {
   const args = process.argv.slice(2);
   const demo = !args.includes("--no-demo");
 
-  /*
-   * Connect first, and let the error speak for itself. `connectToDatabase`
-   * already translates the driver's messages into ones that name the thing
-   * actually wrong — a blocked port, an unlisted IP, a password with an
-   * unencoded `@` in it.
-   */
-  await connectToDatabase();
-  console.log(`Connected: ${describeConnection()}`);
+  const store = getStore();
+  await store.init();
+  console.log(`Store: ${store.driver} — ${store.describe()}`);
 
   if (args.includes("--reset")) {
-    for (const model of [ItemModel, TeamModel, UserModel, SyncStateModel]) {
-      await model.collection.drop().catch((err) => {
-        // 26 is NamespaceNotFound: there was nothing to drop, which is fine.
-        if (err?.code !== 26) throw err;
-      });
-    }
-    console.log("Dropped existing collections.");
+    await store.dropAll();
+    console.log("Emptied the store.");
   }
 
-  await ensureIndexes(true);
-  console.log("Indexes ready.");
+  await store.ensureIndexes(true);
 
   const email = (process.env.ADMIN_EMAIL || "admin@example.com").toLowerCase();
   const password = process.env.ADMIN_PASSWORD || "changeme";
-  await UserModel.replaceOne(
-    { _id: email },
-    {
-      _id: email,
-      id: email,
-      email,
-      name: "Administrator",
-      passwordHash: await bcrypt.hash(password, 10),
-      role: "admin",
-      teamIds: [],
-      createdAt: new Date().toISOString(),
-    },
-    { upsert: true },
-  );
+  await store.users.save({
+    id: email,
+    email,
+    name: "Administrator",
+    passwordHash: await bcrypt.hash(password, 10),
+    role: "admin",
+    teamIds: [],
+    createdAt: new Date().toISOString(),
+  });
   console.log(`Admin ready: ${email} / ${password}`);
 
   if (!demo) {
@@ -225,18 +208,14 @@ async function main() {
 
   const amc = team("amc-pod", "AMC POD", "Asset management console", AMC_MEMBERS, "Demo\\AMC");
   const pay = team("payments-pod", "Payments POD", "Collections and settlement", PAY_MEMBERS, "Demo\\Payments");
-
-  for (const t of [amc, pay]) {
-    await TeamModel.replaceOne({ _id: t.id }, { ...t, _id: t.id }, { upsert: true });
-  }
+  for (const t of [amc, pay]) await store.teams.save(t);
 
   const items = [...buildItems(amc, AMC_MEMBERS, 240, 41000), ...buildItems(pay, PAY_MEMBERS, 120, 52000)];
 
   /*
-   * Dates as real `Date`s, matching the schema. Handing Mongoose an ISO string
-   * would cast it silently here and then every `$dateTrunc` in the trend would
-   * work — but a raw driver write would not, so this is written the way the
-   * app writes it rather than the way that happens to survive.
+   * Real `Date`s, matching what the app writes. The JSON driver serialises them
+   * back to ISO on the way to disk; Mongo stores them as dates. Handing either
+   * a raw string here would work by accident on one driver and not the other.
    */
   const docs = items.map((item) => ({
     ...item,
@@ -246,12 +225,8 @@ async function main() {
     closedDate: item.closedDate ? new Date(item.closedDate) : null,
   }));
 
-  const res = await ItemModel.bulkWrite(
-    docs.map((doc) => ({ replaceOne: { filter: { _id: doc._id }, replacement: doc, upsert: true } })),
-    { ordered: false },
-  );
-  const written = (res.upsertedCount ?? 0) + (res.modifiedCount ?? 0) + (res.matchedCount ?? 0);
-  if (written < docs.length) console.warn(`${docs.length - written} documents failed to write.`);
+  const failed = await store.items.bulkUpsert(docs);
+  if (failed) console.warn(`${failed} documents failed to write.`);
 
   const open = items.filter((i) => i.isActive).length;
   console.log(`Seeded ${items.length} work items across 2 PODs (${open} still open).`);
@@ -259,10 +234,10 @@ async function main() {
 }
 
 main()
-  .then(() => disconnectFromDatabase())
+  .then(() => getStore().close())
   .catch(async (err) => {
     console.error(err.message);
-    // Close the socket, or node hangs on the open pool instead of exiting.
-    await disconnectFromDatabase().catch(() => {});
+    // Close, or the Mongo driver keeps the pool open and node never exits.
+    await getStore().close().catch(() => {});
     process.exit(1);
   });

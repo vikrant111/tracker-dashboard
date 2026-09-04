@@ -29,22 +29,22 @@
   --panel: #ffffff; /* solid popovers, drawers, select menus */
 
   --ink: #0e1a26;
-  --ink-2: #3d5266;
+  --ink-2: #374a5c; /* 7.07:1 on the darkest panel background */
   /*
    * Darkened from #5a6d80 so small labels clear 4.5:1 against the *darker*
    * stop of the panel gradient, and against a panel sitting over the greeting
    * sky. The old value measured 4.13:1 there — axis labels on a chart over the
    * sky were genuinely hard to read.
    */
-  --ink-muted: #526578;
+  --ink-muted: #404f5d; /* 6.51:1 there — a step below ink-2, still projector-safe */
 
-  --hairline: rgba(14, 26, 38, 0.11);
-  --grid: rgba(14, 26, 38, 0.07);
+  --hairline: rgba(14, 26, 38, 0.21); /* 1.56:1 — panel edges survive a projector */
+  --grid: rgba(14, 26, 38, 0.14); /* 1.33:1 — chart gridlines were invisible at 1.15 */
 
   /* Translucent fills, the light-mode counterpart of white/5, /10, /14 */
   --wash: rgba(14, 26, 38, 0.04);
-  --wash-2: rgba(14, 26, 38, 0.075);
-  --wash-3: rgba(14, 26, 38, 0.11);
+  --wash-2: rgba(14, 26, 38, 0.1);
+  --wash-3: rgba(14, 26, 38, 0.18);
 
   /*
    * Glass stays opaque enough that --surface holds, which is what the palette
@@ -53,7 +53,7 @@
    */
   --glass-a: rgba(255, 255, 255, 0.8);
   --glass-b: rgba(238, 246, 255, 0.52);
-  --glass-border: rgba(14, 26, 38, 0.08);
+  --glass-border: rgba(14, 26, 38, 0.16); /* the panel's own edge, same reason */
   --glass-inset: rgba(255, 255, 255, 0.95);
   --glass-shadow:
     0 1px 2px rgba(6, 40, 72, 0.05), 0 8px 18px -10px rgba(6, 40, 72, 0.14),
@@ -83,21 +83,37 @@
   --accent-deep: #005a96; /* second stop on solid buttons, so they stay one hue */
   --accent-tint: rgba(0, 113, 187, 0.12);
   --accent-line: rgba(0, 113, 187, 0.38);
-  --accent-ink: #005a96;
+  --accent-ink: #004b7c; /* 7.06:1 */
   --accent-glow: rgba(0, 113, 187, 0.45);
   --mark-ink: #ffffff; /* letter inside the logo mark, over the accent gradient */
   --scrim: rgba(8, 26, 44, 0.44);
 
   /* Leaderboard podium. Metals, not data — never used to encode a value. */
-  --rank-1: #b8860b;
-  --rank-2: #7c8496;
-  --rank-3: #b06a3d;
+  --rank-1: #825f08; /* 4.55:1 — was 3.08 */
+  --rank-2: #5e6471; /* 4.53:1 — was 3.55 */
+  --rank-3: #905732; /* 4.58:1 — was 3.99 */
 
   --danger: #c0392f;
   --danger-tint: rgba(192, 57, 47, 0.1);
   --danger-tint-2: rgba(192, 57, 47, 0.18);
   --danger-line: rgba(192, 57, 47, 0.4);
-  --danger-ink: #a32f26;
+  --danger-ink: #85261e; /* 7.08:1 */
+  /*
+   * Status, as **type**.
+   *
+   * A status colour has two jobs with different floors. As a mark — a dot, a
+   * bar, a severity chip — 3:1 is the bar and it must stay recognisably itself.
+   * As a word it needs 4.5:1, and on this surface the warning yellow managed
+   * **1.74:1**: that is the band label under the POD name, and on a projector it
+   * was simply not there.
+   *
+   * So the same split this file already makes for the accent. The fills in the
+   * status block below are untouched — the charts are validated against them.
+   */
+  --st-good-ink: #097609; /* 4.55:1 — the fill is 3.17:1: fine for a dot, not a word */
+  --st-warning-ink: #855e0d; /* 4.64:1 — the fill is 1.74:1 */
+  --st-serious-ink: #945239; /* 4.64:1 — the fill is 2.50:1 */
+  --st-critical-ink: #b83434; /* 4.55:1 — already legible, so identical to the fill */
 
   --orb-1: #0071bb;
   --orb-2: #0d9aa8;
@@ -112,13 +128,13 @@
   /* Categorical slots — fixed order, light steps. Slot 1 is the brand blue.
      Never reorder: the order is the colourblind-safety mechanism. */
   --series-1: #0c70b6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
+  --series-2: #d1541f; /* 3.98:1 — was 3.03 */
+  --series-3: #14906a; /* 3.80:1 — was 2.66 */
+  --series-4: #a37000; /* 4.08:1 — was 2.05, the worst on the board */
+  --series-5: #cc5580; /* 3.84:1 — was 2.55 */
 
   /* Ordinal ageing ramp: the brand blue hue, darkening with age. */
-  --age-1: #38a4fd;
+  --age-1: #3394e5; /* 3.05:1 — was 2.52 */
   --age-2: #0f80d0;
   --age-3: #08609d;
   --age-4: #04426f;
@@ -199,6 +215,16 @@
     --danger-tint-2: rgba(224, 96, 92, 0.24);
     --danger-line: rgba(224, 96, 92, 0.4);
     --danger-ink: #f3aeab;
+    /*
+     * Dark has the luminance headroom the light surface lacks, so the inks are
+     * the fills. Written out rather than `var(--st-good)` because the contrast
+     * check resolves literal hexes — an indirection here reads as "no colour"
+     * and the token silently stops being measured.
+     */
+    --st-good-ink: #0ca30c;
+    --st-warning-ink: #fab219;
+    --st-serious-ink: #ec835a;
+    --st-critical-ink: #d03b3b;
 
     --orb-1: #1393ed;
     --orb-2: #2bc0d0;
@@ -285,6 +311,11 @@
   --danger-tint-2: rgba(224, 96, 92, 0.24);
   --danger-line: rgba(224, 96, 92, 0.4);
   --danger-ink: #f3aeab;
+  /* Same as the media-query block above; the two dark blocks must not drift. */
+  --st-good-ink: #0ca30c;
+  --st-warning-ink: #fab219;
+  --st-serious-ink: #ec835a;
+  --st-critical-ink: #d03b3b;
 
   --orb-1: #1393ed;
   --orb-2: #2bc0d0;

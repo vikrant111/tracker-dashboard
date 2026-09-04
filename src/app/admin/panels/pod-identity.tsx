@@ -1,11 +1,12 @@
 "use client";
 
-/** A POD's name, description and ageing threshold. */
+/** A POD's name, description and ageing thresholds. */
 import { Trash2, X } from "lucide-react";
 import { Button, Panel, PanelHeader } from "@/components/ui";
 import type { Team } from "@/lib/types";
 import { AGEING } from "@/lib/constants";
 import { Field } from "./field";
+import { SeverityThresholds } from "./severity-thresholds";
 
 export function PodIdentityPanel({
   draft,
@@ -55,17 +56,19 @@ export function PodIdentityPanel({
         />
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="POD name" hint="Shown across the dashboard, e.g. AMC POD">
+          {/*
+            * No POD-level ageing threshold here any more.
+            *
+            * Four severities cover every item — `Unknown` included — so a fifth
+            * number that quietly overrode all of them was a knob with no
+            * control: two places to answer one question, and the reader could
+            * not see which one had won. The severity row below is the whole
+            * answer now.
+            */}
+          <Field label="POD name" hint="Shown across the dashboard, e.g. AMC POD" className="sm:col-span-2">
             <input value={draft.name} onChange={(e) => patch({ name: e.target.value })} placeholder="AMC POD" />
           </Field>
-          <Field label="Ageing threshold" hint="Days before an open item counts as aged">
-            <input
-              type="number"
-              min={1}
-              value={draft.ageingThresholdDays}
-              onChange={(e) => patch({ ageingThresholdDays: Number(e.target.value) })}
-            />
-          </Field>
+          <SeverityThresholds draft={draft} patch={patch} />
           <Field label="Description" hint="Optional — what this POD owns" className="sm:col-span-2">
             <input
               value={draft.description}

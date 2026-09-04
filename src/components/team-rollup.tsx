@@ -15,12 +15,12 @@ import { PodDetail } from "./team-rollup-detail";
 export function TeamRollup({
   teams,
   names,
-  thresholdDays,
   onPick,
 }: {
   teams: TeamStat[];
   names: Record<string, string>;
-  thresholdDays: number;
+  /* No board-wide threshold here on purpose — each row carries its own, because
+     the PODs being compared are exactly the ones allowed to disagree. */
   onPick: (teamId: string) => void;
 }) {
   const drill = useDrill();
@@ -131,14 +131,14 @@ export function TeamRollup({
                         value={row.criticalAged}
                         label={
                           row.criticalAged > 0
-                            ? `${name}: ${row.criticalAged} critical open past ${thresholdDays} days. Click to list them.`
-                            : `${name}: no criticals aged past ${thresholdDays} days.`
+                            ? `${name}: ${row.criticalAged} critical open past ${row.criticalThresholdDays} days. Click to list them.`
+                            : `${name}: no criticals aged past ${row.criticalThresholdDays} days.`
                         }
                         color={row.criticalAged > 0 ? STATUS.critical : "var(--ink-muted)"}
                         onClick={() =>
                           drill({
                             title: `${name} — critical aged`,
-                            subtitle: `open past ${thresholdDays} days`,
+                            subtitle: `open past ${row.criticalThresholdDays} days`,
                             query: { teamId: row.teamId, severity: "Critical", agedOnly: "true" },
                           })
                         }

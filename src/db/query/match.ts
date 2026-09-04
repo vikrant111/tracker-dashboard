@@ -11,6 +11,8 @@
  */
 import type { Filters } from "../../lib/metrics/types.ts";
 import { daysAgo, floorDay } from "../../lib/metrics/dates.ts";
+import { teamThresholds } from "../../lib/metrics/threshold.ts";
+import { DEFAULT_THRESHOLD_DAYS } from "../../lib/types.ts";
 
 /** Anything Mongo will accept as a filter document. */
 export type MatchStage = Record<string, unknown>;
@@ -44,6 +46,38 @@ export function stripControl(input: string): string {
   return input.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }
 
+/**
+ * "Aged", as a filter document.
+ *
+ * Mongo cannot call `thresholdFor` per document, so its precedence is unrolled
+ * into an `$or`: a branch per severity a POD overrides, then a catch-all for
+ * that POD with `$nin` of exactly those severities. The `$nin` stops an item
+ * matching two bounds at once; without it a Critical held to two days also
+ * matches its POD's seven-day catch-all and the count exceeds the tile.
+ *
+ * `severity` is compared as stored, matching `thresholdFor`.
+ */
+function agedClause(f: Filters, now: number): MatchStage {
+  const bound = (days: number) => ({ createdDate: { $lte: new Date(daysAgo(now, days)) } });
+
+  const teamIds = f.teamId ? [f.teamId] : Object.keys(f.thresholdByTeam ?? {});
+  // No POD scope to speak of — a caller with no accessible teams, or a filter
+  // built without them. One bound is all there is to apply.
+  if (!teamIds.length) return bound(f.thresholdDays ?? DEFAULT_THRESHOLD_DAYS);
+
+  const branches: MatchStage[] = [];
+  for (const { teamId, days, bySeverity } of teamThresholds(f, teamIds)) {
+    const tuned = Object.keys(bySeverity);
+    for (const severity of tuned) branches.push({ teamId, severity, ...bound(bySeverity[severity]) });
+    branches.push(
+      tuned.length
+        ? { teamId, severity: { $nin: tuned }, ...bound(days) }
+        : { teamId, ...bound(days) },
+    );
+  }
+  return branches.length === 1 ? branches[0] : { $or: branches };
+}
+
 export function buildMatch(f: Filters, now = Date.now()): MatchStage {
   const and: MatchStage[] = [];
 
@@ -58,7 +92,7 @@ export function buildMatch(f: Filters, now = Date.now()): MatchStage {
 
   if (f.agedOnly) {
     and.push({ isActive: true });
-    and.push({ createdDate: { $lte: new Date(daysAgo(now, f.thresholdDays ?? 7)) } });
+    and.push(agedClause(f, now));
   }
 
   /*

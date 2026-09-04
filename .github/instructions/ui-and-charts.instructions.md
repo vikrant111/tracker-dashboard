@@ -77,9 +77,17 @@ contrast. Light and dark are each selected; neither is a tint of the other.
   most presence. The direction **reverses** between themes (dark brightens with
   age, light darkens). Keep adjacent steps ≥ 0.06 ΔL, and the step nearest the
   surface above 2:1.
-- On the **light** surface, aqua, yellow and magenta fall under 3:1 — the
-  documented relief rule, which obligates visible labels. Never add a light-mode
-  chart that leans on fill colour alone.
+- **Every series slot clears 3:1 on both surfaces.** Light used to run a
+  documented *relief rule* — a mark under 3:1 was legal with a visible label —
+  and three of five sat between 2 and 3, the yellow at 2.05:1. It was retired
+  after a projector demo: a projector has far less effective contrast, the fill
+  simply disappears, and a label pointing at nothing is not a chart. Do not
+  reintroduce a colour below 3:1, and re-validate the palette **as a set** if
+  you change one.
+- **A status colour used as a word is `STATUS_INK`, not `STATUS`.** As a mark it
+  needs 3:1 and must stay itself; as text it needs 4.5:1, and on light the
+  warning yellow is **1.74:1** — that was the band label under the POD name,
+  absent on a projector. Same split as `--accent` / `--accent-ink`.
 - **Two or more series get a legend**, and up to four also get direct labels, so
   identity never rests on colour alone.
 - Marks: 2px lines, ~4px rounded data-ends, hover markers ≥ 5px radius with a
@@ -137,6 +145,43 @@ few rows below and get the same answer; keep that property.
 `role="slider"`, drag or arrow keys to explore thresholds, springs back on
 release. **It is display-only** — the scrubbed value must never reach a query or
 be mistaken for the real score, and the caption says so while dragging.
+
+**`health` is `number | null`, and null means there is no ring.** Zero items is
+not a score: the card renders `HealthEmpty` instead. It used to return 100, and
+a search matching somebody in another POD then showed a green **100%** over the
+selected POD's name. Never coerce it — `?? 100`, `Number(health)` and `!health`
+all put the fake reading straight back, and a check watches for exactly that.
+
+## Following a search to its POD
+
+Every query is scoped to one POD, so searching for somebody on a different one
+returns an empty board. `useSearchScope` asks `/api/search/pods` where the term
+actually lives and moves there, and `SearchScopeNote` names the POD it landed on
+with the others as buttons.
+
+Two rules worth keeping:
+
+- **Matching includes the roster, not only items.** A person can be on a POD
+  with nothing assigned — a new joiner — so an items-only search reports
+  "nowhere" about somebody plainly there. That is the case the feature exists
+  for.
+- **It switches once per search term.** Without that guard it fights the reader:
+  they search, it moves them, they pick a POD by hand, and the effect drags them
+  straight back.
+
+The empty card takes the **same match** the note does, so the two cannot
+disagree. They did once: the note said "found in AMC POD" while the card
+underneath said "nothing matches — switch PODs".
+
+**Matches are ordered busiest-first**, which is what makes the switch land
+somewhere useful. Somebody on two PODs usually has work on one of them; opening
+the POD that merely holds their name is correct and useless. Standing on the
+empty one, the card names the count elsewhere — *"2 items in Payments POD"* —
+because the POD name alone does not tell a reader whether it is worth the click.
+
+Each POD reports its own truth for the same search: 2 items and a real score on
+one, zero and `health: null` on the other. Both are right, and switching
+re-queries rather than carrying anything across.
 
 If you touch the pointer maths, update `scripts/check-ui.mjs` to match; it
 mirrors `valueAt` deliberately because the component is a client module. The

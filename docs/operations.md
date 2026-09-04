@@ -102,7 +102,7 @@ pnpm build         # must pass
 pnpm dev           # in one terminal
 pnpm check         # in another — 330 end-to-end checks
 pnpm check:theme   # static, no server needed — 728 theme-token checks
-pnpm check:ui      # static — 1653 checks on client-side pure logic
+pnpm check:ui      # static — 1660 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code
 ```
 

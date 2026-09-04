@@ -1,4 +1,4 @@
-import { connectToDatabase, isConnected } from "@/db/connect";
+import { getStore } from "@/db/store";
 import { resolveAuthSecret } from "@/lib/auth-secret";
 
 export const dynamic = "force-dynamic";
@@ -57,9 +57,9 @@ export async function GET(req: Request) {
      * cheap — and the ping is what proves the socket is still alive rather than
      * merely that we once opened one.
      */
-    const mongoose = await connectToDatabase();
-    await mongoose.connection.db?.admin().ping();
-    if (!isConnected()) throw new Error("connection is not open");
+    const store = getStore();
+    await store.init();
+    await store.ping();
     return Response.json({ status: "ok", store: "reachable" }, { headers: noStore });
   } catch {
     /*
@@ -68,7 +68,7 @@ export async function GET(req: Request) {
      * learning the cluster URL from an error string is how a health endpoint
      * becomes reconnaissance.
      */
-    console.error("[health] MongoDB is not reachable");
+    console.error("[health] the store is not reachable");
     return Response.json({ status: "unavailable", store: "unreachable" }, { status: 503, headers: noStore });
   }
 }

@@ -6,7 +6,16 @@ import {
   saveTeamDoc,
 } from "../controllers/teams.controller.ts";
 import { AZURE, LIMITS } from "./constants";
-import { DEFAULT_FIELD_MAP, clampThreshold, type Member, type Team } from "./types";
+import {
+  DEFAULT_FIELD_MAP,
+  DEFAULT_THRESHOLD_DAYS,
+  SEVERITIES,
+  clampSeverityThresholds,
+  clampThreshold,
+  type Member,
+  type Severity,
+  type Team,
+} from "./types";
 
 export const MAX_NAME_LENGTH = LIMITS.teamName;
 
@@ -100,6 +109,28 @@ export async function getTeam(id: string): Promise<Team | null> {
   return findTeamById(id);
 }
 
+/**
+ * A POD-level threshold, folded into the severities inheriting it.
+ *
+ * The single POD-level box left the admin form: with one per severity,
+ * `Unknown` included, it could only agree with them or silently overrule them.
+ * A POD that had set one must not start ageing differently, so its value is
+ * written into every severity with no rule of its own.
+ *
+ * A POD on the default has nothing to fold and keeps an empty map, which is
+ * what keeps "aged means open past 7 days" true on screen for the common case.
+ *
+ * Idempotent: the stored default is pinned back afterwards, so the next save
+ * finds nothing to fold.
+ */
+function foldPodDefault(
+  podDefault: number,
+  overrides: Partial<Record<Severity, number>>,
+): Partial<Record<Severity, number>> {
+  if (podDefault === DEFAULT_THRESHOLD_DAYS) return overrides;
+  return Object.fromEntries(SEVERITIES.map((s) => [s, overrides[s] ?? podDefault]));
+}
+
 export async function saveTeam(input: Partial<Team> & { name: string; id?: string }): Promise<Team> {
   const name = input.name.trim().slice(0, MAX_NAME_LENGTH);
   const id = input.id || slugify(name);
@@ -133,7 +164,21 @@ export async function saveTeam(input: Partial<Team> & { name: string; id?: strin
       ...existing?.valueMap,
       ...input.valueMap,
     },
-    ageingThresholdDays: clampThreshold(input.ageingThresholdDays ?? existing?.ageingThresholdDays),
+    /*
+     * Pinned to the default, because the admin form no longer offers it. The
+     * four severities are the POD's ageing rules now; see `foldPodDefault`.
+     */
+    ageingThresholdDays: DEFAULT_THRESHOLD_DAYS,
+    /*
+     * Replaced wholesale, not merged. A merge would make clearing one severity
+     * impossible — the cleared key simply falls back to the stored value — and
+     * the form sends the complete set every time. Omitting the field entirely
+     * still keeps what is stored, which is what a partial update means.
+     */
+    severityThresholdDays: foldPodDefault(
+      clampThreshold(input.ageingThresholdDays ?? existing?.ageingThresholdDays),
+      clampSeverityThresholds(input.severityThresholdDays ?? existing?.severityThresholdDays),
+    ),
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
 

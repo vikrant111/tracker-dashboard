@@ -1,5 +1,11 @@
 # Uploading a spreadsheet
 
+**Admins only.** A row overwrites whatever item shares its id, so an upload is a
+bulk edit of the board a whole POD is measured by. Members do not see the
+control, and `/api/upload` answers 403 to them — on their own POD too. See
+[auth-and-tenancy.md](auth-and-tenancy.md#uploading-is-an-admins-right-on-their-own-pod-too).
+Downloading is unaffected.
+
 From **Upload** in the top bar. `.xlsx`, `.xlsm`, `.csv` or `.numbers`, up to
 20 MB — the old binary `.xls` is not supported, so resave it as `.xlsx` first.
 The **first sheet with a Title column** is read, and its **first row** is the

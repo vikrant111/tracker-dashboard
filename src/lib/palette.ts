@@ -54,6 +54,23 @@ export const STATUS_COLOR: Record<string, string> = {
 };
 
 /**
+ * The same four states, for **type**.
+ *
+ * A status colour used as a word needs 4.5:1; used as a dot or a bar it needs
+ * 3:1 and must stay recognisably itself. On a light surface those are different
+ * colours — the warning yellow is 1.74:1 as text, which is how the band label
+ * under the POD name disappeared on a projector.
+ *
+ * Use `STATUS` for marks and `STATUS_INK` for anything a reader reads.
+ */
+export const STATUS_INK = {
+  good: "var(--st-good-ink)",
+  warning: "var(--st-warning-ink)",
+  serious: "var(--st-serious-ink)",
+  critical: "var(--st-critical-ink)",
+} as const;
+
+/**
  * Ageing is ordinal magnitude: one hue, monotone lightness. Dark mode brightens
  * with age, light mode darkens — in both, the oldest bucket carries the most
  * presence against its own surface.

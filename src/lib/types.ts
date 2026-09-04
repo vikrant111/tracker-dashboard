@@ -84,6 +84,15 @@ export type Team = {
   valueMap: ValueMap;
   /** Days before an open bug counts as "aged". */
   ageingThresholdDays: number;
+  /**
+   * Per-severity overrides of the above, set by an admin.
+   *
+   * A Critical sitting for three days and a Minor sitting for three days are
+   * not the same problem, and one threshold for both flatters the urgent one.
+   * Absent or missing key means the POD's own threshold — the common case, and
+   * why this is optional rather than a filled-in map of defaults.
+   */
+  severityThresholdDays?: Partial<Record<Severity, number>>;
   createdAt: string;
 };
 
@@ -131,4 +140,27 @@ export function clampThreshold(value: unknown): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return DEFAULT_THRESHOLD_DAYS;
   return Math.min(AGEING.max, Math.max(AGEING.min, Math.trunc(n)));
+}
+
+/**
+ * A POD's per-severity ageing overrides, cleaned.
+ *
+ * **A missing key is the point.** Blank means "use the POD's own threshold", so
+ * an unusable value is dropped rather than clamped to a number nobody typed —
+ * clamping a cleared field to 1 would silently make every Minor aged the next
+ * day. Unknown severities go too: they can only come from a stale client or a
+ * hand-written request, and a rule keyed to a severity no item can have is a
+ * rule that never fires and cannot be found again to remove.
+ */
+export function clampSeverityThresholds(value: unknown): Partial<Record<Severity, number>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Partial<Record<Severity, number>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!(SEVERITIES as readonly string[]).includes(key)) continue;
+    if (raw === "" || raw === null || raw === undefined) continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    out[key as Severity] = Math.min(AGEING.max, Math.max(AGEING.min, Math.trunc(n)));
+  }
+  return out;
 }

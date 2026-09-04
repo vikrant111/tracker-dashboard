@@ -1,43 +1,41 @@
 /**
- * Reading and writing work items.
+ * Reading and writing work items, through whichever store is configured.
  *
- * The drill-down behind every clickable number lives here, along with the bulk
- * upsert every import path funnels into. Conversion between the stored document
- * and the domain shape is in `items.shape.ts`.
+ * Sorting and paging happen here rather than in a driver, for the same reason
+ * the aggregation does: one implementation, so the drawer's order and its count
+ * cannot depend on which storage is behind it.
  */
-import type { PipelineStage } from "mongoose";
-import { connectToDatabase } from "../db/connect.ts";
-import { ItemModel, type ItemDoc } from "../db/models/index.ts";
-import { buildMatch } from "../db/query/match.ts";
-import { SEVERITY_RANK } from "../db/query/stages.ts";
+import { getStore } from "../db/store/index.ts";
+import type { ItemDoc } from "../db/models/index.ts";
+import { severityRank } from "../db/query/predicate.ts";
 import type { Filters, ItemSort, ListedItem } from "../lib/metrics/types.ts";
-import type { Item } from "../lib/types.ts";
+import { SEVERITIES, type Item } from "../lib/types.ts";
 import { toDoc, toItem, withAge } from "./items.shape.ts";
 
-/** How the drawer can be ordered. `severity` needs a computed rank, not a string sort. */
-const SORTS: Record<ItemSort, Record<string, 1 | -1>> = {
-  oldest: { createdDate: 1 },
-  newest: { createdDate: -1 },
-  severity: { severityRank: 1, createdDate: 1 },
+const time = (d: Date | string | null | undefined): number => {
+  if (!d) return 0;
+  const at = d instanceof Date ? d : new Date(d);
+  const t = at.getTime();
+  return Number.isNaN(t) ? 0 : t;
 };
 
 /**
- * The sort stage, and the rank field it may need.
+ * The drawer's order.
  *
- * The rank is only added for the severity sort, because an `$addFields` on
- * every query costs a pass over the result set for the two sorts that ignore it.
+ * Every sort ends with `workItemId`, making it **total**. Without a tiebreak,
+ * two items sharing a key can repeat across pages or vanish between them —
+ * which shows up as an export with a duplicate row and a missing one.
  */
-function sortPipeline(sort: ItemSort): PipelineStage.FacetPipelineStage[] {
-  const order = SORTS[sort] ?? SORTS.oldest;
-  const stages: PipelineStage.FacetPipelineStage[] = [];
-  if (sort === "severity") stages.push({ $addFields: { severityRank: SEVERITY_RANK } });
-  /*
-   * `workItemId` breaks ties, making the order **total**. Without it, two
-   * documents sharing a sort key can repeat across pages or be skipped between
-   * them — which surfaces as an export with a duplicate row and a missing one.
-   */
-  stages.push({ $sort: { ...order, workItemId: 1 as const } });
-  return stages;
+function compare(sort: ItemSort): (a: ItemDoc, b: ItemDoc) => number {
+  const tie = (a: ItemDoc, b: ItemDoc) => String(a.workItemId).localeCompare(String(b.workItemId));
+  if (sort === "newest") return (a, b) => time(b.createdDate) - time(a.createdDate) || tie(a, b);
+  if (sort === "severity") {
+    return (a, b) =>
+      severityRank(a, SEVERITIES) - severityRank(b, SEVERITIES) ||
+      time(a.createdDate) - time(b.createdDate) ||
+      tie(a, b);
+  }
+  return (a, b) => time(a.createdDate) - time(b.createdDate) || tie(a, b);
 }
 
 /**
@@ -52,35 +50,21 @@ export async function listItems(
   size = 100,
   sort: ItemSort = "oldest",
 ): Promise<{ items: ListedItem[]; total: number }> {
-  await connectToDatabase();
+  const store = getStore();
+  await store.init();
   const now = Date.now();
 
-  /*
-   * Page and count in one round trip, over the same match. Two separate calls
-   * could straddle a write and report a total the page contradicts.
-   */
-  const [result] = await ItemModel.aggregate([
-    { $match: buildMatch(f, now) },
-    {
-      $facet: {
-        rows: [...sortPipeline(sort), { $limit: Math.max(1, size) }],
-        total: [{ $count: "n" }],
-      },
-    },
-  ]);
-
-  const rows = (result?.rows ?? []) as ItemDoc[];
-  const items = rows.map((d) => withAge(toItem(d), now));
-  return { items, total: result?.total?.[0]?.n ?? items.length };
+  const matched = await store.items.find(f, now);
+  matched.sort(compare(sort));
+  const page = matched.slice(0, Math.max(1, size));
+  return { items: page.map((d) => withAge(toItem(d), now)), total: matched.length };
 }
 
 /**
  * Every matching item, a page at a time.
  *
- * A cursor, not `skip`/`limit`: `skip` re-walks the collection from the start
- * on every page, so exporting a large board degrades quadratically. A cursor is
- * flat, and there is no result-window ceiling of the kind that once made the
- * export return a 500 wearing a `.json` filename.
+ * Paged rather than returned whole so the export route can stream, and capped
+ * so one request cannot decide to serialise an entire instance.
  */
 export async function* streamItems(
   f: Filters,
@@ -88,92 +72,45 @@ export async function* streamItems(
   cap = 20_000,
   pageSize = 1_000,
 ): AsyncGenerator<ListedItem[]> {
-  await connectToDatabase();
+  const store = getStore();
+  await store.init();
   const now = Date.now();
 
-  const cursor = ItemModel.aggregate([{ $match: buildMatch(f, now) }, ...sortPipeline(sort)]).cursor({
-    batchSize: pageSize,
-  });
+  const matched = await store.items.find(f, now);
+  matched.sort(compare(sort));
 
-  let batch: ListedItem[] = [];
-  let sent = 0;
-
-  try {
-    for await (const doc of cursor) {
-      batch.push(withAge(toItem(doc as ItemDoc), now));
-      sent++;
-      if (batch.length >= pageSize) {
-        yield batch;
-        batch = [];
-      }
-      if (sent >= cap) break;
-    }
-  } finally {
-    /*
-     * Closed in `finally`, so an aborted download closes it too. A caller that
-     * stops reading leaves the server-side cursor open until it times out, and
-     * a handful of those exhausts the cursor limit on a shared Atlas tier.
-     */
-    await cursor.close().catch(() => {});
+  for (let i = 0; i < Math.min(matched.length, cap); i += pageSize) {
+    yield matched.slice(i, Math.min(i + pageSize, cap)).map((d) => withAge(toItem(d), now));
   }
-  if (batch.length) yield batch;
 }
 
-/**
- * Upsert by deterministic id. Returns the number that **failed**.
- *
- * `ordered: false` so one bad document does not abandon the rest of the batch —
- * a single unparseable row in a 500-row spreadsheet should cost you that row,
- * not the import.
- */
+/** Upsert by deterministic id. Returns the number that **failed**. */
 export async function bulkUpsertItems(items: Item[]): Promise<number> {
   if (!items.length) return 0;
-  await connectToDatabase();
-
-  const operations = items.map((item) => ({
-    replaceOne: {
-      filter: { _id: item.id },
-      replacement: { ...toDoc(item), _id: item.id },
-      upsert: true,
-    },
-  }));
-
-  try {
-    const res = await ItemModel.bulkWrite(operations, { ordered: false });
-    const written = (res.upsertedCount ?? 0) + (res.modifiedCount ?? 0) + (res.matchedCount ?? 0);
-    return Math.max(0, items.length - written);
-  } catch (err) {
-    /*
-     * An unordered bulkWrite that partially fails *throws* while still having
-     * written the good documents. The error carries the failures, so the count
-     * is recoverable — treating the throw as "all failed" would report a
-     * successful 499-row import as a total loss.
-     */
-    const failures = (err as { writeErrors?: unknown[] })?.writeErrors;
-    if (Array.isArray(failures)) return failures.length;
-    throw err;
-  }
+  const store = getStore();
+  await store.init();
+  return store.items.bulkUpsert(items.map((item) => ({ ...toDoc(item), _id: item.id }) as ItemDoc));
 }
 
 /** One item, by its deterministic id. Used by the webhook's delete path. */
 export async function deleteItem(id: string): Promise<void> {
-  await connectToDatabase();
-  if (typeof id !== "string" || !id) return;
-  await ItemModel.deleteOne({ _id: id });
+  const store = getStore();
+  await store.init();
+  await store.items.deleteById(id);
 }
 
 /** Everything belonging to a POD, when that POD is deleted. */
 export async function deleteItemsForTeam(teamId: string): Promise<number> {
-  await connectToDatabase();
-  if (typeof teamId !== "string" || !teamId) return 0;
-  const res = await ItemModel.deleteMany({ teamId });
-  return res.deletedCount ?? 0;
+  const store = getStore();
+  await store.init();
+  return store.items.deleteByTeam(teamId);
 }
 
 /** How many items exist. The seed uses it to decide whether to fill. */
-export async function countItems(filter: Record<string, unknown> = {}): Promise<number> {
-  await connectToDatabase();
-  return ItemModel.countDocuments(filter);
+export async function countItems(): Promise<number> {
+  const store = getStore();
+  await store.init();
+  return store.items.count();
 }
 
 export { toItem, withAge } from "./items.shape.ts";

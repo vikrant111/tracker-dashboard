@@ -47,10 +47,9 @@ export async function requireAdmin(): Promise<SessionUser> {
  * The Array check is deliberate: on a non-array `teamIds`, `.includes()` is a
  * substring test, which would hand out access that was never granted.
  */
-export function canSeeTeam(user: SessionUser, teamId: string): boolean {
-  if (user.role === "admin") return true;
-  return Array.isArray(user.teamIds) && user.teamIds.includes(teamId);
-}
+/* Re-exported so every existing call site is unchanged; the rule lives in a
+ * pure module the check suite can import without the auth stack. */
+export { canSeeTeam } from "./team-access";
 
 export function errorResponse(err: unknown) {
   const status = err instanceof HttpError ? err.status : 500;

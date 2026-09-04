@@ -13,6 +13,7 @@
  * after touching queries, filters, validation or auth.
  */
 import { numbersBundle } from "./lib/numbers-fixture.mjs";
+import { getStore } from "../src/db/store/index.ts";
 
 const BASE = process.env.CHECK_BASE || "http://localhost:3000";
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@example.com";
@@ -109,12 +110,18 @@ async function invariants(session) {
     check("closed is the remainder", t.closed === t.total - t.active, `${t.closed} vs ${t.total}-${t.active}`);
     check(
       "the dial equals closed over tracked",
-      d.health === (t.total > 0 ? Math.round((t.closed / t.total) * 100) : 100),
+      // Scaled before divided. `(closed / total) * 100` loses the exact half —
+      // 207/360 is 57.5% but that product is 57.49999999999999 — so the check
+      // would have demanded the very rounding bug it was meant to catch.
+      d.health === (t.total > 0 ? Math.round((t.closed * 100) / t.total) : 100),
       `${d.health} vs ${t.closed}/${t.total}`,
     );
     // Age and severity moved out of the score entirely. If either could still
     // reach it, a board with aged criticals would not match the plain division.
-    check("nothing but closure moves the score", d.health === (t.total > 0 ? Math.round(((t.total - t.active) / t.total) * 100) : 100));
+    check(
+      "nothing but closure moves the score",
+      d.health === (t.total > 0 ? Math.round(((t.total - t.active) * 100) / t.total) : 100),
+    );
     check("average age is not negative", t.avgAgeDays >= 0, `=${t.avgAgeDays}`);
     check("criticalAged <= active", t.criticalAged <= t.active);
     check(
@@ -250,7 +257,205 @@ async function input(session) {
   const del = (p) => call(session, p, { method: "DELETE" });
   const sane = (r) => r.status < 500 && r.json !== null;
 
-  section("input — every filter param survives hostile values");
+  section("search finds the POD that holds the answer");
+{
+  const all = await get("/api/search/pods?q=Ananya");
+  check("a person with items resolves to their POD", all.status === 200);
+  const first = all.json?.matches?.[0];
+  check("...naming the POD", first?.teamId === "amc-pod", first?.teamId ?? "none");
+  check("...with a count of what is there", (first?.items ?? 0) > 0, `${first?.items}`);
+  check("...and why it matched", (first?.people ?? []).some((n) => /Ananya/i.test(n)));
+
+  /*
+   * The case this was built for: a person on a roster with **no assigned work
+   * at all**. They match no items anywhere, so an items-only search reports
+   * "nowhere" about somebody plainly on the team — which is what the dashboard
+   * did, showing an empty board and no hint of where to look.
+   *
+   * The person is **planted**, not borrowed from the seed. The first version of
+   * this check searched a seeded name, and every seeded person has items — so
+   * it passed just as happily with roster matching removed entirely. A check
+   * that cannot fail is worse than none.
+   */
+  {
+    const ghost = "Zzqx Rosteronly";
+    const pod = await post("/api/teams", {
+      name: "Chk Roster POD",
+      members: [{ name: ghost, designation: "QA Engineer", role: "member" }],
+    });
+    const podId = pod.json?.team?.id;
+    check("a POD with a roster and no items was created", Boolean(podId), `${pod.status}`);
+
+    if (podId) {
+      const roster = await get(`/api/search/pods?q=${encodeURIComponent("Zzqx")}`);
+      const found = roster.json?.matches?.find((m) => m.teamId === podId);
+      check("a roster-only person is still found", Boolean(found), JSON.stringify(roster.json?.matches ?? []));
+      check("...with no items, because they have none", found?.items === 0, `${found?.items}`);
+      check("...and named as a roster match", (found?.people ?? []).some((n) => n === ghost));
+
+      // Nothing planted survives the run.
+      await del(`/api/teams/${podId}`);
+      const gone = await get(`/api/search/pods?q=${encodeURIComponent("Zzqx")}`);
+      check("...and the planted POD is cleaned up", (gone.json?.matches ?? []).length === 0);
+    }
+  }
+
+  // Most items first, so "the first POD" is the one with the most to show.
+  const broad = await get("/api/search/pods?q=a");
+  const counts = (broad.json?.matches ?? []).map((m) => m.items);
+  check("matches are ordered, busiest POD first", counts.every((n, i) => i === 0 || counts[i - 1] >= n), counts.join(" "));
+
+  // Nothing typed is not an error, and nothing matched is not either.
+  check("an empty term matches nothing, without failing", (await get("/api/search/pods?q=")).json?.matches?.length === 0);
+  const none = await get("/api/search/pods?q=zzzznotathing");
+  check("a term nobody matches returns an empty list", none.status === 200 && none.json.matches.length === 0);
+
+  // The same hostile values the filters take, on the new surface.
+  for (const hostile of ["%00", "%24ne", "*", "((((", "%2E%2E%2F", "a".repeat(300)]) {
+    const res = await get(`/api/search/pods?q=${hostile}`);
+    check(`q=${hostile.slice(0, 12)} does not 5xx`, res.status < 500, `${res.status}`);
+  }
+}
+
+section("a JSON body can carry an object where a string is expected");
+  {
+    /*
+     * The gap a query string does not have.
+     *
+     * Every hostile-value check above goes through `?param=…`, where the value
+     * is always a string. A **JSON body** can carry `{"$ne": null}`, and Mongo
+     * accepts an operator object exactly where an id was expected — matching
+     * the first document in the collection rather than nothing.
+     *
+     * Verified by removing the guard: `POST /api/sync` with
+     * `{"teamId": {"$ne": null}}` returned **200** and named a POD the caller
+     * never asked for. The controllers refuse a non-string id, and these keep
+     * them refusing it.
+     */
+    const OPERATORS = [{ $ne: null }, { $gt: "" }, { $regex: ".*" }, ["amc-pod"], 42, true];
+
+    for (const value of OPERATORS) {
+      const label = JSON.stringify(value);
+
+      const sync = await post("/api/sync", { teamId: value });
+      check(`sync with teamId=${label} is refused`, sync.status >= 400, `${sync.status}`);
+      /*
+       * And nothing leaks on the way out. A 200 that happens to error inside
+       * would still have named a POD in its body, which is the actual harm —
+       * an unauthorised caller learning what PODs exist.
+       */
+      const body = JSON.stringify(sync.json ?? {});
+      check(`...and names no POD`, !/teamName|amc-pod|payments-pod/i.test(body), body.slice(0, 80));
+
+      const upload = await post("/api/upload", { teamId: value });
+      /*
+       * 4xx, not merely "not 2xx". A 500 also satisfies `>= 400`, which is how
+       * this passed while the route was throwing a TypeError out of
+       * `req.formData()` and quoting our internals back at the caller.
+       */
+      check(`upload with teamId=${label} is refused in prose`, upload.status >= 400 && upload.status < 500, `${upload.status}`);
+    }
+
+    /*
+     * The same shape on the account routes. These already answered in prose,
+     * except `/api/users`, which called `.includes` on the object and returned
+     * a **500 quoting our own internals** — a hostile value must be refused,
+     * never crash the handler.
+     */
+    for (const value of OPERATORS) {
+      const label = JSON.stringify(value);
+      for (const path of ["/api/users", "/api/users/password", "/api/account/password"]) {
+        const res = await post(path, { email: value, password: "irrelevant123" });
+        check(`${path} with email=${label} does not 5xx`, res.status < 500, `${res.status}`);
+      }
+    }
+  }
+
+section("one person on several PODs, with work on only one");
+{
+  /*
+   * The reported case, planted rather than borrowed.
+   *
+   * Somebody is on two PODs and has items on only one of them. Every query is
+   * scoped to a single POD, so the board must open the POD that holds the
+   * **work**, not the first POD that happens to hold the name — and switching
+   * to the other must show that other POD's truth, not a cached version of the
+   * first.
+   *
+   * Planted because the seed gives every person items: borrowing one would make
+   * this pass whatever the ordering did.
+   */
+  const WHO = "Zzqx Twopods";
+  const podA = await post("/api/teams", { name: "Chk Empty POD", members: [{ name: WHO, role: "member" }] });
+  const podB = await post("/api/teams", { name: "Chk Busy POD", members: [{ name: WHO, role: "member" }] });
+  const a = podA.json?.team?.id;
+  const b = podB.json?.team?.id;
+  check("two PODs were created for the multi-POD case", Boolean(a && b), `${podA.status}/${podB.status}`);
+
+  if (a && b) {
+    /*
+     * Two items on B only, one open and one closed — so the health of the
+     * filtered board is checkable by hand: 1 of 2 closed is 50.
+     */
+    /*
+     * A real CSV through the real route — `/api/upload` takes multipart form
+     * data, not JSON. Two rows, one open and one closed, so the filtered
+     * board's health is checkable by hand: 1 of 2 closed is 50.
+     */
+    const day = 86_400_000;
+    const iso = (t) => new Date(t).toISOString().slice(0, 10);
+    const csv = [
+      "Work Item ID,Title,Assignee,Severity,Status,Created Date,Closed Date",
+      `Zx-1,Multi-pod fixture one,${WHO},Critical,Open,${iso(Date.now() - 20 * day)},`,
+      `Zx-2,Multi-pod fixture two,${WHO},Major,Closed,${iso(Date.now() - 30 * day)},${iso(Date.now() - day)}`,
+    ].join("\n");
+
+    const form = new FormData();
+    form.set("file", new File([csv], "multipod.csv"));
+    form.set("teamId", b);
+    const upRes = await fetch(BASE + "/api/upload", {
+      method: "POST",
+      body: form,
+      headers: { cookie: session.header() },
+    });
+    const up = { status: upRes.status, json: await upRes.json().catch(() => null) };
+    check("items landed on the busy POD", up.status === 200 && up.json?.imported === 2, `${up.status} imported=${up.json?.imported}`);
+
+    // Where does the search send you?
+    const where = await get(`/api/search/pods?q=${encodeURIComponent("Zzqx")}`);
+    const matches = (where.json?.matches ?? []).filter((m) => m.teamId === a || m.teamId === b);
+    check("both PODs are found", matches.length === 2, matches.map((m) => `${m.name}:${m.items}`).join(" "));
+    check("...and the one holding the work comes first", matches[0]?.teamId === b, matches[0]?.name ?? "none");
+    check("...with its item count", (matches[0]?.items ?? 0) === 2, `${matches[0]?.items}`);
+    check("...and the empty one is still listed", matches[1]?.items === 0, `${matches[1]?.items}`);
+
+    /*
+     * Each POD reports **its own** truth for the same search. This is the whole
+     * question: the same person, two scopes, two different right answers.
+     */
+    const busy = await get(`/api/metrics?teamId=${b}&search=${encodeURIComponent("Zzqx")}`);
+    check("the busy POD shows their items", busy.json?.totals?.total === 2, `${busy.json?.totals?.total}`);
+    check("...with a real score", busy.json?.health === 50, `${busy.json?.health}`);
+    check("...and only them on the leaderboard", (busy.json?.assignees ?? []).length === 1, `${(busy.json?.assignees ?? []).length}`);
+
+    const empty = await get(`/api/metrics?teamId=${a}&search=${encodeURIComponent("Zzqx")}`);
+    check("the empty POD reports nothing, not the other POD's items", empty.json?.totals?.total === 0, `${empty.json?.totals?.total}`);
+    check("...and has no score at all", empty.json?.health === null, `${empty.json?.health}`);
+    check("...while still listing them from the roster", (empty.json?.assignees ?? []).some((x) => x.name === WHO));
+
+    // The drill-down agrees with the busy POD's count, as every number must.
+    const drill = await get(`/api/items?teamId=${b}&search=${encodeURIComponent("Zzqx")}&size=10`);
+    check("the drill-down returns exactly those items", drill.json?.total === 2, `${drill.json?.total}`);
+    check("...all of them on the busy POD", (drill.json?.items ?? []).every((i) => i.teamId === b));
+
+    // Nothing planted survives the run.
+    for (const id of [a, b]) await del(`/api/teams/${id}`);
+    const after = await get(`/api/search/pods?q=${encodeURIComponent("Zzqx")}`);
+    check("...and both PODs are cleaned up", (after.json?.matches ?? []).length === 0, JSON.stringify(after.json?.matches ?? []));
+  }
+}
+
+section("input — every filter param survives hostile values");
   // Sixteen params × twenty shapes of junk. Any of them reaching the query layer
   // unguarded is a 500, and several already did: NaN in `size`, negative days in
   // date math, an unparseable date. Nothing here may 5xx or return non-JSON.
@@ -341,10 +546,39 @@ async function input(session) {
   );
 
   section("input — ageing threshold is clamped to 1..365");
-  for (const [v, want] of [[-5, 1], [0, 1], [0.5, 1], [99999, 365], ["abc", 7], [14, 14]]) {
-    const r = await mk("Thresh POD", { ageingThresholdDays: v });
-    check(`threshold ${JSON.stringify(v)} -> ${want}`, r.json?.team?.ageingThresholdDays === want, `got ${r.json?.team?.ageingThresholdDays}`);
+  /*
+   * `ageingThresholdDays` left the admin form, but the API still accepts it —
+   * as shorthand for "every severity without a rule of its own". It is clamped
+   * exactly as before; the clamp just lands on the severities now.
+   *
+   * A **fresh POD per value**, because the fold is deliberately one-way: once a
+   * POD's ageing lives in explicit per-severity rules, a legacy POD-level
+   * number must not silently overwrite them. Reusing one POD would test that
+   * stickiness rather than the clamp, and pass while measuring nothing.
+   */
+  for (const [i, [v, want]] of [[-5, 1], [0, 1], [0.5, 1], [99999, 365], ["abc", 7], [14, 14]].entries()) {
+    const r = await mk(`Thresh POD ${i}`, { ageingThresholdDays: v });
+    const folded = r.json?.team?.severityThresholdDays ?? {};
+    // 7 is the default, and the default folds to nothing — an empty map *is* 7.
+    const got = want === 7 ? (folded.Critical ?? 7) : folded.Critical;
+    check(`threshold ${JSON.stringify(v)} -> ${want}`, got === want, `got ${JSON.stringify(folded)}`);
+    check(`...applied to every severity`, want === 7 || ["Critical", "Major", "Minor", "Unknown"].every((sev) => folded[sev] === want), JSON.stringify(folded));
   }
+
+  /* And the stored default is pinned, so the fold cannot run twice. */
+  const pinned = await mk("Thresh POD", { ageingThresholdDays: 14 });
+  check("the stored POD default is pinned to 7", pinned.json?.team?.ageingThresholdDays === 7, `${pinned.json?.team?.ageingThresholdDays}`);
+
+  /*
+   * Explicit severity rules beat the legacy number, in the same request and in
+   * a later one. This is the whole reason the second control was removed: there
+   * is now exactly one answer to "how old is old here", and it is this map.
+   */
+  const both = await post("/api/teams", { id: "thresh-pod", name: "Thresh POD", ageingThresholdDays: 30, severityThresholdDays: { Critical: 2 } });
+  check("an explicit severity rule wins over the legacy number", both.json?.team?.severityThresholdDays?.Critical === 2, JSON.stringify(both.json?.team?.severityThresholdDays));
+  const later = await post("/api/teams", { id: "thresh-pod", name: "Thresh POD", ageingThresholdDays: 30 });
+  check("...and is not overwritten by a later one", later.json?.team?.severityThresholdDays?.Critical === 2, JSON.stringify(later.json?.team?.severityThresholdDays));
+
   check("a clamped threshold still queries", sane(await get("/api/metrics?teamId=thresh-pod")));
 
   section("input — user records");
@@ -511,10 +745,89 @@ async function input(session) {
       check(`work item id ${JSON.stringify(id)} rejected`, /no usable/.test((await hook({ eventType: "workitem.updated", resource: { workItemId: id } })).json?.skipped ?? ""));
   }
 
+  section("ageing by severity — the admin's clock, per severity");
+  {
+    /*
+     * A Critical left for three days and a Minor left for three days are not
+     * the same problem. An admin may hold one severity to a tighter clock than
+     * the POD's own, and the tile, the drill-down behind it and the roll-up row
+     * all have to agree about which items that catches.
+     *
+     * The POD waits 30 days by default and holds Critical to 2, so every
+     * assertion below distinguishes the two rules — a fixture where they agreed
+     * would pass no matter which one the code applied.
+     */
+    const day = 86_400_000;
+    const iso = (t) => new Date(t).toISOString().slice(0, 10);
+    const made0 = await post("/api/teams", {
+      name: "Chk Severity POD",
+      ageingThresholdDays: 30,
+      severityThresholdDays: { Critical: 2 },
+    });
+    const pod = made0.json?.team?.id;
+    check("the POD saved its severity rule", made0.json?.team?.severityThresholdDays?.Critical === 2, JSON.stringify(made0.json?.team?.severityThresholdDays));
+    if (pod) made.push(pod);
+
+    if (pod) {
+      const csv = [
+        "Work Item ID,Title,Assignee,Severity,Status,Created Date,Closed Date",
+        `Sv-1,Sev fixture old critical,Sev Tester,Critical,Open,${iso(Date.now() - 5 * day)},`,
+        `Sv-2,Sev fixture new critical,Sev Tester,Critical,Open,${iso(Date.now() - 1 * day)},`,
+        `Sv-3,Sev fixture old minor,Sev Tester,Minor,Open,${iso(Date.now() - 5 * day)},`,
+      ].join("\n");
+      const form = new FormData();
+      form.set("file", new File([csv], "severity.csv"));
+      form.set("teamId", pod);
+      const up = await fetch(BASE + "/api/upload", { method: "POST", body: form, headers: { cookie: session.header() } });
+      check("the fixture landed", up.status === 200, `${up.status}`);
+
+      const board = await get(`/api/metrics?teamId=${pod}`);
+      check("only the critical past its own 2 days is aged", board.json?.totals?.criticalAged === 1, `${board.json?.totals?.criticalAged}`);
+      check("...and the tile names 2 days, not the POD's 30", board.json?.criticalThresholdDays === 2, `${board.json?.criticalThresholdDays}`);
+      check("...and the board reports the severity is tuned", board.json?.severityTuned === true);
+
+      /* The drawer the tile opens must return exactly what the tile counted. */
+      const drill = await get(`/api/items?teamId=${pod}&severity=Critical&agedOnly=true&limit=50`);
+      check("the drill-down returns exactly that one", (drill.json?.items ?? []).length === 1, `${drill.json?.items?.length}`);
+      check("...and it is the older one", drill.json?.items?.[0]?.workItemId === "Sv-1", `${drill.json?.items?.[0]?.workItemId}`);
+
+      /* The 5-day Minor is inside the POD's own 30 days, so it is not aged. */
+      const minors = await get(`/api/items?teamId=${pod}&severity=Minor&agedOnly=true&limit=50`);
+      check("an untuned severity still waits the POD's 30 days", (minors.json?.items ?? []).length === 0, `${minors.json?.items?.length}`);
+
+      /* The roll-up row carries the severity's clock, not the board's. */
+      const rollup = (await get("/api/metrics")).json?.teams?.find((t) => t.teamId === pod);
+      check("the roll-up row carries the tuned clock", rollup?.criticalThresholdDays === 2, `${rollup?.criticalThresholdDays}`);
+      check("...and counts by it", rollup?.criticalAged === 1, `${rollup?.criticalAged}`);
+
+      /*
+       * Clearing the override must hand the severity back to the POD — the
+       * whole point of storing a missing key rather than a number.
+       */
+      await post("/api/teams", { id: pod, name: "Chk Severity POD", ageingThresholdDays: 30, severityThresholdDays: {} });
+      const cleared = await get(`/api/metrics?teamId=${pod}`);
+      check("clearing the override restores the POD's 30 days", cleared.json?.totals?.criticalAged === 0, `${cleared.json?.totals?.criticalAged}`);
+      check("...and the tile names 30 again", cleared.json?.criticalThresholdDays === 30, `${cleared.json?.criticalThresholdDays}`);
+      check("...and the drill-down agrees", ((await get(`/api/items?teamId=${pod}&severity=Critical&agedOnly=true&limit=50`)).json?.items ?? []).length === 0);
+
+      /* Out-of-range values are refused by the server, not only by the form. */
+      const bad = await post("/api/teams", { id: pod, name: "Chk Severity POD", severityThresholdDays: { Critical: 0, Sev9: 5 } });
+      check("a zero-day rule is not stored as zero", bad.json?.team?.severityThresholdDays?.Critical !== 0, `${bad.json?.team?.severityThresholdDays?.Critical}`);
+      check("...and an unknown severity is dropped", bad.json?.team?.severityThresholdDays?.Sev9 === undefined);
+    }
+  }
+
   section("input — a failed sync must not corrupt the watermark");
   await post("/api/sync", { teamId: "amc-pod" });
-  const state = await (await fetch("http://localhost:9200/tracker-sync/_doc/amc-pod")).json();
-  const wm = state._source?.lastChangedDate;
+  /*
+   * Read through the store, so this works on whichever driver is configured.
+   * It used to fetch `localhost:9200` directly — a leftover from the
+   * OpenSearch days that the MongoDB migration missed, and which quietly
+   * stopped testing anything once that database was gone.
+   */
+  const store = getStore();
+  await store.init();
+  const wm = (await store.sync.byId("amc-pod"))?.lastChangedDate;
   check("watermark is not the epoch", new Date(wm).getFullYear() > 2000, `=${wm}`);
   check("watermark stays within the first-run window", Date.now() - new Date(wm) < 370 * 86400000, `=${wm}`);
 
@@ -547,6 +860,21 @@ async function auth(admin) {
   const teams = await call(member, "/api/teams");
   check("their POD list is scoped", teams.json.teams.length === 1 && teams.json.teams[0].id === "amc-pod");
 
+  /*
+   * "Where is this?" must not become "what PODs exist?".
+   *
+   * The endpoint answers with POD names, so an unscoped version would let any
+   * member enumerate every POD in the instance — and, by searching a name, who
+   * is on it. It is handed the caller's own accessible list rather than loading
+   * its own, and this is what proves it.
+   */
+  {
+    const where = await call(member, "/api/search/pods?q=a");
+    check("search-scope is reachable by a member", where.status === 200, `${where.status}`);
+    const named = (where.json?.matches ?? []).map((m) => m.teamId);
+    check("...and names only PODs they can see", named.every((id) => id === "amc-pod"), named.join(", "));
+  }
+
   section("auth — member cannot write");
   const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body });
   const writes = [
@@ -565,6 +893,32 @@ async function auth(admin) {
   ];
   for (const [label, path, init] of writes) check(label, (await call(member, path, init)).status === 403);
   check("still blocked afterwards", (await call(member, "/api/metrics?teamId=payments-pod")).status === 403);
+
+  /*
+   * Uploading is a write, and the one a member could most plausibly mistake for
+   * a read of their own POD. A spreadsheet row overwrites whatever item shares
+   * its id, so an upload is a bulk edit of the board the whole POD is measured
+   * by — from a file nobody else has seen. `amc-pod` is the member's *own* POD,
+   * which is the point: the refusal is about the act, not the access.
+   */
+  const memberUpload = new FormData();
+  memberUpload.set("file", new File(["Work Item ID,Title\nMx-1,Member upload"], "member.csv"));
+  memberUpload.set("teamId", "amc-pod");
+  const memberUp = await fetch(BASE + "/api/upload", {
+    method: "POST",
+    body: memberUpload,
+    headers: { cookie: member.header() },
+  });
+  check("upload a spreadsheet to their own POD", memberUp.status === 403, `${memberUp.status}`);
+  const memberSaid = await memberUp.json().catch(() => null);
+  check("...and is told why, not given a stack trace", /admin/i.test(memberSaid?.error ?? ""), memberSaid?.error ?? "no body");
+
+  /* The item did not land. A 403 that still wrote would be the worst outcome. */
+  const after403 = await call(member, "/api/items?teamId=amc-pod&search=Member%20upload");
+  check("...and nothing was written", (after403.json?.items ?? []).length === 0, `${after403.json?.items?.length}`);
+
+  /* Reading is still theirs: the gate is on writing, not on the data. */
+  check("downloading their own POD still works", (await call(member, "/api/export?teamId=amc-pod")).status === 200);
 
   section("auth — changing your own password");
   /*
@@ -617,12 +971,20 @@ async function auth(admin) {
     check("a short password is refused", (await post(admin, { email: "chk-member@x.com", next: "tiny" })).status === 400);
     check("an unknown account is a 404", (await post(admin, { email: "ghost@nowhere.com", next: "longEnough123" })).status === 404);
 
-    // An account created without a password signs in through SSO; giving it a
-    // local one would be a second way in that the identity provider cannot revoke.
+    /*
+     * An account with no password hash is either an SSO account or one somebody
+     * created with the field left blank. They are indistinguishable here, so
+     * the rule turns on whether SSO is configured at all.
+     *
+     * This suite runs with `AUTH_MODE=password`, so there are no SSO accounts
+     * and setting a password is right — refusing it made a mistyped account
+     * unrecoverable. The SSO-configured branch is covered directly in
+     * `check-ui.mjs`, where the policy can be exercised without standing up an
+     * identity provider.
+     */
     await call(admin, "/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "chk-sso@x.com", name: "SSO", role: "member" }) });
-    const sso = await post(admin, { email: "chk-sso@x.com", next: "longEnough123" });
-    check("an SSO account is refused", sso.status === 400, `[${sso.status}]`);
-    check("...and says why", /single sign-on/i.test(sso.json?.error ?? ""), sso.json?.error);
+    const noHash = await post(admin, { email: "chk-sso@x.com", next: "longEnough123" });
+    check("with SSO off, an account with no password can be given one", noHash.status === 200, `[${noHash.status}] ${noHash.json?.error ?? ""}`);
 
     const done = await post(admin, { email: "chk-member@x.com", next: "resetByAdmin7" });
     check("a valid reset succeeds", done.status === 200, `[${done.status}]`);
@@ -643,31 +1005,110 @@ async function auth(admin) {
     check("restored for the rest of the run", (await call(await signIn("chk-member@x.com", "pw123456"), "/api/metrics")).status === 200);
   }
 
-  section("auth — a malformed stored user cannot widen access");
-  // Written straight into OpenSearch, bypassing saveUser's sanitising, so this
-  // exercises the guard in session.ts rather than the one on the write path.
-  // Without it, `.includes()` on a string is a substring test and this user
-  // would reach amc-pod.
-  const OS = (process.env.OPENSEARCH_URL || "http://localhost:9200").replace(/\/+$/, "");
-  const bcrypt = (await call(admin, "/api/users")).status === 200; // ensure admin still valid
-  if (bcrypt) {
-    await call(admin, "/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: "chk-bad@x.com", name: "Bad", password: "pw123456", role: "member", teamIds: [] }),
-    });
-    const doc = await (await fetch(`${OS}/tracker-users/_doc/chk-bad@x.com`)).json();
-    const poisoned = { ...doc._source, teamIds: "amc-pod-archive" };
-    await fetch(`${OS}/tracker-users/_doc/chk-bad%40x.com?refresh=true`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(poisoned),
-    });
-    const bad = await signIn("chk-bad@x.com", "pw123456");
-    check("string teamIds grants no POD access", (await call(bad, "/api/metrics?teamId=amc-pod")).status === 403,
-      `[${(await call(bad, "/api/metrics?teamId=amc-pod")).status}]`);
-    check("string teamIds is treated as no PODs", (await call(bad, "/api/metrics")).status === 403);
-    await call(admin, "/api/users?email=chk-bad@x.com", { method: "DELETE" });
+  /*
+   * The "malformed stored user" case moved to `check-ui.mjs`.
+   *
+   * It used to write a corrupted record straight into the database to bypass
+   * `saveUser`'s sanitising, which made it specific to whatever store was
+   * underneath: against Mongo the schema cast the bad value back into an array,
+   * so the poison never landed and the check passed without testing anything.
+   *
+   * `canSeeTeam` is a pure function, so the guard is now exercised directly —
+   * every malformed shape, no server, no driver, nothing to race.
+   */
+
+  section("auth — an account created without a password is recoverable");
+  {
+    /*
+     * Reported from a real instance: a member was added with the password field
+     * left blank, could not sign in, and there was no way to fix it — the admin
+     * route refused to set a password on an account that had none.
+     *
+     * Recreating them was the only route left, and that drops their role and
+     * every POD they could see.
+     */
+    const post = (path, body) =>
+      call(admin, path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const email = "chk-nopass@x.com";
+    await post("/api/users", { email, name: "No Password", role: "member", teamIds: ["amc-pod"] });
+
+    const listed = (await call(admin, "/api/users")).json.users.find((u) => u.email === email);
+    check("an account can be created with no password", listed?.hasPassword === false, `${listed?.hasPassword}`);
+    check("...and the list says so, so the row can show it", "hasPassword" in (listed ?? {}));
+
+    /* They cannot sign in — which is the reported symptom. */
+    const before = await signIn(email, "anything123");
+    check("they cannot sign in yet", (await call(before, "/api/metrics")).status !== 200);
+
+    /* The admin sets one, and that is the whole fix. */
+    const set = await post("/api/users/password", { email, next: "granted12345" });
+    check("an admin can set their password", set.status === 200, `${set.status} ${set.json?.error ?? ""}`);
+
+    const after = await signIn(email, "granted12345");
+    check("...and then they can sign in", (await call(after, "/api/metrics")).status === 200);
+
+    /*
+     * And the fix must not have cost them anything. Recreating the account was
+     * the old workaround precisely because it did.
+     */
+    const kept = (await call(admin, "/api/users")).json.users.find((u) => u.email === email);
+    check("their role survived", kept?.role === "member", kept?.role);
+    check("their PODs survived", JSON.stringify(kept?.teamIds) === JSON.stringify(["amc-pod"]), JSON.stringify(kept?.teamIds));
+    check("and they now have a password", kept?.hasPassword === true);
+
+    await call(admin, `/api/users?email=${encodeURIComponent(email)}`, { method: "DELETE" });
+  }
+
+  section("auth — the instance cannot be left without an admin");
+  {
+    /*
+     * A one-way door, found by walking through it: demoting the only admin
+     * succeeded, and every admin route — including the one that would undo
+     * it — then answered "Admins only." Recovery meant editing the store by
+     * hand.
+     */
+    /* `post` belongs to the input section; this one has `call` and an admin. */
+    const post = (path, body) =>
+      call(admin, path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const before = (await call(admin, "/api/users")).json.users;
+    const admins = before.filter((u) => u.role === "admin");
+    check("the suite can see who the admins are", admins.length >= 1, `${admins.length}`);
+
+    if (admins.length === 1) {
+      const only = admins[0].email;
+      const demote = await post("/api/users", { email: only, role: "member" });
+      check("demoting the only admin is refused", demote.status === 409, `${demote.status}`);
+      check("...in prose that says what to do first", /make somebody else an admin first/i.test(demote.json?.error ?? ""), demote.json?.error ?? "");
+
+      const remove = await call(admin, `/api/users?email=${encodeURIComponent(only)}`, { method: "DELETE" });
+      check("deleting the only admin is refused", remove.status >= 400, `${remove.status}`);
+
+      /* And they are still an admin afterwards — a refusal that half-applied
+       * would be worse than none. */
+      const after = (await call(admin, "/api/users")).json.users.find((u) => u.email === only);
+      check("...and they are still an admin", after?.role === "admin", after?.role);
+    }
+
+    /*
+     * With a second admin, the first is free to step down — the guard must not
+     * become "admins can never change role".
+     */
+    await post("/api/users", { email: "chk-admin2@x.com", name: "Second", password: "pw123456", role: "admin" });
+    const second = (await call(admin, "/api/users")).json.users.find((u) => u.email === "chk-admin2@x.com");
+    check("a second admin can be created", second?.role === "admin", second?.role);
+    const demoteSecond = await post("/api/users", { email: "chk-admin2@x.com", role: "member" });
+    check("...and demoted once they are not the last", demoteSecond.status === 200, `${demoteSecond.status}`);
+    await call(admin, "/api/users?email=chk-admin2@x.com", { method: "DELETE" });
   }
 
   section("auth — page guards and anonymous access");

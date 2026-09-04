@@ -15,7 +15,9 @@
     "check:docs": "node scripts/check-docs.mjs",
     "fonts:vendor": "node scripts/vendor-fonts.mjs",
     "check:env": "node scripts/check-env.mjs",
-    "mongo:local": "node scripts/mongo-local.mjs"
+    "mongo:local": "node scripts/mongo-local.mjs",
+    "azure:probe": "node --env-file=.env.local scripts/azure-probe.mjs",
+    "parity": "node --env-file=.env.local scripts/parity.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

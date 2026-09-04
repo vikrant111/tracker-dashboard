@@ -1,5 +1,6 @@
-import type { Team } from "./types";
-import { AZURE } from "./constants";
+import type { Team } from "./types.ts";
+import { AZURE } from "./constants.ts";
+import { logBatch, logSample, logStructure, logWiql } from "./azure-debug.ts";
 
 const API = `api-version=${AZURE.apiVersion}`;
 
@@ -81,12 +82,17 @@ export async function queryChangedIds(team: Team, since: string): Promise<number
 
   const query = `SELECT [System.Id] FROM WorkItems WHERE ${clauses.join(" AND ")} ORDER BY [System.ChangedDate] ASC`;
 
+  const started = performance.now();
   const res = await call<{ workItems?: { id: number }[] }>(
     `${orgUrl}/${encodeURIComponent(project)}/_apis/wit/wiql?${API}`,
     pat,
     { method: "POST", body: JSON.stringify({ query }) },
   );
-  return (res.workItems || []).map((w) => w.id);
+  const ids = (res.workItems || []).map((w) => w.id);
+
+  /* Only when AZDO_DEBUG asks. See src/lib/azure-debug.ts. */
+  logWiql({ project, types, since, ids, ms: performance.now() - started });
+  return ids;
 }
 
 const BATCH = AZURE.batchSize; // Azure's hard cap for workitemsbatch
@@ -95,13 +101,30 @@ export async function fetchWorkItems(team: Team, ids: number[]) {
   const { orgUrl, pat } = creds(team);
   const out: { id: number; fields: Record<string, unknown>; _links?: { html?: { href?: string } } }[] = [];
 
+  const chunks = Math.ceil(ids.length / BATCH);
   for (let i = 0; i < ids.length; i += BATCH) {
+    const slice = ids.slice(i, i + BATCH);
+    const started = performance.now();
     const res = await call<{ value: typeof out }>(`${orgUrl}/_apis/wit/workitemsbatch?${API}`, pat, {
       method: "POST",
-      body: JSON.stringify({ ids: ids.slice(i, i + BATCH), $expand: "links" }),
+      body: JSON.stringify({ ids: slice, $expand: "links" }),
     });
     out.push(...res.value);
+    logBatch({
+      chunk: i / BATCH + 1,
+      chunks,
+      requested: slice.length,
+      received: res.value?.length ?? 0,
+      ms: performance.now() - started,
+    });
   }
+
+  /*
+   * The shape, once per fetch rather than once per chunk — the interesting
+   * number is how often a field is populated across everything that came back.
+   */
+  logStructure(out);
+  logSample(out[0]);
   return out;
 }
 

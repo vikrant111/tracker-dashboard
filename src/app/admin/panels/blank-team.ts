@@ -27,5 +27,8 @@ export const blankTeam = (): Team => ({
   fieldMap: { ...DEFAULT_FIELD_MAP },
   valueMap: { severity: {}, environment: {}, status: {} },
   ageingThresholdDays: AGEING.defaultThresholdDays,
+  // Empty, not one entry per severity: no override is the starting position,
+  // and a map of four defaults would be four overrides nobody asked for.
+  severityThresholdDays: {},
   createdAt: "",
 });

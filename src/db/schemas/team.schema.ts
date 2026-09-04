@@ -31,6 +31,14 @@ export const teamSchema = new Schema(
     valueMap: { type: Schema.Types.Mixed, default: {} },
 
     ageingThresholdDays: { type: Number, default: 7 },
+    /*
+     * Per-severity overrides. `Mixed` for the same reason as the maps above —
+     * the shape is owned by `lib/types.ts` and cleaned by
+     * `clampSeverityThresholds` before every write. Default `{}` rather than
+     * absent so a POD that has never tuned anything reads back the same shape
+     * as one that has cleared its overrides.
+     */
+    severityThresholdDays: { type: Schema.Types.Mixed, default: {} },
     createdAt: { type: String, default: "" },
   },
   { collection: COLLECTIONS.teams, _id: false, versionKey: false, strict: true, minimize: false },

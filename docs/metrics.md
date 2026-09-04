@@ -118,11 +118,17 @@ pure-logic suite can exercise the arithmetic directly rather than infer it from
 whatever the seeded data happens to contain.
 
 ```
-health = round(closed / total × 100)        closed = total − active
+health = round(closed × 100 / total)        closed = total − active
 ```
 
 That is the whole calculation. 138 closed of 244 reads **57%**. There is nothing
 to configure — `HEALTH` no longer exists in `lib/constants.ts`.
+
+> **Scaled before it is divided**, deliberately. `round((closed / total) × 100)`
+> disagrees at exactly one half: 207 closed of 360 is 57.5%, but that product is
+> `57.49999999999999` in binary floating point, so it rounded to 57 while anyone
+> checking by hand got 58. The point of this score is that it *can* be checked
+> by hand, so the arithmetic has to agree with the reader.
 
 #### Why it is only this
 
@@ -168,14 +174,196 @@ Edge cases, all covered by checks:
 
 | Board | Score | Why |
 |---|---|---|
-| nothing tracked (`0/0`) | `100` | empty is not unhealthy, and `0/0` is not a number |
-| open but nothing tracked (`5/0`) | `100` | incoherent, from a half-written aggregation; dividing would put `Infinity` on the dial |
+| nothing tracked (`0/0`) | **`null`** | zero items is not a score of any kind — see below |
+| open but nothing tracked (`5/0`) | **`null`** | incoherent, from a half-written aggregation; dividing would put `Infinity` on the dial |
 | more open than tracked (`500/5`) | `0` | clamped, or `closed` goes negative and the score below zero |
 | a negative open count (`-20/5`) | `100` | clamped, or `closed` exceeds the board and the score passes 100 |
-| `NaN`, `Infinity`, strings, `null` | `100` | never `NaN` on the dial |
+| `NaN`, `Infinity`, strings, `null` | **`null`** | never `NaN`, and never a fake reading |
 
-The score is always a whole number in `0..100`, by construction rather than by a
-clamp: a ratio in `0..1` times 100, rounded.
+A real score is always a whole number in `0..100`.
+
+### Why an empty board has no score
+
+`nothing tracked` used to return **100**, reasoning that nothing tracked means
+nothing outstanding. On an empty POD that is arguable. Under a **filter** it was
+simply wrong, and it was reported from a real board: searching for somebody who
+belonged to another POD matched no items, and the card answered with a green
+**100%** over the selected POD's name — the most reassuring number on the
+dashboard, for a question that had no answer.
+
+`health: number | null`. The card renders
+[`health-empty`](../src/components/health-empty.tsx) instead of inventing a
+reading, and [`health-empty-copy.ts`](../src/components/health-empty-copy.ts)
+picks which of five empty boards it is — on the roster with nothing assigned,
+hidden behind other filters, present in a different POD, nowhere at all, or an
+untouched POD. Same rule as the rest of the project: never invent data.
+
+**Scaled before divided.** `round(closed × 100 / total)`, not
+`round((closed / total) × 100)`. They disagree at exactly one half: 207 of 360
+is 57.5%, but that product is `57.49999999999999` and rounded to 57 while a
+reader dividing by hand got 58.
+
+## Following a search to its POD
+
+Every metrics query is scoped to one POD by `filtersFromRequest`, which is the
+security boundary and is not negotiable. The cost is that searching for somebody
+who belongs to a different POD returns an empty board, truthfully and uselessly.
+
+`GET /api/search/pods?q=…` answers *where is this?* —
+[`search.controller`](../src/controllers/search.controller.ts) returns every POD
+**the caller can see** that matches, with why:
+
+```json
+{ "term": "nantha",
+  "matches": [ { "teamId": "lc", "name": "LC", "items": 0, "people": ["nantha"] } ] }
+```
+
+**Items *and* rosters.** A person can be on a POD with nothing assigned, so an
+items-only search reports "nowhere" about somebody plainly on the team. Ordering
+is most-items-first, so "the first POD" is the one with the most to show and a
+roster-only match sorts last.
+
+It is handed the caller's own accessible team list rather than loading its own —
+otherwise "where is this?" becomes "what PODs exist?", and a member could
+enumerate every POD in the instance by searching. A check asserts a member only
+ever sees their own.
+
+The leaderboard's roster half is narrowed by the **same** search
+([`filterRoster`](../src/lib/roster.ts)). Without that it listed the whole roster
+at zero beside a search for one person, so the board claimed six people when the
+reader had asked about one.
+
+### One person, several PODs
+
+The common case, and the one the ordering exists for. Somebody is on two PODs
+and has work on only one:
+
+| POD | On the roster | Items matching |
+|---|---|---|
+| AMC POD | yes | 0 |
+| Payments POD | yes | **2** |
+
+Matches are ordered **busiest first**, so the search opens *Payments*. Landing
+on AMC would be technically correct and useless — it holds their name and
+nothing else.
+
+Each POD then reports **its own** truth for the same search, because every query
+is scoped to one POD:
+
+| Looking at | `totals.total` | `health` | Leaderboard |
+|---|---|---|---|
+| Payments POD | 2 | `50` (1 of 2 closed) | just them |
+| AMC POD | 0 | `null` | just them, at zero, from the roster |
+
+Switching PODs re-queries; nothing is carried across. That is what makes the two
+answers different **and** both right.
+
+Standing on the empty POD, the card names where the work actually is — *"2 items
+in Payments POD"*, not merely *"also on Payments POD"*. Naming the POD without
+the count is the half of the answer that does not help: knowing there is
+somewhere else to look is not the same as knowing it is worth looking.
+
+When several other PODs hold work, the busiest is named and the rest are
+mentioned. When they are all empty too, it says so plainly rather than implying
+work elsewhere.
+
+## What "All PODs" means
+
+The POD picker sets `teamId`, and that is the only thing that changes: with a
+POD selected every panel is that POD's, with none selected every panel is the
+sum of the PODs the caller can see. It is one filter through one query, so the
+whole and the parts cannot drift.
+
+| | All PODs | One POD |
+|---|---|---|
+| tiles, breakdowns, ageing, trend | across every visible POD | that POD only |
+| leaderboard | everyone, from every visible POD | that POD's people and roster |
+| POD roll-up | shown, one row per POD | hidden — there is nothing to compare |
+| drill-downs | every visible POD | that POD only |
+
+A **member** never sees "All PODs" as everything: `filtersFromRequest` narrows
+it to the PODs assigned to them, and one with none gets a 403 rather than an
+unscoped query.
+
+### Aged means what each POD says it means
+
+One board calls a week old, another a month, and `ageingThresholdDays` is per
+POD. With a POD selected that is simply its own setting. Across **all** PODs
+each item is judged by the board it came from — `Filters.thresholdByTeam` carries
+every visible POD's threshold, and both the aggregation and the drill-down filter
+read it.
+
+That was wrong until it was measured. Every item was judged against one default,
+so a POD set to 30 days had its work counted as aged after 7 as soon as the
+picker said "All PODs":
+
+```
+AMC (7d)  criticalAged 3
+Payments (30d)          0
+                    sum 3      ·   All PODs said 5
+```
+
+The tile and the drill-down behind it now agree in both views, which is the
+property the whole board rests on.
+
+### ...and a severity may be held to a tighter clock
+
+A Critical left for three days and a Minor left for three days are not the same
+problem, and one threshold judged them identically. An admin can now set a
+per-severity override on a POD, under **Admin → the POD → Ageing by severity**.
+
+Two levels, most specific first:
+
+| | where it lives |
+|---|---|
+| this POD's rule for this severity | `Team.severityThresholdDays[severity]` |
+| the default | `AGEING.defaultThresholdDays` (7) |
+
+There *was* a third — a single POD-level `ageingThresholdDays` box above the
+severity row. It went, because the four severities already cover every item
+(`Unknown` included), so a fifth number could only agree with them or silently
+overrule them, with nothing on screen saying which had won. A POD that had set
+one keeps its behaviour exactly: `foldPodDefault` writes the value into every
+severity that was inheriting it, and pins the stored default back so the fold
+cannot repeat. `Team.ageingThresholdDays` survives in the data as that
+migration's input; nothing reads it as a rule any more.
+
+`Dashboard.thresholdDays` is therefore the **widest** rule in play across the
+PODs with items, not the stored default — the average-ageing tile tints against
+it, and a POD that allows a month must not be called "serious" at a fortnight by
+a number nothing on it is measured by.
+
+`thresholdFor` in `lib/metrics/threshold.ts` is the **only** place that
+precedence is written. The JSON driver's predicate, the Mongo `$match` and the
+aggregation that prints the tile all resolve through it, because a tile and the
+drawer it opens must not be able to disagree about which items are aged.
+
+**Blank means inherit, and is stored as a missing key** — not as the POD's
+number copied in. Copying it would turn a later change to the POD threshold into
+a change that silently does nothing, and clearing a field would have nowhere to
+fall back to. `clampSeverityThresholds` drops blanks, unknown severities and
+unusable values rather than clamping them to something nobody typed.
+
+On the Mongo side the precedence is unrolled into an `$or`: one branch per
+overridden severity, then a catch-all branch for that POD carrying `$nin` of
+exactly those severities. Without the `$nin` a Critical held to two days would
+also match its POD's seven-day catch-all, and the count would exceed the tile.
+
+#### What the copy is allowed to say
+
+"Critical and open past 7 days" was already approximate across PODs with
+different thresholds, and became wrong outright once Critical could be tuned on
+its own. So the board reports `criticalThresholdDays` — the one number every POD
+*with items* agrees on, or `null` when they disagree, at which point the tile
+says "past each POD's threshold" rather than naming a number it cannot stand
+behind. The POD roll-up sidesteps the question: each row carries its own
+`criticalThresholdDays`, because comparing PODs that disagree is what that table
+is for.
+
+A rule the store honours can still be dropped on the way to the numbers. It was:
+`getDashboard` copied the ageing rules into the aggregation field by field and
+the new map was missed, so the drawer filtered on the severity rule while the
+tile judged by the POD's. The rules are now forwarded whole.
 
 ## Drill-downs
 

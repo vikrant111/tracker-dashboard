@@ -14,7 +14,9 @@ import type { Team, User } from "@/lib/types";
 import { TIMING } from "@/lib/constants";
 import { MIN_PASSWORD, validateUser, validatePasswordReset } from "@/lib/validation";
 import { AddPersonForm } from "./add-person-form";
+import { PodAccess } from "./pod-access";
 import { useResetPassword } from "./use-reset-password";
+import { passwordActionLabel } from "@/lib/password-policy";
 
 export function UsersPanel({
   users,
@@ -97,7 +99,7 @@ export function UsersPanel({
     <Panel className="p-6">
       <PanelHeader eyebrow={`${users.length} with access`} title="Dashboard access" />
       <p className="-mt-3 mb-5 text-xs text-[var(--ink-muted)]">
-        Admins see every POD. Members see only the PODs ticked against their name. Leave the password blank for
+        Admins see every POD. For a member, click a POD to grant or revoke it — ticked means they can see it. Leave the password blank for
         single sign-on users — they are created on first sign-in.
       </p>
 
@@ -123,6 +125,16 @@ export function UsersPanel({
                   <td className="py-3">
                     <span className="block font-medium">{user.name}</span>
                     <span className="block text-xs text-[var(--ink-muted)]">{user.email}</span>
+                    {/*
+                      * Why this person cannot sign in, said on the row rather
+                      * than discovered when they try. An account created with
+                      * the password left blank looks exactly like a working one.
+                      */}
+                    {!user.hasPassword && (
+                      <span className="mt-1 inline-flex items-center gap-1 rounded-md border border-dashed border-[var(--hairline)] px-1.5 py-0.5 text-[11px] text-[var(--ink-muted)]">
+                        No password — cannot sign in yet
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 pl-4">
                     <select
@@ -138,48 +150,34 @@ export function UsersPanel({
                     {user.role === "admin" ? (
                       <span className="text-xs text-[var(--ink-muted)]">All PODs</span>
                     ) : (
-                      <div className="flex flex-wrap gap-1.5">
-                        {teams.map((team) => {
-                          const on = user.teamIds.includes(team.id);
-                          return (
-                            <button
-                              key={team.id}
-                              onClick={() =>
-                                save(
-                                  {
-                                    email: user.email,
-                                    teamIds: on
-                                      ? user.teamIds.filter((id) => id !== team.id)
-                                      : [...user.teamIds, team.id],
-                                  },
-                                  `${on ? "Removed" : "Granted"} ${team.name}.`,
-                                )
-                              }
-                              className={`rounded-md px-2 py-1 text-xs transition-colors ${
-                                on
-                                  ? "bg-[var(--accent-tint)] text-[var(--accent-ink)]"
-                                  : "bg-[var(--wash)] text-[var(--ink-muted)] hover:bg-[var(--wash-2)]"
-                              }`}
-                            >
-                              {team.name}
-                            </button>
-                          );
-                        })}
-                        {teams.length === 0 && (
-                          <span className="text-xs text-[var(--ink-muted)]">Create a POD first</span>
-                        )}
-                      </div>
+                      <PodAccess
+                        teams={teams}
+                        granted={user.teamIds}
+                        busy={busy}
+                        onToggle={(teamId, next) =>
+                          save(
+                            { email: user.email, teamIds: next },
+                            `${next.includes(teamId) ? "Granted" : "Revoked"} ${
+                              teams.find((t) => t.id === teamId)?.name ?? "POD"
+                            }.`,
+                          )
+                        }
+                        onAll={() =>
+                          save({ email: user.email, teamIds: teams.map((t) => t.id) }, "Granted every POD.")
+                        }
+                        onNone={() => save({ email: user.email, teamIds: [] }, "Revoked every POD.")}
+                      />
                     )}
                   </td>
                   <td className="py-3 text-right">
                     <span className="flex items-center justify-end gap-1">
-                      {user.hasPassword && (
+                      {(
                         <button
                           onClick={() => {
                             setResetting(resetting === user.email ? null : user.email);
                             setNewPassword("");
                           }}
-                          title={`Set a new password for ${user.email}`}
+                          title={`${passwordActionLabel(user.hasPassword)} for ${user.email}`}
                           aria-expanded={resetting === user.email}
                           className={`rounded-lg p-2 transition-colors ${
                             resetting === user.email

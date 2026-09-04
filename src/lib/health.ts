@@ -1,28 +1,22 @@
 /**
- * The board health score: **the share of tracked items that are closed**.
+ * Board health: the share of tracked items that are closed.
  *
  * ```
- * health = round(closed / total × 100)        closed = total − active
+ * health = round(closed × 100 / total)        closed = total − active
  * ```
  *
- * 138 closed of 244 reads 57%. That is the entire calculation, and it is the
- * point of it: a reader can check the number on the dial against the "106 of
- * 244" printed a few rows below on the same card and get the same answer.
+ * 138 closed of 244 reads 57%. That is the whole calculation, and that is the
+ * point: a reader can check the dial against the "106 of 244" printed a few
+ * rows below and get the same answer. It replaced a weighted heuristic that was
+ * more diagnostic and that nobody could verify.
  *
- * This replaced a weighted heuristic — full marks less capped penalties for
- * aged criticals, a stale average age and an open backlog. It was more
- * diagnostic and nobody could verify it. A score that has to be explained
- * before it can be trusted is not doing its job on a dashboard.
+ * It deliberately ignores age and severity. Three criticals open for a quarter
+ * score the same as three trivial items raised this morning, so the card shows
+ * *Critical aged* and *Average age* next to the ring: this number says how much
+ * is left, those two say how bad it has become.
  *
- * **What that trades away, deliberately: age and severity.** Three criticals
- * open for a quarter score exactly the same here as three trivial items opened
- * this morning. The card still shows *Critical aged* and *Average age* beside
- * the ring, because they are the numbers this one cannot see — the score says
- * how much is left, and those two say how bad what is left has become.
- *
- * Its own module rather than a private function in `metrics.ts` because that
- * file imports the OpenSearch client and so can never be loaded by the
- * pure-logic suite. Client-safe and pure.
+ * Its own module because `metrics.ts` pulls in the database client and so can
+ * never be loaded by the pure-logic suite. Client-safe and pure.
  */
 
 /** The numbers the score is computed from. */
@@ -35,26 +29,45 @@ const finite = (value: unknown, fallback = 0) =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
 /**
- * Share of tracked items that are closed, 0..1.
+ * The two counts, cleaned up. The one place clamping happens.
  *
- * An empty board is **1**, not `0/0`: nothing tracked means nothing
- * outstanding, so the score reads 100 rather than punishing a POD for having no
- * work yet.
+ * Clamped both ways before anything is subtracted: a half-written aggregation
+ * can report more open than tracked, or a negative count, and either makes
+ * `closed` nonsense and puts an impossible percentage on the dial.
+ *
+ * `null` means nothing to score. Callers decide what that renders as.
  */
-export function closedRatio(t: Partial<HealthTotals> | null | undefined): number {
+function counts(t: Partial<HealthTotals> | null | undefined): { total: number; closed: number } | null {
   const total = finite(t?.total);
-  if (total <= 0) return 1;
-  /*
-   * Clamped both ways before subtracting. A half-written aggregation can report
-   * more open than tracked, or a negative count; either would make `closed`
-   * nonsense — negative, or larger than the board — and put an impossible
-   * percentage on the dial.
-   */
+  if (total <= 0) return null;
+
   const active = Math.min(total, Math.max(0, finite(t?.active)));
-  return (total - active) / total;
+  return { total, closed: total - active };
 }
 
-/** The board score: the percentage of tracked items that are closed. */
-export function healthScore(t: Partial<HealthTotals> | null | undefined): number {
-  return Math.round(closedRatio(t) * 100);
+/** Share of tracked items that are closed, 0..1. An empty board is 1. */
+export function closedRatio(t: Partial<HealthTotals> | null | undefined): number {
+  const c = counts(t);
+  return c ? c.closed / c.total : 1;
+}
+
+/**
+ * The percentage closed, or null when there is nothing to score.
+ *
+ * Scaled before dividing, not `round(ratio × 100)`. The two disagree at exactly
+ * one half: 207 closed of 360 is 57.5%, but `(207 / 360) * 100` is
+ * `57.49999999999999` in floating point, so rounding gave 57 while anyone
+ * checking by hand got 58. On a score whose selling point is that you can check
+ * it by hand, that matters more than the size of the error suggests.
+ *
+ * Null rather than 100 for an empty board. It used to return 100 — nothing
+ * tracked, nothing outstanding — which is arguable for an empty POD and simply
+ * wrong under a filter. Reported from a real board: searching for somebody in
+ * another POD matched nothing, and the card answered with a green 100% over
+ * this POD's name. Zero items is not a score, so the card says "no items"
+ * instead of inventing a reading.
+ */
+export function healthScore(t: Partial<HealthTotals> | null | undefined): number | null {
+  const c = counts(t);
+  return c ? Math.round((c.closed * 100) / c.total) : null;
 }

@@ -90,7 +90,8 @@ nothing aggregates over them.
   azure: { orgUrl, project, pat, areaPath, workItemTypes[] },
   fieldMap: { severity, environment, status },   // Azure reference names
   valueMap: { severity: {}, environment: {}, status: {} },  // per-board overrides
-  ageingThresholdDays,   // default 7
+  ageingThresholdDays,   // legacy; pinned to 7 on save, folded into the map below
+  severityThresholdDays: { Critical?, Major?, Minor?, Unknown? },  // the POD's ageing rules
   createdAt,
 }
 ```
@@ -133,9 +134,83 @@ wherever needed:
 - **Item lists** — in JS in `listItems()`: closed items age from `createdDate` to
   `closedDate`, open items to now.
 
-"Aged" means older than the POD's `ageingThresholdDays` (default 7) **and** still
-open. The threshold is per-POD and reaches queries through
-`filtersFromRequest()`, which loads the team.
+"Aged" means older than the threshold that applies to this item **and** still
+open. Two levels: the POD's rule for that severity (`severityThresholdDays`),
+then the default of 7. `thresholdFor` in `lib/metrics/threshold.ts` is the only
+place that precedence is written, and everything asks it — see
+[metrics.md](metrics.md#aged-means-what-each-pod-says-it-means).
+
+A **missing key** in `severityThresholdDays` is the normal case and means
+"inherit the default". It is never pre-filled — four copies of 7 would be four
+overrides nobody set. The whole map reaches queries through
+`filtersFromRequest()`, which loads every visible team.
+
+`ageingThresholdDays` is retained but no longer a rule: `saveTeam` pins it to 7
+and folds any customised value into the severities that were inheriting it, so a
+POD onboarded before the severity row ages exactly as it did.
+
+## One schema, whichever driver is running
+
+The schemas in [`src/db/schemas/`](../src/db/schemas/) are Mongoose schemas, and
+they are the definition of every collection even when `DB_DRIVER=json` and there
+is no database anywhere.
+
+Mongoose does not need a connection to use a schema. `new Model(raw)` casts the
+values, fills in defaults and drops keys the schema does not declare;
+`validateSync()` checks the enums and the required fields. Both are ordinary
+in-process calls, so the file driver uses the same schemas MongoDB will.
+
+Every write on every driver goes through one function,
+[`toDocument`](../src/db/document.ts):
+
+```
+  items.bulkUpsert ─┐
+  teams.save        ├─→ toDocument(Model, raw, id) ─→ cast · defaults · validate
+  users.save        │                                         │
+  sync.save        ─┘                                         ├→ JSON file
+                                                              └→ MongoDB
+```
+
+So:
+
+| | file driver | MongoDB |
+|---|---|---|
+| `severity: "Blocker"` | refused | refused |
+| `priority: "3"` | stored as `3` | stored as `3` |
+| a key not in the schema | dropped | dropped |
+| a missing `createdDate` | refused | refused |
+| `tags` absent | defaults to `[]` | defaults to `[]` |
+
+That is what makes adding a real database a configuration change rather than a
+migration: the documents already in `DB_store/` are documents MongoDB accepts,
+because nothing else was ever allowed in.
+
+**Why not trust `bulkWrite`.** The Mongo driver could rely on Mongoose to
+validate on the way out, but how much of a schema `bulkWrite` applies has moved
+between Mongoose versions. Checking in one place first means the two drivers
+agree regardless of which version is installed.
+
+**Dates.** JSON has no date type, so date fields are stored as ISO strings and
+revived on read. Which fields those are is read off the schema
+(`dateFields(model)`), so adding a `Date` to a schema is all that is needed —
+there is no second list to keep in step.
+
+**Proving it.** `pnpm parity` writes one POD and one item through the configured
+driver and prints what came back:
+
+```bash
+DB_DRIVER=json    pnpm parity > /tmp/json.json
+DB_DRIVER=mongodb pnpm parity > /tmp/mongo.json
+diff /tmp/json.json /tmp/mongo.json      # must be empty
+```
+
+It currently is. That diff found a real difference the code review had not: the
+file driver was dropping `_id` from items while Mongo returned it, so the same
+item came back with different keys depending on the driver.
+
+**Adding a field.** Put it in the schema, put it in the type in `lib/types.ts`,
+and both drivers store it. Leave it out of the schema and neither will — the
+file driver drops it exactly as Mongo's `strict: true` would, which is the point.
 
 ## Vocabulary
 

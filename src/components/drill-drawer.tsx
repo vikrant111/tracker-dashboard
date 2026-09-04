@@ -5,7 +5,7 @@ import { ArrowUpRight, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import useSWR from "swr";
 import { SEVERITY_COLOR, ageTint } from "@/lib/palette";
-import { SWR_OPTIONS, fetcher } from "@/lib/swr";
+import { SWR_OPTIONS, failureReason, fetcher } from "@/lib/swr";
 import type { ListedItem } from "@/lib/metrics";
 import { DrillFilterBar, EMPTY_FILTERS, activeFilterCount, toQuery, type DrillFilters } from "./drill-filters";
 import { Empty } from "./ui";
@@ -65,11 +65,9 @@ export function DrillProvider({
 
   // Same policy as the dashboard: an open drawer must not sit on pre-sync data
   // while the tile behind it has already moved on.
-  const { data, isLoading } = useSWR<{ items?: ListedItem[]; total?: number; error?: string }>(
-    url,
-    fetcher,
-    SWR_OPTIONS,
-  );
+  const { data, error, isLoading } = useSWR<{ items?: ListedItem[]; total?: number; error?: string }>(url, fetcher, SWR_OPTIONS);
+  // A refusal and a request that never arrived are different failures.
+  const failed = failureReason(error, data);
 
   const items = data?.items ?? [];
   const total = data?.total ?? items.length;
@@ -125,8 +123,8 @@ export function DrillProvider({
               />
 
               <div className="flex-1 overflow-y-auto px-3 py-3">
-                {data?.error && <Empty title="Could not load items" hint={data.error} />}
-                {!isLoading && !data?.error && items.length === 0 && (
+                {failed && <Empty title="Could not load items" hint={failed} />}
+                {!isLoading && !failed && items.length === 0 && (
                   <Empty
                     title="Nothing matches"
                     hint={

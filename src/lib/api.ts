@@ -1,7 +1,7 @@
 import type { Filters } from "./metrics";
 import { HttpError, canSeeTeam, type SessionUser } from "./session";
 import { getTeam, listTeams } from "./teams";
-import { KINDS, clampThreshold, type Kind } from "./types";
+import { KINDS, clampSeverityThresholds, clampThreshold, type Kind } from "./types";
 import { LIMITS } from "./constants";
 
 /**
@@ -53,6 +53,7 @@ export async function filtersFromRequest(req: Request, user: SessionUser): Promi
   if (teamId && !team) throw new HttpError(404, "That POD no longer exists.");
 
   const kind = p.get("kind") as Kind;
+  const visible = await accessibleTeams(user);
 
   return {
     teamId: teamId || undefined,
@@ -72,6 +73,24 @@ export async function filtersFromRequest(req: Request, user: SessionUser): Promi
     // A team saved before validation existed could still hold a bad threshold,
     // so clamp on the way out too rather than trusting the stored value.
     thresholdDays: clampThreshold(team?.ageingThresholdDays),
+    /*
+     * Every POD's own threshold, so an unscoped board judges each item by the
+     * board it came from rather than by one default.
+     */
+    thresholdByTeam: Object.fromEntries(
+      visible.map((t) => [t.id, clampThreshold(t.ageingThresholdDays)]),
+    ),
+    /*
+     * And each POD's per-severity overrides, cleaned on the way out for the
+     * same reason as the threshold above: a POD saved before this field existed
+     * — or edited past the form — must not be able to put a NaN into date maths.
+     * PODs that tune nothing are dropped, so the common case stays an empty map.
+     */
+    severityThresholds: Object.fromEntries(
+      visible
+        .map((t) => [t.id, clampSeverityThresholds(t.severityThresholdDays)] as const)
+        .filter(([, map]) => Object.keys(map).length > 0),
+    ),
   };
 }
 

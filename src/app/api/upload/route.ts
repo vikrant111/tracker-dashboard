@@ -2,8 +2,8 @@ import { Readable } from "node:stream";
 import ExcelJS from "exceljs";
 import { fromRow, pickDataSheet } from "@/lib/normalize";
 import { bulkUpsertItems } from "@/controllers/items.controller";
-import { connectToDatabase } from "@/db/connect";
-import { canSeeTeam, errorResponse, requireUser } from "@/lib/session";
+import { getStore } from "@/db/store";
+import { canSeeTeam, errorResponse, requireAdmin } from "@/lib/session";
 import { getTeam } from "@/lib/teams";
 import type { Item } from "@/lib/types";
 import { UPLOAD } from "@/lib/constants";
@@ -18,7 +18,29 @@ import { fromWorkbook, isEmptyRow, isLinked, type Sheet } from "./sheets";
 
 export async function POST(req: Request) {
   try {
-    const user = await requireUser();
+    /*
+     * Admins only.
+     *
+     * An upload is not a read of somebody's own POD — it writes items into it,
+     * and a spreadsheet row overwrites whatever shares its id. That makes it a
+     * bulk edit of the board every member of that POD is measured by, from a
+     * file nobody else has seen. The POD check below still runs on top: being
+     * an admin says *may upload*, not *may upload anywhere*.
+     */
+    const user = await requireAdmin();
+    /*
+     * The content type first. `req.formData()` throws a TypeError on anything
+     * that is not a form, so a JSON body — which is what a mistaken caller or a
+     * probe sends — came back as a 500 quoting an internal message instead of a
+     * sentence saying what was wrong.
+     */
+    const contentType = req.headers.get("content-type") ?? "";
+    if (!/multipart\/form-data|application\/x-www-form-urlencoded/i.test(contentType)) {
+      return Response.json(
+        { error: "Upload the file as form data, not JSON. Use the Upload button on the dashboard." },
+        { status: 400 },
+      );
+    }
     const form = await req.formData();
     const file = form.get("file");
     const teamId = String(form.get("teamId") || "");
@@ -31,7 +53,7 @@ export async function POST(req: Request) {
     const team = await getTeam(teamId);
     if (!team) return Response.json({ error: "POD not found." }, { status: 404 });
 
-    await connectToDatabase();
+    await getStore().init();
 
     const bytes = await file.arrayBuffer();
 

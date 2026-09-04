@@ -4,6 +4,62 @@ One instance serves many PODs. Admins see all of them; members see only the PODs
 assigned to them. **The enforcement is server-side** — the POD picker in the UI
 is convenience, not a boundary.
 
+## Giving and taking away POD access
+
+**Admin → Dashboard access.** Each member's row lists every POD as a toggle:
+ticked means they can see it, a dashed outline with a `+` means they cannot.
+Clicking one grants or revokes immediately; **All** / **None** do the whole set.
+Admins see every POD and have no toggles, because there is nothing to choose.
+
+The state is carried by a tick and a border, not only a colour. It used to be a
+tint that shifted by a few percent between granted and not — the control worked
+perfectly and was reported as a missing feature, because it read as a static
+list of PODs the person happened to be on.
+
+Access is enforced server-side on every request by `filtersFromRequest`; the
+toggles only decide what is stored. A member with no PODs gets a 403, never an
+unscoped query.
+
+### Setting somebody's password
+
+The key icon on each row sets a password, and it is offered whether or not the
+account has one — **"Set a password"** when it has none, **"Reset password"**
+when it has. A row with no password also says so: *"No password — cannot sign in
+yet"*, because an account created with the field left blank otherwise looks
+exactly like a working one until somebody tries to use it.
+
+That gap was reported from a real instance: a member was added without a
+password, could not sign in, and there was no way to fix it. The control was
+hidden for accounts without a password, and the API refused to set one on them.
+Recreating the account was the only route left — and that drops their role and
+every POD they could see.
+
+**The SSO protection survives where it matters.** An account with no hash is
+either an SSO account or a blank one, and they are identical in storage. So the
+rule ([`password-policy.ts`](../src/lib/password-policy.ts)) turns on whether
+SSO is configured at all:
+
+| Account | SSO off | SSO on |
+|---|---|---|
+| has a password | reset allowed | reset allowed |
+| no password | **set allowed** — it cannot be an SSO account | refused: their password lives with the provider |
+
+Giving a genuine SSO account a local password creates a second way in — one that
+outlives them being disabled with the provider, which is the opposite of what
+the admin doing it expects.
+
+The **self-service** route is stricter and stays that way: changing your own
+password requires the current one, and an SSO user has none, so there is no
+ambiguity to resolve.
+
+### The instance always keeps an admin
+
+Demoting or deleting the **last** admin is refused with a 409. It is a one-way
+door: the moment it lands, every admin route answers "Admins only." — including
+the one that would put the role back — and the only way out is editing the store
+by hand. Make somebody else an admin first, and then the original is free to
+step down.
+
 ## Modes
 
 `AUTH_MODE` in `.env.local`, read at module load in [`src/auth.ts`](../src/auth.ts):
@@ -26,7 +82,22 @@ never constructed.
 - **admin** — onboards PODs, manages access, sees every POD and the cross-POD
   roll-up. Lands on the "All PODs" view.
 - **member** — sees only assigned PODs. Lands on their first one. `/admin`
-  redirects home.
+  redirects home. Reads and downloads their PODs; does **not** upload.
+
+### Uploading is an admin's right, on their own POD too
+
+`/api/upload` requires an admin, and the control is hidden rather than disabled
+for everyone else — a greyed-out button reads as "not yet" and sends a member
+hunting for the POD that enables it, when the answer is that this is not theirs
+to do.
+
+The gate is on the *act*, not the access. A spreadsheet row overwrites whatever
+item shares its id, so an upload is a bulk edit of the board every member of
+that POD is measured by, from a file nobody else has seen — a different thing
+from reading the POD they are on. The POD check still runs on top of the role
+check: being an admin means *may upload*, not *may upload anywhere*.
+
+Downloading stays open to members. Export reads what they can already see.
 
 Role and `teamIds` are re-read from MongoDB on **every JWT refresh**:
 
