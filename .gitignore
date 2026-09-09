@@ -4,10 +4,6 @@ node_modules
 next-env.d.ts
 *.tsbuildinfo
 
-# Local secrets. .env.example is the committed template; anything
-# .local carries real values — AUTH_SECRET, ADMIN_PASSWORD, the Azure PAT.
-.env.local
-.env*.local
 
 # pnpm
 .pnpm-store
