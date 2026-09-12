@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "cycles",
-  "updatedAt": "2026-09-12T13:59:52.634Z",
+  "updatedAt": "2026-09-12T15:58:16.418Z",
   "rows": [
     {
       "_id": "conzumex-3in1cms-2026-09-17",
@@ -27,13 +27,13 @@
       "releaseBranch": "release",
       "plannedFor": "2026-09-30",
       "scope": {
-        "frozen": false,
-        "changedAt": "2026-09-12T13:59:52.630Z",
+        "frozen": true,
+        "changedAt": "2026-09-12T15:58:16.417Z",
         "changedBy": "admin@example.com",
-        "reason": ""
+        "reason": "testing purpose"
       },
       "createdAt": "2026-09-09T14:43:49.927Z",
-      "updatedAt": "2026-09-12T13:59:52.630Z"
+      "updatedAt": "2026-09-12T15:58:16.417Z"
     }
   ]
 }

@@ -19,6 +19,7 @@
 export type EditorSubject = {
   role?: unknown;
   devopsEditor?: unknown;
+  canClearData?: unknown;
 } | null | undefined;
 
 /** May this person change a record that already exists? */
@@ -33,3 +34,27 @@ export const canEditRecords = (user: EditorSubject): boolean =>
  */
 export const refuseEdit = (): string =>
   "Only people an admin has made a DevOps editor can change a record after it is saved. Ask an admin to add you.";
+
+/**
+ * May this person **clear data by date**?
+ *
+ * A fourth right, kept apart from the other three for the same reason they are
+ * kept apart from each other: this one is the only irreversible act on either
+ * board. Editing a record fixes a date somebody typed wrong; clearing a period
+ * removes rows that are not coming back, and there is no backup anywhere in
+ * this app.
+ *
+ * So it is **not** implied by being a DevOps editor. Somebody trusted to
+ * correct a deploy date is not automatically somebody who should be able to
+ * delete a quarter, and folding the two together would hand out the second
+ * every time you meant the first.
+ *
+ * Admins always. Everybody else only when an admin has said so, one account at
+ * a time.
+ */
+export const canClearData = (user: EditorSubject): boolean =>
+  user?.role === "admin" || user?.canClearData === true;
+
+/** The sentence shown when they may not. Names who can grant it. */
+export const refuseClear = (): string =>
+  "Clearing data is limited to admins and the accounts they allow. Ask an admin to grant it.";

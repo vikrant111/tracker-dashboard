@@ -3,6 +3,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { anchorBox, placeTooltip, type Box } from "./tooltip-place";
 
 /**
  * A small label that appears beside whatever you point at.
@@ -47,27 +48,18 @@ export function Tooltip({
     if (!at) return;
 
     const place = () => {
-      const target = anchor.current?.getBoundingClientRect();
+      const target = measure();
       const self = bubble.current?.getBoundingClientRect();
       if (!target || !self) return;
 
-      const margin = 8;
-      const gap = 8;
       // `clientWidth`, not `innerWidth`: the scrollbar is not usable space.
-      const viewportW = document.documentElement.clientWidth;
-      const viewportH = document.documentElement.clientHeight;
-
-      // Above by default, below when the top of the screen is in the way.
-      const below = target.top - self.height - gap < margin;
-      const y = below ? target.bottom + gap : target.top - self.height - gap;
-
-      // Centred on the target, then pulled back inside either edge.
-      let x = target.left + target.width / 2 - self.width / 2;
-      x = Math.max(margin, Math.min(x, viewportW - self.width - margin));
+      const next = placeTooltip(target, self, {
+        width: document.documentElement.clientWidth,
+        height: document.documentElement.clientHeight,
+      });
 
       setAt((current) => {
         if (!current) return current;
-        const next = { x, y: Math.max(margin, Math.min(y, viewportH - self.height - margin)), below };
         // Only re-render on a real move, or this loops forever.
         const same = Math.abs(next.x - current.x) < 0.5 && Math.abs(next.y - current.y) < 0.5 && next.below === current.below;
         return same ? current : next;
@@ -94,9 +86,23 @@ export function Tooltip({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [at]);
 
+  /**
+   * The box to point at.
+   *
+   * The anchor is `display: contents`, so it has **no box of its own** and
+   * `getBoundingClientRect()` answers `0,0` on Chrome and Safari. Measuring the
+   * children is what puts the bubble beside the control rather than in the
+   * corner of the window. See `tooltip-place.ts`.
+   */
+  const measure = (): Box | null => {
+    const el = anchor.current;
+    if (!el) return null;
+    return anchorBox(el.getBoundingClientRect(), [...el.children].map((c) => c.getBoundingClientRect()));
+  };
+
   // Start at the anchor's own position; the layout effect corrects it before paint.
   const open = () => {
-    const rect = anchor.current?.getBoundingClientRect();
+    const rect = measure();
     if (rect) setAt({ x: rect.left, y: rect.top, below: false });
   };
   const close = () => setAt(null);

@@ -16,7 +16,7 @@ import { SWR_OPTIONS, failureReason, fetcher } from "@/lib/swr";
 import type { Repo } from "@/lib/devops/types";
 import { Button, Empty, Panel } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { TIMING } from "@/lib/constants";
+import { LAYOUT, TIMING } from "@/lib/constants";
 import { BoardSwitch } from "./board-switch";
 import { Toast } from "./toast";
 import { FreezeControl } from "./freeze-control";
@@ -33,6 +33,7 @@ export function DevOpsClient({
   teamNames,
   githubMode,
   canEdit,
+  canClearData,
 }: {
   userName: string;
   isAdmin: boolean;
@@ -42,6 +43,8 @@ export function DevOpsClient({
   githubMode: string;
   /** Whether this reader may change a DevOps record that already exists. */
   canEdit: boolean;
+  /** May clear data by date: an admin, or an account one has allowed. */
+  canClearData: boolean;
 }) {
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
@@ -88,14 +91,15 @@ export function DevOpsClient({
   };
 
   return (
-    /* Same width, same padding, same bar as the POD board. Somebody moving
-       between the two should not feel the page change shape under them. */
-    <div className="mx-auto max-w-[1400px] px-3 pb-24 sm:px-6">
+    /* Same width, same padding, same rhythm as the POD board. Somebody moving
+       between the two should not feel the page change shape under them — and
+       the container owns the gap, so no section carries its own margin. */
+    <div className={`${LAYOUT.boardWidth} ${LAYOUT.boardStack}`}>
       <motion.header
         initial={{ opacity: 0, y: -14 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-        className="glass sticky top-3 z-30 mb-4 flex flex-wrap items-center gap-2 px-3 py-2.5 shadow-[var(--glass-shadow)] sm:gap-3 sm:px-4 sm:py-3"
+        className="glass sticky top-3 z-30 flex flex-wrap items-center gap-2 px-3 py-2.5 shadow-[var(--glass-shadow)] sm:gap-3 sm:px-4 sm:py-3"
       >
         <span className="flex items-center gap-2.5">
           <span
@@ -177,7 +181,7 @@ export function DevOpsClient({
 
       {!failed && !isLoading && <Announcements repos={repos} isAdmin={isAdmin} />}
 
-      {!failed && !isLoading && isAdmin && repos.length > 0 && (
+      {!failed && !isLoading && canClearData && repos.length > 0 && (
         <PurgePanel known={[]} flash={flash} onDone={() => void mutate()} />
       )}
 

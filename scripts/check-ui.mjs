@@ -65,7 +65,7 @@ import { failureReason } from "../src/lib/swr.ts";
 import { cleanBranch, parseRepoUrl, repoId } from "../src/lib/devops/types.ts";
 import { cleanTeamIds, withTeamIds } from "../src/lib/devops/repos.ts";
 import { PAGE_SIZE, cleanQuery, matchesQuery, paginate, pullRowFields, scopeRowFields } from "../src/lib/devops/table.ts";
-import { canEditRecords, refuseEdit } from "../src/lib/devops/editors.ts";
+import { canClearData, canEditRecords, refuseClear, refuseEdit } from "../src/lib/devops/editors.ts";
 import { cycleForPull, missingSignoffs, refuseMoveToScope } from "../src/lib/devops/to-scope.ts";
 import { cleanSignoffFilter, matchesSignoff } from "../src/lib/devops/signoff.ts";
 import { DEVOPS_ENV_FILE, DEVOPS_MOTION, SIGNOFF_FILTERS } from "../src/lib/devops/constants.ts";
@@ -88,7 +88,10 @@ import { REPORT_COLUMNS, countRisky, inReportOrder, toReportRow } from "../src/l
 import { planMergedPulls } from "../src/lib/devops/github-plan.ts";
 import { isMerged, mergePull, toPullRecord } from "../src/lib/devops/pull-sync.ts";
 import { pullId, ticketFrom } from "../src/lib/devops/pull-record.ts";
-import { MAX_PERIOD_CHARS, cleanPeriod, cleanRange, cleanSpan, describePeriod, grainOf, inPeriod, periodsPresent, rangeToSpan } from "../src/lib/devops/period.ts";
+import { MAX_PERIOD_CHARS, cleanPeriod, cleanRange, cleanSpan, dayOf, describePeriod, grainOf, inPeriod, periodsPresent, rangeToSpan } from "../src/lib/devops/period.ts";
+import { DEVOPS_PURGE_TARGETS, POD_PURGE_TARGETS, PURGE_LABEL, PURGE_TARGETS as ALL_PURGE_TARGETS } from "../src/lib/devops/purge-targets.ts";
+import { LAYOUT } from "../src/lib/constants/layout.ts";
+import { TOOLTIP_GAP, TOOLTIP_MARGIN, anchorBox, placeTooltip, unionOf } from "../src/components/ui/tooltip-place.ts";
 import { MAX_YEAR, MIN_YEAR, clampYear, monthGrid, parseTyped, parseTypedSpan } from "../src/lib/devops/calendar.ts";
 import { closedRatio, healthScore } from "../src/lib/health.ts";
 import { LEGACY, numbersBundle, stringCell, zip } from "./lib/numbers-fixture.mjs";
@@ -2817,9 +2820,13 @@ section("tooltips explain the bars, and cannot be clipped");
   check("it is positioned fixed, not absolute", /className="pointer-events-none fixed/.test(ui));
   check("it never eats the pointer", /pointer-events-none/.test(ui));
 
-  // Off-screen is the same failure as clipped: the reader cannot read it.
-  check("it is pulled back inside the viewport", /Math\.max\(margin, Math\.min\(x, viewportW - self\.width - margin\)\)/.test(ui));
-  check("it flips below when the top is in the way", /const below = target\.top - self\.height - gap < margin/.test(ui));
+  /*
+   * Off-screen is the same failure as clipped: the reader cannot read it. The
+   * arithmetic moved into `tooltip-place.ts` so it could be run rather than
+   * pattern-matched — it is exercised with real numbers further down.
+   */
+  check("it delegates placement to the checked geometry", /placeTooltip\(target, self, \{/.test(ui));
+  check("...measuring the anchor through the same helper", /const target = measure\(\);/.test(ui));
   check("it measures before paint", /useLayoutEffect\(\(\) => \{\s*\n\s*if \(!at\) return;/.test(ui));
   check("the placement loop converges", /Only re-render on a real move/.test(ui));
 
@@ -5813,10 +5820,282 @@ section("aged means what each POD says it means");
   check("only real months are offered", present.join(",") === "2026-09,2026-01", present.join(","));
   check("...newest first", present[0] === "2026-09");
 
+  /* ---------------------------------------------------------------- */
+  /* One dev server, one build directory                                */
+  /* ---------------------------------------------------------------- */
+  /*
+   * Two `next dev` processes sharing one `.next` is not a conflict the
+   * framework notices: the second finds port 3000 taken, moves to 3001, and
+   * both write the same directory. Each then serves pages whose chunks the
+   * other has just replaced — `ChunkLoadError`, or the clientReferenceManifest
+   * invariant, on a page that worked a minute ago. It cost three sessions.
+   */
+  const suite = readFileSync(new URL("../scripts/test.mjs", import.meta.url), "utf8");
+  /* The suite's DEV SERVER, not just its build step. The build was isolated for
+     a long time while the dev server quietly wrote the developer's `.next`. */
+  check("the suite's dev server builds elsewhere", /DB_STORE_DIR: store, NEXT_DIST_DIR: "\.next-e2e"/.test(suite), "pnpm test corrupted the developer's .next");
+  check("...and its production build too", /NEXT_DIST_DIR: "\.next-check"/.test(suite));
+  check("...with a store of its own", /DB_STORE_DIR: store/.test(suite));
+
+  const guard = readFileSync(new URL("../scripts/dev-guard.mjs", import.meta.url), "utf8");
+  check("a second dev server is refused", /process\.exit\(1\)/.test(guard));
+  /* A directory of its own is the safe case — nothing to collide over. */
+  check("...unless it builds elsewhere", /NEXT_DIST_DIR\?\.trim\(\)/.test(guard));
+  check("...or is told to allow it", /DEV_ALLOW_MULTIPLE/.test(guard));
+  /* Naming the error is the point: it is the thing people search for. */
+  check("...naming the error it prevents", /ChunkLoadError/.test(guard), "the symptom and the cause stay unconnected");
+  const pkgScripts = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).scripts;
+  check("...and it runs automatically", pkgScripts.predev === "node scripts/dev-guard.mjs", "a guard nobody remembers to run");
+
+  /* ---------------------------------------------------------------- */
+  /* A tooltip sits beside the thing it describes                       */
+  /* ---------------------------------------------------------------- */
+  /*
+   * The anchor is `display: contents` — deliberately, because it must not add a
+   * wrapper that changes the layout of whatever it wraps. But an element with
+   * `display: contents` generates **no box**, and browsers disagree about what
+   * `getBoundingClientRect()` then returns: Chrome and Safari an empty rect at
+   * 0,0, Firefox the union of the children.
+   *
+   * So on Chrome and Safari every tooltip parked itself in the top-left corner
+   * of the window, nowhere near the control it described.
+   */
+  const zero = { left: 0, top: 0, width: 0, height: 0 };
+  const button = { left: 400, top: 300, width: 120, height: 32 };
+
+  check("an anchor with no box falls back to its children", anchorBox(zero, [button])?.left === 400, JSON.stringify(anchorBox(zero, [button])));
+  check("...and an anchor that has one keeps it", anchorBox(button, [zero])?.left === 400);
+  check("...with nothing to measure, nothing is claimed", anchorBox(zero, []) === null && anchorBox(null, [null, zero]) === null);
+
+  /* Several children — an icon and a label — cover the whole control. */
+  const spread = unionOf([{ left: 10, top: 20, width: 30, height: 10 }, { left: 50, top: 15, width: 20, height: 40 }]);
+  check("several children become one box", spread.left === 10 && spread.top === 15 && spread.width === 60 && spread.height === 40, JSON.stringify(spread));
+  check("...ignoring the ones with no size", unionOf([zero, button]).left === 400);
+
+  /* Placement: beside the control, by the gap and nothing more. */
+  const view = { width: 1280, height: 800 };
+  const bubble = { left: 0, top: 0, width: 160, height: 28 };
+
+  const above = placeTooltip(button, bubble, view);
+  check("the bubble sits just above the control", above.y === 300 - 28 - TOOLTIP_GAP, `${above.y}`);
+  check("...centred on it", above.x === 400 + 60 - 80, `${above.x}`);
+  check("...and no further than the gap", Math.abs(button.top - (above.y + bubble.height)) === TOOLTIP_GAP);
+
+  /* Flipped below when the top of the screen is in the way. */
+  const atTop = placeTooltip({ ...button, top: 4 }, bubble, view);
+  check("it flips below when there is no room above", atTop.below === true && atTop.y === 4 + 32 + TOOLTIP_GAP, `${atTop.y}`);
+
+  /* Pulled back inside the window rather than hanging off it. */
+  const offRight = placeTooltip({ ...button, left: 1250 }, bubble, view);
+  check("it is pulled back from the right edge", offRight.x === view.width - bubble.width - TOOLTIP_MARGIN, `${offRight.x}`);
+  const offLeft = placeTooltip({ ...button, left: -40 }, bubble, view);
+  check("...and from the left", offLeft.x === TOOLTIP_MARGIN, `${offLeft.x}`);
+
+  /* The regression itself: a zero-size anchor must never place the bubble in
+     the corner, because that is what the whole fix is for. */
+  const cornered = placeTooltip(anchorBox(zero, [button]), bubble, view);
+  check("a contents anchor no longer lands in the corner", cornered.x !== TOOLTIP_MARGIN || cornered.y !== TOOLTIP_MARGIN, JSON.stringify(cornered));
+
+  const tip = readFileSync(new URL("../src/components/ui/tooltip.tsx", import.meta.url), "utf8");
+  check("the tooltip measures its children", /anchorBox\(el\.getBoundingClientRect\(\), \[\.\.\.el\.children\]/.test(tip), "it would measure a box that does not exist");
+  check("...and both paths use the same measurement", (tip.match(/measure\(\)/g) ?? []).length >= 2, "opening and repositioning could disagree");
+
+  /* ---------------------------------------------------------------- */
+  /* Data at rest, on the JSON driver                                   */
+  /* ---------------------------------------------------------------- */
+  /*
+   * The JSON driver's risk is **not** the browser. The files live on the
+   * server, are not under `public/`, and nothing a reader can open reaches
+   * them. What is real is the filesystem and git, and both are quiet.
+   */
+  const files = readFileSync(new URL("../src/db/store/json-files.ts", import.meta.url), "utf8");
+  /* These hold password hashes, and tokens once anything is onboarded. The
+     default 0644 makes them world-readable on a shared host. */
+  check("the store is written owner-only", /const FILE_MODE = 0o600/.test(files), "password hashes readable by every account on the box");
+  check("...and the directory too", /const DIR_MODE = 0o700/.test(files));
+  /* Set at creation, not after: a file that is briefly 0644 is a file somebody
+     can read in that moment. */
+  check("...at creation, not afterwards", /mode: FILE_MODE \}\);\n    renameSync/.test(files), "a window where the file was world-readable");
+  /* `rename` carries the temp file's mode, so a file written before this
+     existed keeps its old one until it is corrected. */
+  check("...correcting files written before the rule", /restrict\(path\)/.test(files));
+  /* A filesystem without POSIX modes is not a reason to refuse to save. */
+  check("...without failing where modes do not exist", /chmodSync\(path, FILE_MODE\);\n  \} catch/.test(files));
+
+  /* No client component may reach the filesystem — that is what keeps the
+     store out of the browser's reach in the first place. */
+  const clientFiles = [];
+  const walkSrc = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = new URL(`${e.name}${e.isDirectory() ? "/" : ""}`, dir);
+      if (e.isDirectory()) walkSrc(full);
+      else if (/\.tsx?$/.test(e.name)) {
+        const text = readFileSync(full, "utf8");
+        if (/^"use client"/m.test(text) && /from "node:(fs|path)"|db\/store/.test(text)) clientFiles.push(e.name);
+      }
+    }
+  };
+  walkSrc(new URL("../src/", import.meta.url));
+  check("no client component reaches the store", clientFiles.length === 0, clientFiles.join(", "));
+
+  const preflight = readFileSync(new URL("../scripts/check-env.mjs", import.meta.url), "utf8");
+  check("the preflight reports store files in git", /Store files in git/.test(preflight), "committed password hashes go unnoticed");
+  check("...spotting a committed password hash", preflight.includes("passwordHash") && preflight.includes("2[aby]"), "a bcrypt hash in a tracked file would go unreported");
+  check("...and a committed token", /\(token\|pat\)/.test(preflight));
+  check("...and loose file permissions", /readable by other users/.test(preflight));
+
+  /* ---------------------------------------------------------------- */
+  /* Who may clear data: admins, plus the accounts they allow           */
+  /* ---------------------------------------------------------------- */
+  /*
+   * A fourth right, kept apart from the other three for the same reason they
+   * are kept apart from each other: this is the only irreversible act on either
+   * board. Somebody trusted to correct a deploy date is not automatically
+   * somebody who should be able to delete a quarter.
+   */
+  check("an admin may always clear", canClearData({ role: "admin" }) === true);
+  check("a granted account may", canClearData({ role: "member", canClearData: true }) === true);
+  check("a plain member may not", canClearData({ role: "member" }) === false);
+  check("...nor anonymous", canClearData(null) === false && canClearData(undefined) === false && canClearData({}) === false);
+  /* Not implied by any other capability. */
+  check("a DevOps editor does not get it for free", canClearData({ role: "member", devopsEditor: true }) === false, "the delete came with the correction");
+  check("...and clearing does not confer editing", canEditRecords({ role: "member", canClearData: true }) === false);
+  /* Only a real `true` — a truthy string from a JSON body must not grant it. */
+  check("only an exact true grants it", canClearData({ role: "member", canClearData: "yes" }) === false && canClearData({ role: "member", canClearData: 1 }) === false);
+  check("the refusal names who can grant it", /admin/i.test(refuseClear()), refuseClear());
+
+  /* Stored per account, and never revoked by an unrelated edit. */
+  const usersLib = readFileSync(new URL("../src/lib/users.ts", import.meta.url), "utf8");
+  check("the grant is stored per account", /canClearData: input\.canClearData === undefined \? Boolean\(existing\?\.canClearData\)/.test(usersLib), "renaming somebody would revoke it");
+  const userSchema = readFileSync(new URL("../src/db/schemas/user.schema.ts", import.meta.url), "utf8");
+  check("...and defaults to off", /canClearData: \{ type: Boolean, default: false \}/.test(userSchema));
+
+  /* One grant list, rendered per capability, so both behave identically. */
+  const grants = readFileSync(new URL("../src/app/admin/panels/editors-section.tsx", import.meta.url), "utf8");
+  check("granting sends only the field it changes", /\[field\]: on/.test(grants), "granting one capability revoked another");
+  const clearers = readFileSync(new URL("../src/app/admin/panels/clearers-section.tsx", import.meta.url), "utf8");
+  check("POD admin can grant it", /field="canClearData"/.test(clearers));
+  check("...saying it cannot be undone", /cannot be undone/.test(clearers));
+
+  const devopsBoard = readFileSync(new URL("../src/components/devops/devops-client.tsx", import.meta.url), "utf8");
+  check("the DevOps board hides it from those who may not", /canClearData && repos\.length > 0/.test(devopsBoard), "a member could see the clear control");
+
+  /* ---------------------------------------------------------------- */
+  /* One rhythm: the container owns the gap, a section owns none        */
+  /* ---------------------------------------------------------------- */
+  /*
+   * These drifted badly. The POD dashboard put `mb-6` under its bar, `mt-10`
+   * above an empty state and `mt-6` above its footer; the DevOps board used
+   * `mb-4` and then nothing at all, every panel flat against the next. Six
+   * gaps for one idea, and each new section picked whichever its neighbour
+   * happened to use — which is how a panel ends up flush against the one above.
+   */
+  check("the rhythm is a constant", /gap-\d/.test(LAYOUT.boardStack) && /flex flex-col/.test(LAYOUT.boardStack), LAYOUT.boardStack);
+
+  const boards = {
+    "dashboard-client.tsx": readFileSync(new URL("../src/components/dashboard-client.tsx", import.meta.url), "utf8"),
+    "devops-client.tsx": readFileSync(new URL("../src/components/devops/devops-client.tsx", import.meta.url), "utf8"),
+  };
+
+  for (const [name, src] of Object.entries(boards)) {
+    check(`${name} stacks with the shared rhythm`, /\$\{LAYOUT\.boardStack\}/.test(src), "its own idea of the gap");
+    check(`${name} shares the shared width`, /\$\{LAYOUT\.boardWidth\}/.test(src), "the page changes shape between boards");
+    /* A section with its own vertical margin is a section that disagrees with
+       its neighbours the moment one of them changes. */
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    const strays = [...code.matchAll(/\b(m[tby]-\d+)\b/g)].map((m) => m[1]);
+    check(`${name} leaves the gap to the container`, strays.length === 0, strays.join(", "));
+  }
+
+  /* The bar and the footer spaced themselves too, from the other side. */
+  for (const f of ["topbar.tsx", "footer.tsx"]) {
+    const src = readFileSync(new URL(`../src/components/${f}`, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+    const root = src.slice(0, src.indexOf("\n", src.indexOf("className=")) + 1);
+    check(`${f} does not space itself from the board`, !/\bm[tb]-\d+\b/.test(root), root.trim().slice(0, 90));
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Clearing by date, on BOTH boards                                   */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * The two boards store dates differently and both end up in `inPeriod`. A
+   * DevOps row keeps `YYYY-MM-DD`; a work item keeps a real `Date`, because the
+   * ageing arithmetic needs one. `String(value).slice(0, 10)` reads the second
+   * as "Sat Sep 1" — which matches nothing, silently, and would have made the
+   * POD purge quietly delete less than it said.
+   */
+  check("a Date becomes a day", dayOf(new Date("2026-09-15T10:00:00Z")) === "2026-09-15");
+  check("...and so does an ISO string", dayOf("2026-09-15T10:00:00.000Z") === "2026-09-15");
+  check("...and a plain day is itself", dayOf("2026-09-15") === "2026-09-15");
+  check("an invalid Date is nothing", dayOf(new Date("nope")) === "");
+  check("...as is a non-date", dayOf("Sat Sep 1 2026") === "" && dayOf("") === "" && dayOf(null) === "" && dayOf(undefined) === "");
+  check("...and a corrupt one is not salvaged", dayOf("2026x-09-04") === "", "a date with an x in it is not a date");
+  /* The whole point: a work item's real Date now matches a period. */
+  check("a work item's Date matches its month", inPeriod(new Date("2026-09-15T10:00:00Z"), "2026-09"));
+  check("...and its range", inPeriod(new Date("2026-09-15T10:00:00Z"), "2026-09-01..2026-09-30"));
+  check("...but not a neighbouring one", !inPeriod(new Date("2026-10-01T10:00:00Z"), "2026-09"));
+
+  /*
+   * Grouped by board so neither screen can offer the other's data. A POD admin
+   * clearing a quarter of work items has no business deleting release
+   * announcements from the same dialog, and the reverse is worse.
+   */
+  check("the POD board clears only work items", POD_PURGE_TARGETS.join(",") === "items");
+  check("the DevOps board clears only its own", DEVOPS_PURGE_TARGETS.join(",") === "deployments,pulls,announcements");
+  check("...and the two groups do not overlap", !POD_PURGE_TARGETS.some((t) => DEVOPS_PURGE_TARGETS.includes(t)));
+  check("the API knows about every one of them", ALL_PURGE_TARGETS.length === POD_PURGE_TARGETS.length + DEVOPS_PURGE_TARGETS.length);
+  check("every target has a name a person can read", ALL_PURGE_TARGETS.every((t) => typeof PURGE_LABEL[t] === "string" && PURGE_LABEL[t].length > 0));
+
+  const purgeLib = readFileSync(new URL("../src/lib/devops/purge.ts", import.meta.url), "utf8");
+  /* Through the Store, so `DB_DRIVER=mongodb` needs no second implementation
+     and files and a database cannot disagree about what a period holds. */
+  check("the purge goes through the store", /getStore\(\)/.test(purgeLib) && !/DB_store|readFileSync/.test(purgeLib), "a driver-specific delete");
+  check("work items are cleared by the day they were raised", /inPeriod\(dayOf\(item\.createdDate\), clean\)/.test(purgeLib));
+  check("...scoped to one POD when asked", /scope\.teamId && item\.teamId !== scope\.teamId/.test(purgeLib));
+  /* Counting must never be the thing that deletes. */
+  check("counting is read-only", !/deleteById|\.remove\(/.test(purgeLib.slice(purgeLib.indexOf("countInPeriod"), purgeLib.indexOf("purgePeriod"))), "the count deleted something");
+
+  const podPanel = readFileSync(new URL("../src/components/pod-purge.tsx", import.meta.url), "utf8");
+  check("the POD board offers only work items", /targets=\{POD_PURGE_TARGETS\}/.test(podPanel), "it could delete announcements");
+  check("...with its own POD picker", /aria-label="Which POD to clear"/.test(podPanel), "the delete's scope was inherited from a filter");
+  /* Deliberately not seeded from the board's filter: deleting is not filtering,
+     and a delete's scope has to be stated rather than inherited. */
+  check("...not seeded from the board's filter", /useState\(""\)/.test(podPanel));
+  check("...offering every POD", /<option value="">Every POD<\/option>/.test(podPanel));
+  check("...and saying so in the title", /every POD/.test(podPanel), "a clear-everything with no warning in the title");
+
+  const dash = readFileSync(new URL("../src/components/dashboard-client.tsx", import.meta.url), "utf8");
+  check("the POD board shows it only to those who may", /canClearData && <PodPurgePanel/.test(dash), "a member could see the clear control");
+
+
+  const shared = readFileSync(new URL("../src/components/devops/purge-panel.tsx", import.meta.url), "utf8");
+  /* A stale selection must not reach past the screen that made it. */
+  check("the panel sends only what it may clear", /chosen\.filter\(\(t\) => targets\.includes\(t\)\)/.test(shared), "a stale selection reached another board's data");
+  check("...and shows only what it may clear", /counted\.filter\(\(c\) => targets\.includes\(c\.target\)\)/.test(shared));
+  check("...carrying the scope on both requests", /query\.set\("teamId", scope\.teamId\)/.test(shared) && /teamId: scope\.teamId/.test(shared));
+  /*
+   * A count belongs to the scope it was taken for. Changing the POD while a
+   * count is on screen — worse, while the delete is armed — would show one
+   * team's number above a button that removes another's.
+   */
+  check("changing the scope drops the count", /\}, \[scopeKey\]\)/.test(shared) && /setArmed\(false\);\n  \}, \[scopeKey\]/.test(shared), "a count for one POD, armed against another");
+
   // -- what the purge route will and will not do -------------------------
   const purge = readFileSync(new URL("../src/app/api/devops/purge/route.ts", import.meta.url), "utf8");
   check("counting and deleting are different handlers", /export async function GET/.test(purge) && /export async function POST/.test(purge));
-  check("both are admin-only", (purge.match(/await requireAdmin\(\)/g) ?? []).length === 2);
+  /*
+   * Admins, plus any account an admin has granted it. **Counting is gated
+   * exactly as deleting is**: a count is a row census of somebody else's data,
+   * and leaving it open would let a member ask how many work items a POD has by
+   * walking the calendar.
+   */
+  check("both handlers are gated", (purge.match(/await requireClearer\(\)/g) ?? []).length === 2, "counting was left open");
+  check("...on the capability, not the role alone", /canClearData\(\{ role: user\.role, canClearData: account\?\.canClearData \}\)/.test(purge));
+  /* From the stored account, not the session: a revocation must take effect on
+     the next request, not the next sign-in. */
+  check("...read from the stored account", /await getUser\(user\.email\)/.test(purge));
+  check("...refusing with a sentence that names who can grant it", /refuseClear\(\)/.test(purge));
   /* The caller has to name what it clears; defaulting to everything would turn
      a malformed request into the most destructive one available. */
   check("a request with no targets clears nothing", /Array\.isArray\(asked\) \? asked : \[\]/.test(purge));
@@ -5827,7 +6106,7 @@ section("aged means what each POD says it means");
   check("a bad period is refused before anything is read", /Pick a year, a month, a day or a date range to clear/.test(lib));
 
   const panel = readFileSync(new URL("../src/components/devops/purge-panel.tsx", import.meta.url), "utf8");
-  check("the panel counts before it deletes", /\/api\/devops\/purge\?period=/.test(panel));
+  check("the panel counts before it deletes", /fetch\(`\/api\/devops\/purge\?\$\{query/.test(panel), "the count and the delete must be different requests");
   check("...and asks twice", /armed \? purge\(\) : setArmed\(true\)/.test(panel));
   check("...saying there is no undo", /cannot be undone/.test(panel));
 

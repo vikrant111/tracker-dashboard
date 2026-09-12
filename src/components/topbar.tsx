@@ -76,7 +76,7 @@ export function Topbar({
      * carries a blurred, bottom-fading backdrop that covers that gap, so
      * everything passes cleanly underneath.
      */
-    <div className="sticky top-0 z-30 -mx-4 mb-6 px-4 pt-3 pb-3 sm:-mx-6 sm:px-6">
+    <div className="sticky top-0 z-30 -mx-4 px-4 pt-3 pb-3 sm:-mx-6 sm:px-6">
       {/*
        * Bleeds past the gutters on purpose. At `inset-0` this backdrop
        * stopped at the container's max width, so on any screen wider than

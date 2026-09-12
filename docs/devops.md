@@ -90,23 +90,47 @@ freeze something disposable first and read the plan the control shows you.
 
 ## Who can change what
 
-Three rights, kept apart on purpose:
+Four rights, kept apart on purpose:
 
 | | who |
 |---|---|
 | Read the board | everyone signed in |
 | **Add** a scope row | everyone — the person who shipped a change knows what it was, and a sheet only some people can fill is a sheet nobody fills |
 | **Change** a saved row, or correct a PR record | admins, plus people an admin has made a **DevOps editor** |
-| Freeze scope, remove rows, sync PRs, clear a period | admins |
+| **Clear data by date** | admins, plus people an admin has allowed — see below |
+| Freeze scope, remove rows, sync PRs | admins |
 
 Recording a **sign-off** is deliberately not gated: that is somebody putting
 their own name to something, which carries its own accountability.
 
-Grant it in **Admin → DevOps admin → Who can edit records**. Admins always
-count, so it is never granted to them, and the capability is read from the
-stored account on each request — granting or revoking takes effect immediately
-rather than at the person's next sign-in. An unrelated edit, like a rename or a
-password reset, leaves it alone.
+Grant the editor right in **Admin → DevOps admin → Who can edit records**.
+Admins always count, so it is never granted to them, and the capability is read
+from the stored account on each request — granting or revoking takes effect
+immediately rather than at the person's next sign-in. An unrelated edit, like a
+rename or a password reset, leaves it alone.
+
+### Clearing data is its own right
+
+**Admin → Who can clear data** (`clearers-section`), in POD admin rather than
+DevOps admin, because the capability covers both boards.
+
+It is deliberately **not implied by any other right**, and nothing else implies
+it. Clearing a period is the only irreversible act on either board: editing a
+record fixes a date somebody typed wrong, while a cleared quarter is not coming
+back and there is no backup anywhere in this app. Somebody trusted to correct a
+deploy date is not automatically somebody who should be able to delete a
+quarter, and folding the two together would hand out the second every time you
+meant the first. A DevOps editor gets nothing here; a clearer gets no editing.
+
+Both grant lists are the same component (`editors-section`) rendered once per
+capability, so they behave identically and neither can grow its own idea of what
+granting looks like. Granting sends **only the field it changes**, so one
+capability can never revoke another.
+
+The panel is hidden from anyone without the right — but hiding a control is not
+a permission, so **the API is gated too**, and *counting is gated exactly as
+deleting is*. A count is a row census of somebody else's data; leaving it open
+would let a member ask how many work items a POD holds by walking the calendar.
 
 ## Deployment cycles and the scope sheet
 

@@ -1038,6 +1038,26 @@ to hit directly than to fight a library's defaults, and the bundle stays small.
 - Empty buckets are rendered, not skipped — a line that jumps a gap
   misrepresents the shape.
 
+## Tooltips sit beside what they describe
+
+The anchor is `display: contents`, deliberately: it must not introduce a wrapper
+that changes the layout of whatever it wraps. But an element with
+`display: contents` **generates no box**, and browsers disagree about what
+`getBoundingClientRect()` then returns — Chrome and Safari an empty rect at
+`0,0`, Firefox the union of the children.
+
+So on Chrome and Safari every tooltip parked itself in the top-left corner of
+the window, nowhere near the control it described. The anchor's **children** are
+measured when it has no box of its own, which is what Firefox was already doing,
+made explicit and made the same everywhere.
+
+The arithmetic lives in `tooltip-place.ts` rather than in the component, because
+Node's type stripping cannot load a `.tsx` — geometry inside one is geometry no
+check can reach, and placement is exactly the kind of thing that is wrong in a
+way nobody notices until they see it on the wrong screen. It is exercised with
+real numbers: above by `TOOLTIP_GAP` and no further, centred, flipped below when
+the top of the screen is in the way, and pulled back inside either edge.
+
 ## Motion
 
 framer-motion. The rule is that motion should explain, then get out of the way.

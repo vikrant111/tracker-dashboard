@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "pulls",
-  "updatedAt": "2026-09-10T08:55:56.149Z",
+  "updatedAt": "2026-09-12T15:59:16.948Z",
   "rows": [
     {
       "_id": "conzumex-3in1cms-812",
@@ -68,7 +68,7 @@
         },
         "biz": {
           "by": "admin@example.com",
-          "at": "2026-09-10T08:55:49.584Z"
+          "at": "2026-09-12T15:56:34.959Z"
         }
       },
       "movedToScope": true,
@@ -100,20 +100,20 @@
           "by": "admin@example.com",
           "at": "2026-09-09T20:38:10.331Z"
         },
-        "biz": {
-          "by": "admin@example.com",
-          "at": "2026-09-10T08:55:51.833Z"
-        },
         "qa": {
           "by": "admin@example.com",
           "at": "2026-09-10T08:55:56.149Z"
+        },
+        "biz": {
+          "by": "admin@example.com",
+          "at": "2026-09-12T15:56:35.898Z"
         }
       },
       "movedToScope": false,
       "returned": {
-        "at": "",
-        "by": "",
-        "remarks": ""
+        "at": "2026-09-12T15:59:16.947Z",
+        "by": "admin@example.com",
+        "remarks": "testing complete"
       },
       "syncedAt": "2026-09-09T15:20:29.294Z"
     }

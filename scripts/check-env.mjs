@@ -9,6 +9,7 @@
  *
  * It never changes anything. Everything it suggests, you run yourself.
  */
+import { execSync } from "node:child_process";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -297,6 +298,81 @@ section("Configuration");
     "Azure credentials",
     azure ? "set" : "not set — spreadsheet upload and `pnpm seed` still work",
   );
+}
+
+section("Data at rest");
+{
+  /*
+   * The JSON driver's risk is **not** the browser. The files live on the
+   * server, are not under `public/`, and no client component can reach the
+   * filesystem — a reader with devtools open cannot see or change them.
+   *
+   * The risks that are real are git and file permissions, and both are quiet.
+   */
+  const driver = (env.DB_DRIVER ?? "").trim().toLowerCase() || "json";
+  report("ok", `DB_DRIVER = ${driver}`, driver === "json" ? "files under DB_store/" : "");
+
+  if (driver === "json") {
+    const dir = (env.DB_STORE_DIR ?? "").trim() || join(ROOT, "DB_store");
+    const inRepo = !env.DB_STORE_DIR?.trim();
+
+    /* Anything under the project is a candidate for `git add .`. */
+    let tracked = [];
+    try {
+      tracked = execSync("git ls-files DB_store/", { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+        .split("\n").filter(Boolean);
+    } catch {
+      /* not a git checkout, or no git — then there is nothing to leak this way */
+    }
+
+    /* Does what is tracked actually carry a secret? */
+    const secrets = [];
+    for (const file of tracked) {
+      let text = "";
+      try { text = readFileSync(join(ROOT, file), "utf8"); } catch { continue; }
+      if (/"passwordHash"\s*:\s*"\$2[aby]\$/.test(text)) secrets.push(`${file} (password hashes)`);
+      if (/"(token|pat)"\s*:\s*"[^"]{8,}"/.test(text)) secrets.push(`${file} (an access token)`);
+    }
+
+    report(
+      secrets.length ? "bad" : tracked.length ? "warn" : "ok",
+      "Store files in git",
+      secrets.length ? secrets.join(", ") : tracked.length ? `${tracked.length} tracked — demo data only` : "not tracked",
+      secrets.length
+        ? `Those are committed, so anyone with repository access has them — including in the history.
+         Before real data goes in:
+           1. git rm --cached DB_store/*.json
+           2. echo 'DB_store/' >> .gitignore
+           3. set DB_STORE_DIR to a path OUTSIDE the repository
+           4. rotate anything that was committed — a hash in git is a hash somebody can attack offline`
+        : null,
+    );
+
+    report(
+      inRepo ? "warn" : "ok",
+      "DB_STORE_DIR",
+      inRepo ? "unset — the store is inside the repository" : dir,
+      "For a real deployment set DB_STORE_DIR to a path outside the checkout, so a deploy cannot overwrite it and `git add .` cannot capture it.",
+    );
+
+    /* Password hashes and tokens deserve the protection an SSH key gets. */
+    let loose = [];
+    try {
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith(".json")) continue;
+        const mode = statSync(join(dir, f)).mode & 0o077;
+        if (mode !== 0) loose.push(f);
+      }
+    } catch {
+      /* no store yet — the first write creates it correctly */
+    }
+    report(
+      loose.length ? "warn" : "ok",
+      "File permissions",
+      loose.length ? `${loose.length} readable by other users on this machine` : "0600 — owner only",
+      "New writes are 0600 and existing files are corrected on their next write. To fix them now:  chmod 600 DB_store/*.json",
+    );
+  }
 }
 
 section("DevOps board");

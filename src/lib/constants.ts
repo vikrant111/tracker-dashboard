@@ -17,6 +17,7 @@
  */
 export { LIMITS, PAGE } from "./constants/storage.ts";
 export { TIMING } from "./constants/timing.ts";
+export { LAYOUT } from "./constants/layout.ts";
 export { SESSION, LOGIN } from "./constants/auth.ts";
 export { AZURE, AGEING } from "./constants/board.ts";
 export { SCENE } from "./constants/scene.ts";

@@ -1,46 +1,65 @@
 "use client";
 
 /**
- * Clearing a period, to free space.
+ * Clearing a period, to free space. Used by both boards.
  *
  * The most destructive control in the app, and there is no undo anywhere in it.
  * So: **it counts before it deletes**. Pick a period, see exactly how many rows
- * of each kind would go, choose which kinds, and only then confirm.
+ * of each kind would go, choose which kinds, and only then confirm. The count
+ * is a separate request to a separate handler — asking how much there is must
+ * never be the thing that removes it.
  *
- * The count is a separate request to a separate handler. Asking how much there
- * is must never be the thing that removes it.
+ * Each board passes its own `targets`, so neither can offer the other's data.
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { Trash2, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { describePeriod } from "@/lib/devops/period";
-import { PURGE_TARGETS, type PurgeTarget } from "@/lib/devops/purge-targets";
-import { Button, Panel, PanelHeader, Tooltip } from "@/components/ui";
+import { DEVOPS_PURGE_TARGETS, type PurgeTarget } from "@/lib/devops/purge-targets";
+import { Button, Panel, PanelHeader } from "@/components/ui";
 import { PeriodPicker } from "./period-picker";
-
-const WHAT: Record<PurgeTarget, string> = {
-  deployments: "Scope sheet rows",
-  pulls: "Pull request records",
-  announcements: "Announcements",
-};
+import { PurgeChips } from "./purge-chips";
 
 export function PurgePanel({
   known,
+  targets = DEVOPS_PURGE_TARGETS,
+  scope,
+  scopeControl,
+  title = "Clear a period",
   flash,
   onDone,
 }: {
   /** Dates that hold rows, so the calendar marks where the data is. */
   known: (string | undefined)[];
+  /** What this screen may clear. */
+  targets?: readonly PurgeTarget[];
+  /** Narrows it to one repository or one POD. Absent means every row. */
+  scope?: { repoId?: string; teamId?: string };
+  /** A control for choosing that scope, shown beside the date picker. */
+  scopeControl?: ReactNode;
+  title?: string;
   flash: (text: string, tone?: "ok" | "bad") => void;
   onDone: () => void;
 }) {
   const [period, setPeriod] = useState("");
   const [counts, setCounts] = useState<{ target: PurgeTarget; rows: number }[] | null>(null);
-  const [chosen, setChosen] = useState<PurgeTarget[]>([...PURGE_TARGETS]);
+  const [chosen, setChosen] = useState<PurgeTarget[]>([...targets]);
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
 
   const total = (counts ?? []).filter((c) => chosen.includes(c.target)).reduce((n, c) => n + c.rows, 0);
+
+  /*
+   * A count belongs to the scope it was taken for. Changing the POD while a
+   * count is on screen — worse, while the delete is armed — would show one
+   * team's number above a button that removes another's. So the count is
+   * dropped and the arming released the moment the scope moves.
+   */
+  const scopeKey = `${scope?.repoId ?? ""}|${scope?.teamId ?? ""}`;
+  useEffect(() => {
+    setCounts(null);
+    setArmed(false);
+  }, [scopeKey]);
 
   const look = async (next: string) => {
     setPeriod(next);
@@ -50,10 +69,16 @@ export function PurgePanel({
 
     setBusy(true);
     try {
-      const res = await fetch(`/api/devops/purge?period=${encodeURIComponent(next)}`);
+      const query = new URLSearchParams({ period: next });
+      if (scope?.repoId) query.set("repoId", scope.repoId);
+      if (scope?.teamId) query.set("teamId", scope.teamId);
+
+      const res = await fetch(`/api/devops/purge?${query.toString()}`);
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || "Could not count that period.");
-      setCounts(body.counts ?? []);
+      /* Only what this screen owns; the route counts everything. */
+      const counted = (body.counts ?? []) as { target: PurgeTarget; rows: number }[];
+      setCounts(counted.filter((c) => targets.includes(c.target)));
     } catch (err) {
       flash(err instanceof Error ? err.message : "Could not count that period.", "bad");
     } finally {
@@ -67,7 +92,13 @@ export function PurgePanel({
       const res = await fetch("/api/devops/purge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ period, targets: chosen }),
+        /* Intersected, so a stale selection cannot reach past this screen. */
+        body: JSON.stringify({
+          period,
+          targets: chosen.filter((t) => targets.includes(t)),
+          ...(scope?.repoId ? { repoId: scope.repoId } : {}),
+          ...(scope?.teamId ? { teamId: scope.teamId } : {}),
+        }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || "Could not clear that period.");
@@ -88,14 +119,20 @@ export function PurgePanel({
     <Panel className="p-4 sm:p-6" delay={0.2}>
       <PanelHeader
         eyebrow="Housekeeping"
-        title="Clear a period"
+        title={title}
         icon={<Trash2 size={16} strokeWidth={2.2} />}
-        action={<PeriodPicker value={period} onChange={look} known={known} label="Pick a period" />}
+        action={
+          <span className="flex flex-wrap items-center gap-2">
+            {scopeControl}
+            <PeriodPicker value={period} onChange={look} known={known} label="Pick a period" />
+          </span>
+        }
       />
 
       {!period ? (
         <p className="text-xs text-[var(--ink-muted)]">
-          Pick a year, a month or a day. Nothing is removed until you see the count and confirm it.
+          Pick a year, a month, a day, or a <strong>from/to range</strong>. Nothing is removed
+          until you see the count and confirm it.
         </p>
       ) : (
         <AnimatePresence mode="wait">
@@ -112,31 +149,14 @@ export function PurgePanel({
               {busy && <span className="text-[var(--ink-muted)]"> — counting…</span>}
             </p>
 
-            <div className="flex flex-wrap gap-2">
-              {(counts ?? []).map(({ target, rows }) => {
-                const on = chosen.includes(target);
-                return (
-                  <Tooltip key={target} label={rows === 0 ? "Nothing here for this period." : `${rows} will be removed.`}>
-                    <button
-                      type="button"
-                      aria-pressed={on}
-                      disabled={rows === 0}
-                      onClick={() => {
-                        setArmed(false);
-                        setChosen((c) => (on ? c.filter((t) => t !== target) : [...c, target]));
-                      }}
-                      className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-40 ${
-                        on && rows > 0
-                          ? "border-[var(--accent-line)] bg-[var(--accent-tint)] text-[var(--accent-ink)]"
-                          : "border-dashed border-[var(--hairline)] text-[var(--ink-muted)]"
-                      }`}
-                    >
-                      {WHAT[target]} · {rows}
-                    </button>
-                  </Tooltip>
-                );
-              })}
-            </div>
+            <PurgeChips
+              counts={counts ?? []}
+              chosen={chosen}
+              onToggle={(target) => {
+                setArmed(false);
+                setChosen((c) => (c.includes(target) ? c.filter((t) => t !== target) : [...c, target]));
+              }}
+            />
 
             {counts && total > 0 && (
               <span className="flex flex-wrap items-center gap-2">

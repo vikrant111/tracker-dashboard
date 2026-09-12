@@ -113,6 +113,8 @@ export type User = {
    * Admins always count, so this never has to be granted to them.
    */
   devopsEditor?: boolean;
+  /** May clear data by date. Irreversible, so granted on its own. */
+  canClearData?: boolean;
   createdAt: string;
   /**
    * When the password last changed, ISO.

@@ -125,11 +125,22 @@ async function startServer(port) {
   // the parent alone leaves that worker holding port 3000 — after which the
   // next run silently reuses a server running last run's code, and a `pnpm
   // build` against it corrupts `.next`.
+  /*
+   * A build directory of its own, and this is not optional.
+   *
+   * Without `NEXT_DIST_DIR` this server wrote `.next` — the very directory a
+   * developer's own `pnpm dev` is reading. Two servers then serve pages whose
+   * chunks the other has just replaced, and the browser fails with
+   * `ChunkLoadError` or `Expected clientReferenceManifest to be defined` on a
+   * page that worked a minute earlier. It reads as a framework bug and is not
+   * one; it cost this project three debugging sessions before anybody looked
+   * here. The store was already isolated; the build directory was not.
+   */
   devServer = spawn("node_modules/.bin/next", ["dev", "-p", String(port)], {
     cwd: ROOT,
     stdio: ["ignore", fd, fd],
     detached: true,
-    env: { ...process.env, DB_STORE_DIR: store },
+    env: { ...process.env, DB_STORE_DIR: store, NEXT_DIST_DIR: ".next-e2e", DEV_ALLOW_MULTIPLE: "1" },
   });
   devServer.unref?.();
 

@@ -4,7 +4,7 @@ import { DevOpsClient } from "@/components/devops/devops-client";
 import { currentUser } from "@/lib/session";
 import { accessibleTeams } from "@/lib/api";
 import { canSeeDevOps } from "@/lib/devops/access";
-import { canEditRecords } from "@/lib/devops/editors";
+import { canClearData, canEditRecords } from "@/lib/devops/editors";
 import { getUser } from "@/lib/users";
 import { githubMode } from "@/lib/devops/github";
 
@@ -39,6 +39,7 @@ export default async function DevOpsPage() {
         teamNames={Object.fromEntries(teams.map((t) => [t.id, t.name]))}
         githubMode={githubMode()}
         canEdit={canEditRecords({ role: user.role, devopsEditor: account?.devopsEditor })}
+        canClearData={canClearData({ role: user.role, canClearData: account?.canClearData })}
       />
     </main>
   );

@@ -80,6 +80,22 @@ Seed variants: `-- --no-demo` (indexes and admin only), `-- --reset` (drop the
 collections first). The seeder uses a fixed PRNG seed, so demo data is identical
 every run.
 
+**Only ever run one dev server.** `pnpm predev` (`scripts/dev-guard.mjs`) runs
+automatically and refuses to start a second one, because two `next dev`
+processes share a build directory and neither notices. The second finds port
+3000 taken, quietly moves to 3001, and then both write `.next` — each serving
+pages whose chunks the other has just replaced. It surfaces as
+
+```
+ChunkLoadError: Loading chunk app/… failed
+Invariant: Expected clientReferenceManifest to be defined
+```
+
+which reads as a framework bug, is not one, and sends people hunting in the
+wrong place. It cost this project three debugging sessions. A build directory
+of its own is safe and allowed through:
+`NEXT_DIST_DIR=.next-alt pnpm dev`.
+
 `pnpm check:env` reports what is missing before you run anything else. `pnpm
 seed` fails fast with a sentence naming the real problem when it cannot reach
 the cluster — a blocked port, an IP that is not on the Atlas allowlist, or a
@@ -135,6 +151,91 @@ Both go through the same store the app does, so they work on whichever driver
 has no remove for it, and a blank one makes the next sync a first run, which is
 exactly what a cleared board needs. `pnpm seed` puts the demo data back.
 
+### Clearing by date, from the screen
+
+`pnpm delete` clears a whole board. To clear **a period** — a year, a month, a
+day, or a **from/to range** — use the screen instead:
+
+| Board | Where | Clears |
+|---|---|---|
+| POD | **Dashboard → Clear work items** | work items, by the day they were raised |
+| DevOps | **DevOps board → Clear a period** | scope rows, pull requests, announcements |
+
+Both sit on the board itself, admin-only — not tucked into a separate admin
+screen.
+
+Both are the same component (`purge-panel`) — the POD side wraps it as
+`pod-purge` to fix its targets and scope — with the same picker, the same
+count-then-confirm flow and the same safety rules — one implementation rather
+than two that drift. Each screen passes its own target group, so neither can
+offer the other's data: a POD admin cannot delete release announcements from
+the POD screen, and the DevOps board cannot touch work items.
+
+The POD one has **its own POD picker** — "Every POD", or one of them — and the
+choice is shown in the title. It deliberately does *not* follow the board's
+filter: deleting is not filtering, and the scope of a delete has to be stated
+rather than inherited from a control somebody set for a different reason and has
+since forgotten about. "Every POD" is offered and says so, because a
+clear-everything that looks like a clear-one is the worst version of this
+control.
+
+Changing the POD **drops the count and releases the arming**. A count belongs to
+the scope it was taken for; showing one team's number above a button that
+removes another's is the failure this panel exists to prevent.
+
+The chips (`purge-chips`) name the date each collection is filtered on, because
+"clear September" is ambiguous until somebody says September of *what* — a bug
+raised in September and one deployed in September are different rows.
+
+It reads and writes through the `Store`, so it clears JSON files or MongoDB
+purely according to `DB_DRIVER`. Nothing in the purge knows which.
+
+## Data at rest, on the JSON driver
+
+**The browser cannot reach the store.** That is worth stating plainly, because
+it is the first thing people assume: `DB_store/*.json` lives on the **server**,
+is not under `public/`, and no client component imports `node:fs` or the store —
+`pnpm check:ui` fails if one ever does. Devtools shows the client bundle and the
+network, and neither contains the files. Verified: every path to them answers
+404, and no value from `.env.local` appears anywhere in the built client bundle.
+
+Changing data always means calling an API, and every mutating route is
+authorised on the **server**. Deleting a `disabled` attribute in devtools
+changes what the browser sends, never what the server accepts.
+
+So the risks that are real are these two, and both are quiet:
+
+**1. Git.** `DB_store/` is committed on purpose, so a clone runs with no
+database — but that means anything in it is readable by everyone with
+repository access, *including in the history*. `DB_store/users.json` already
+carries bcrypt password hashes, and `repos.json` / `teams.json` grow access
+tokens the moment a repository or POD is onboarded. Before real data goes in:
+
+```bash
+git rm --cached DB_store/*.json
+echo 'DB_store/' >> .gitignore
+export DB_STORE_DIR=/var/lib/pod-tracker      # outside the checkout
+```
+
+Rotate anything already committed. A hash in git is a hash somebody can attack
+offline at their leisure, and removing the file does not remove the history.
+
+**2. File permissions.** These files are written `0600`, and the directory
+`0700` — the same protection an SSH key gets, for the same reason. The default
+`0644` makes every one of them readable by every other account on a shared host.
+The mode is set at **creation**, not afterwards, because a file that is briefly
+world-readable is a file somebody can read in that moment; a file written before
+this rule existed is corrected on its next write. It is not configurable: a
+setting that can weaken this is a setting somebody weakens.
+
+`pnpm check:env` reports all of it — which store files git tracks, whether any
+of them contains a hash or a token, whether `DB_STORE_DIR` points outside the
+repository, and whether any file is readable by other users.
+
+Switching to `DB_DRIVER=mongodb` moves the data out of the filesystem entirely,
+but none of the above stops mattering: the same rules apply to `MONGODB_URI`,
+which carries a password and belongs only in the environment.
+
 ## Verifying a change
 
 ## One command
@@ -156,7 +257,13 @@ so it gives itself:
 
 - a **store of its own**, seeded into a temp directory and thrown away after
 - a **port of its own**, the first free one from 3000 up
-- a **build directory of its own** (`.next-check`, via `NEXT_DIST_DIR`)
+- a **build directory of its own** — `.next-e2e` for its dev server, `.next-check`
+  for the production build, both via `NEXT_DIST_DIR`
+
+That last one was only half true for a long time, and it mattered: the build
+step was isolated but **the suite's dev server was not**, so every `pnpm test`
+wrote the `.next` a developer's own `pnpm dev` was reading. That is the
+`ChunkLoadError` above, arriving out of nowhere in the middle of a test run.
 
 It used to reuse whatever was listening on 3000, which is normally your
 `pnpm dev` reading the real `DB_store/`. Test pull requests then appeared on a
@@ -174,7 +281,7 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass
 
 pnpm dev           # in one terminal
-pnpm check         # in another — 625 end-to-end checks
+pnpm check         # in another — 641 end-to-end checks
 pnpm check:theme   # static, no server needed — 1294 theme-token checks
 pnpm check:ui      # static — 2687 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code

@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import type { Dashboard } from "@/lib/metrics";
 import { REFRESH_MS, SWR_OPTIONS, failureReason, fetcher, isApiKey } from "@/lib/swr";
+import { LAYOUT } from "@/lib/constants";
 import type { Kind } from "@/lib/types";
 import type { Weather } from "@/lib/weather";
 import { BreakdownCard } from "./breakdown-card";
@@ -18,6 +19,7 @@ import { agedPhrase } from "@/lib/metrics/threshold";
 import { describeSync, describeUpload } from "./board-actions";
 import { useScrollToTopOnScopeChange } from "./use-scroll-to-top";
 import { Footer } from "./footer";
+import { PodPurgePanel } from "./pod-purge";
 import { ParallaxBackdrop } from "./parallax-backdrop";
 import { SkyBackdrop } from "./sky-backdrop";
 import { StatRail } from "./stat-rail";
@@ -38,6 +40,7 @@ export function DashboardClient({
   userName,
   weather,
   isAdmin,
+  canClearData,
   authEnabled,
   initialTeamId,
   canSeeDevOps,
@@ -46,6 +49,8 @@ export function DashboardClient({
   userName: string;
   weather: Weather | null;
   isAdmin: boolean;
+  /** May clear data by date: an admin, or an account one has allowed. */
+  canClearData: boolean;
   authEnabled: boolean;
   initialTeamId: string;
   canSeeDevOps: boolean;
@@ -161,7 +166,7 @@ export function DashboardClient({
           which is what makes the backdrop re-measure when it finally mounts. */}
       <SkyBackdrop anchor={skyAnchor} weather={weather} />
 
-      <div className="mx-auto max-w-[1400px] px-3 pb-24 sm:px-6">
+      <div className={`${LAYOUT.boardWidth} ${LAYOUT.boardStack}`}>
         <Topbar
           teams={teams}
           teamId={teamId}
@@ -184,7 +189,7 @@ export function DashboardClient({
         />
 
         {teams.length === 0 ? (
-          <Panel className="mt-10 p-8">
+          <Panel className="p-8">
             <Empty
               title="No PODs yet"
               hint={
@@ -195,7 +200,7 @@ export function DashboardClient({
             />
           </Panel>
         ) : failureReason(error, data) ? (
-          <Panel className="mt-10 p-8">
+          <Panel className="p-8">
             <Empty title="Could not load the dashboard" hint={failureReason(error, data)!} />
           </Panel>
         ) : !data && isLoading ? (
@@ -239,13 +244,10 @@ export function DashboardClient({
           </div>
         ) : null}
 
+        {canClearData && <PodPurgePanel teams={teams} flash={flash} onDone={refreshEverything} />}
+
         {data && !data.error && (
-          <Footer
-            totals={data.totals}
-            lastSyncedAt={data.lastSyncedAt ?? null}
-            podCount={teams.length}
-            isAdmin={isAdmin}
-          />
+          <Footer totals={data.totals} lastSyncedAt={data.lastSyncedAt ?? null} podCount={teams.length} isAdmin={isAdmin} />
         )}
       </div>
 

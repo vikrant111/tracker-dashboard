@@ -1,12 +1,16 @@
 "use client";
 
 /**
- * Who may correct a DevOps record after it is saved.
+ * Who has been granted one capability, one account at a time.
  *
- * Deliberately its own list rather than a role. An admin runs the instance; a
- * DevOps editor is trusted to fix a deploy date or a ticket number weeks later.
- * Plenty of people should be one and not the other, and folding them together
- * would mean handing out admin to get a date corrected.
+ * Deliberately a list rather than a role. An admin runs the instance; a DevOps
+ * editor is trusted to fix a deploy date weeks later; somebody who may clear a
+ * quarter of data is a third thing again. Plenty of people should be one and
+ * not the others, and folding them together would mean handing out admin to get
+ * a date corrected — or handing out a delete to get the same.
+ *
+ * One component, rendered once per capability, so both lists behave identically
+ * and neither can grow its own idea of what granting looks like.
  *
  * Admins are shown as always granted, so nobody wonders why the toggle is
  * missing for them.
@@ -18,7 +22,32 @@ import { SWR_OPTIONS, failureReason, fetcher } from "@/lib/swr";
 import type { User } from "@/lib/types";
 import { Empty, Panel, PanelHeader, Tooltip } from "@/components/ui";
 
-export function EditorsSection({ flash }: { flash: (text: string, tone?: "ok" | "bad") => void }) {
+/** The account fields this can grant. Both are booleans stored per account. */
+export type Grantable = "devopsEditor" | "canClearData";
+
+export function EditorsSection({
+  flash,
+  field = "devopsEditor",
+  eyebrow = "DevOps",
+  title = "Who can edit records",
+  hint = "Anyone can add a row. Only these people can change one afterwards.",
+  granted = "can now edit DevOps records",
+  revoked = "can no longer edit DevOps records",
+  explain = {
+    admin: "Admins can always edit records. There is nothing to grant.",
+    on: (who: string) => `Take away ${who}'s ability to change a saved record.`,
+    off: (who: string) => `Let ${who} change a record after it is saved.`,
+  },
+}: {
+  flash: (text: string, tone?: "ok" | "bad") => void;
+  field?: Grantable;
+  eyebrow?: string;
+  title?: string;
+  hint?: string;
+  granted?: string;
+  revoked?: string;
+  explain?: { admin: string; on: (who: string) => string; off: (who: string) => string };
+}) {
   const { data, error, mutate } = useSWR<{ users?: User[]; error?: string }>("/api/users", fetcher, SWR_OPTIONS);
   const [busy, setBusy] = useState("");
 
@@ -31,12 +60,14 @@ export function EditorsSection({ flash }: { flash: (text: string, tone?: "ok" | 
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: user.email, devopsEditor: on }),
+        /* Only this field travels. `saveUser` leaves anything absent alone, so
+           granting one capability cannot revoke another. */
+        body: JSON.stringify({ email: user.email, [field]: on }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || "Could not change that.");
 
-      flash(on ? `${user.email} can now edit DevOps records.` : `${user.email} can no longer edit DevOps records.`);
+      flash(`${user.email} ${on ? granted : revoked}.`);
       await mutate();
     } catch (err) {
       flash(err instanceof Error ? err.message : "Could not change that.", "bad");
@@ -48,13 +79,11 @@ export function EditorsSection({ flash }: { flash: (text: string, tone?: "ok" | 
   return (
     <Panel className="p-6">
       <PanelHeader
-        eyebrow="DevOps"
-        title="Who can edit records"
+        eyebrow={eyebrow}
+        title={title}
         icon={<ShieldCheck size={16} strokeWidth={2.2} />}
         action={
-          <span className="text-xs text-[var(--ink-muted)]">
-            Anyone can add a row. Only these people can change one afterwards.
-          </span>
+          <span className="text-xs text-[var(--ink-muted)]">{hint}</span>
         }
       />
 
@@ -66,17 +95,11 @@ export function EditorsSection({ flash }: { flash: (text: string, tone?: "ok" | 
         <ul className="flex flex-wrap gap-2">
           {users.map((user) => {
             const admin = user.role === "admin";
-            const on = admin || user.devopsEditor === true;
+            const on = admin || user[field] === true;
             return (
               <li key={user.email}>
                 <Tooltip
-                  label={
-                    admin
-                      ? "Admins can always edit records. There is nothing to grant."
-                      : on
-                        ? `Take away ${user.email}'s ability to change a saved record.`
-                        : `Let ${user.email} change a record after it is saved.`
-                  }
+                  label={admin ? explain.admin : on ? explain.on(user.email) : explain.off(user.email)}
                 >
                   <button
                     type="button"

@@ -19,7 +19,7 @@
  *  - a **lock file**, so a second process — `pnpm seed` in another terminal,
  *    the check suite — takes its turn too.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { withLock } from "./json-lock.ts";
@@ -41,8 +41,38 @@ const VERSION = 1;
 const globalForFiles = globalThis as unknown as { __podTrackerFileQueues?: Map<string, Promise<unknown>> };
 const queues: Map<string, Promise<unknown>> = (globalForFiles.__podTrackerFileQueues ??= new Map());
 
+/**
+ * Permissions the store is written with.
+ *
+ * These files hold **password hashes**, and once a POD or a repository is
+ * onboarded they hold **access tokens** too. The default `0644` makes every one
+ * of them world-readable, which on any shared or multi-tenant host means every
+ * other account on the box can read them. `0600` is the same protection an SSH
+ * key gets, for the same reason.
+ *
+ * Not a tunable. A setting that can weaken this is a setting somebody weakens.
+ */
+const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
+
 export function ensureStoreDir(): void {
-  if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true });
+  if (!existsSync(STORE_DIR)) mkdirSync(STORE_DIR, { recursive: true, mode: DIR_MODE });
+}
+
+/**
+ * Tighten a file that already exists.
+ *
+ * `rename` carries the temp file's mode, so a *new* file is correct already.
+ * One written before this existed keeps whatever it had, so it is corrected on
+ * the next write rather than left readable forever. Failure is ignored on
+ * purpose: a filesystem without POSIX modes is not a reason to refuse to save.
+ */
+function restrict(path: string): void {
+  try {
+    chmodSync(path, FILE_MODE);
+  } catch {
+    /* Windows, a network share, a container with an odd mount — not fatal. */
+  }
 }
 
 /**
@@ -83,8 +113,11 @@ export function writeCollection<T>(name: CollectionName, rows: T[]): void {
   const body: FileShape<T> = { version: VERSION, collection: name, updatedAt: new Date().toISOString(), rows };
 
   try {
-    writeFileSync(tmp, JSON.stringify(body, null, 2) + "\n", "utf8");
+    /* The mode is set at creation, not after: a file that is briefly 0644 is a
+       file somebody can read in that moment. */
+    writeFileSync(tmp, JSON.stringify(body, null, 2) + "\n", { encoding: "utf8", mode: FILE_MODE });
     renameSync(tmp, path);
+    restrict(path);
   } catch (err) {
     try {
       if (existsSync(tmp)) unlinkSync(tmp);

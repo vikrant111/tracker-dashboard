@@ -56,6 +56,7 @@ export async function saveUser(input: {
   role?: User["role"];
   teamIds?: unknown;
   devopsEditor?: unknown;
+  canClearData?: unknown;
 }): Promise<User> {
   const id = userId(input.email);
   const existing = await findUserById(id);
@@ -75,6 +76,7 @@ export async function saveUser(input: {
      * capability that was granted separately.
      */
     devopsEditor: input.devopsEditor === undefined ? Boolean(existing?.devopsEditor) : input.devopsEditor === true,
+    canClearData: input.canClearData === undefined ? Boolean(existing?.canClearData) : input.canClearData === true,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
 

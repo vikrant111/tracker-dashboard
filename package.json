@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@11.22.0",
   "scripts": {
+    "predev": "node scripts/dev-guard.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

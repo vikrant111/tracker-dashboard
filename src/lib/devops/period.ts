@@ -23,6 +23,28 @@ export type PeriodGrain = (typeof PERIOD_GRAINS)[number];
 export const MAX_PERIOD_CHARS = 32;
 
 /**
+ * Any date this app stores, as `YYYY-MM-DD`. `""` when it is not one.
+ *
+ * The two boards store dates differently and both end up here. The DevOps rows
+ * keep `YYYY-MM-DD` strings on purpose; a work item keeps a real `Date`,
+ * because the ageing arithmetic needs one. A plain `String(value).slice(0, 10)`
+ * reads the first as a date and the second as `"Sat Sep 1"` — which matches
+ * nothing, silently, and is exactly the kind of thing that makes a delete
+ * quietly do less than it says.
+ *
+ * Strict about the shape: the pattern has to be there, so `"2026x-09-04"` is
+ * not a date with an `x` in it, it is not a date.
+ */
+export function dayOf(value: unknown): string {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? "" : value.toISOString().slice(0, 10);
+  }
+
+  const raw = String(value ?? "").slice(0, MAX_PERIOD_CHARS);
+  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : "";
+}
+
+/**
  * What separates the two ends of a range: `2026-09-01..2026-09-30`.
  *
  * `..` rather than a dash, because every date on this board already contains
@@ -116,7 +138,7 @@ export function grainOf(period: unknown): PeriodGrain | null {
  * Callers that want everything say so themselves.
  */
 export function inPeriod(date: unknown, period: unknown): boolean {
-  const day = String(date ?? "").slice(0, 10);
+  const day = dayOf(date);
   if (!day) return false;
 
   /*

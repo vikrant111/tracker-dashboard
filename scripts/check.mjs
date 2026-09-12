@@ -1053,7 +1053,10 @@ section("input — every filter param survives hostile values");
      */
     const counted = await get("/api/devops/purge?period=2026-09");
     check("a period can be counted", counted.status === 200, `${counted.status}`);
-    check("...naming every collection it would touch", (counted.json?.counts ?? []).length === 3, JSON.stringify(counted.json?.counts));
+    /* All four now: the POD board's work items cleared by date too, through
+       the same route and the same count-then-confirm flow. */
+    const targetsCounted = (counted.json?.counts ?? []).map((c) => c.target).sort().join(",");
+    check("...naming every collection it would touch", targetsCounted === "announcements,deployments,items,pulls", targetsCounted);
     check("...and reading as prose", counted.json?.describes === "September 2026", `${counted.json?.describes}`);
 
     for (const bad of ["", "2026-9", "2026-13", "all", "2026-02-31"]) {
@@ -1086,6 +1089,43 @@ section("input — every filter param survives hostile values");
 
     for (const row of left) await del(`/api/deployments?id=${encodeURIComponent(row.id)}`);
     await del(`/api/cycles?id=${encodeURIComponent(cyc2.json.cycle.id)}`);
+
+    /* -------------------------------------------------------------- */
+    /* Clearing by a from/to range, and the POD board's work items      */
+    /* -------------------------------------------------------------- */
+    /*
+     * The picker offers a range, so the route has to take one. It is the same
+     * `inPeriod` the filters use, so if a range works here it works everywhere.
+     */
+    const ranged = await get("/api/devops/purge?period=2031-08-01..2031-08-31");
+    check("a from/to range can be counted", ranged.status === 200, `${ranged.status} ${ranged.json?.error ?? ""}`);
+    check("...reading as both its ends", /August 2031/.test(ranged.json?.describes ?? ""), `${ranged.json?.describes}`);
+
+    /* A half-written range must match nothing rather than fall through to a
+       wider reading of the text. This backs a delete. */
+    for (const broken of ["2031-08-01..", "..2031-08-31", "2031-08-01..nope", ".."]) {
+      const r = await get(`/api/devops/purge?period=${encodeURIComponent(broken)}`);
+      check(`a broken range "${broken}" is refused`, r.status === 400, `${r.status}`);
+    }
+
+    /* The POD board's work items, counted and scoped through the same route. */
+    const allItems = await get("/api/devops/purge?period=2026");
+    const itemRows = (allItems.json?.counts ?? []).find((c) => c.target === "items")?.rows ?? 0;
+    check("work items are counted by date", itemRows > 0, JSON.stringify(allItems.json?.counts));
+
+    const scopedItems = await get("/api/devops/purge?period=2026&teamId=amc-pod");
+    const scopedRows = (scopedItems.json?.counts ?? []).find((c) => c.target === "items")?.rows ?? 0;
+    check("...and narrowed to one POD", scopedRows > 0 && scopedRows < itemRows, `${scopedRows} of ${itemRows}`);
+
+    const otherPod = await get("/api/devops/purge?period=2026&teamId=payments-pod");
+    const otherRows = (otherPod.json?.counts ?? []).find((c) => c.target === "items")?.rows ?? 0;
+    check("...with the PODs adding up", scopedRows + otherRows === itemRows, `${scopedRows} + ${otherRows} vs ${itemRows}`);
+
+    /* And a scoped clear really only takes that POD's rows. */
+    const clearedPod = await post("/api/devops/purge", { period: "2026", targets: ["items"], teamId: "payments-pod" });
+    check("a scoped clear removes only that POD", clearedPod.json?.removed?.find((r) => r.target === "items")?.rows === otherRows, JSON.stringify(clearedPod.json?.removed));
+    const untouched = await get("/api/devops/purge?period=2026&teamId=amc-pod");
+    check("...leaving the other POD alone", (untouched.json?.counts ?? []).find((c) => c.target === "items")?.rows === scopedRows, "a scoped clear took somebody else's work items");
 
     const gone = await del("/api/repos?id=chk-acme-chk-cms");
     check("a repository can be removed", gone.status === 200, `${gone.status}`);
@@ -1589,8 +1629,34 @@ async function auth(admin) {
   const memberMove = await call(member, "/api/pulls/to-scope", json('{"id":"any","cycleId":"any"}'));
   check("a member cannot move a PR to the sheet", memberMove.status === 403, `${memberMove.status}`);
   check("...and is told who can", /Ask an admin/i.test(memberMove.json?.error ?? ""), memberMove.json?.error ?? "");
-  check("...cannot count a period", (await call(member, "/api/devops/purge?period=2026")).status === 403);
+  /*
+   * Clearing data is admins plus the accounts they allow. A member has neither,
+   * so both handlers refuse — **counting included**: a count is a row census of
+   * somebody else's data, and leaving it open would let a member ask how many
+   * work items a POD holds by walking the calendar.
+   */
+  const memberCount = await call(member, "/api/devops/purge?period=2026");
+  check("...cannot count a period", memberCount.status === 403, `${memberCount.status}`);
+  check("...being told who can grant it", /admin/i.test(memberCount.json?.error ?? ""), memberCount.json?.error ?? "");
   check("...and cannot clear one", (await call(member, "/api/devops/purge", json('{"period":"2026","targets":["pulls"]}'))).status === 403);
+
+  /* Being a DevOps editor is not the same right. It must not confer this one. */
+  await call(admin, "/api/users", json('{"email":"chk-member@x.com","devopsEditor":true}'));
+  check("...and a DevOps editor still cannot", (await call(member, "/api/devops/purge?period=2026")).status === 403, "the delete came with the correction");
+
+  /* Granted, it works — and takes effect on the next request, not the next
+     sign-in, because the right is read from the stored account. */
+  await call(admin, "/api/users", json('{"email":"chk-member@x.com","canClearData":true}'));
+  const allowed = await call(member, "/api/devops/purge?period=2026");
+  check("a granted account can count", allowed.status === 200, `${allowed.status} ${allowed.json?.error ?? ""}`);
+
+  /* And revoking is just as immediate, which matters more. */
+  await call(admin, "/api/users", json('{"email":"chk-member@x.com","canClearData":false}'));
+  check("...and losing it takes effect at once", (await call(member, "/api/devops/purge?period=2026")).status === 403);
+
+  /* Granting one capability must not revoke another. */
+  const stillEditor = (await call(admin, "/api/users")).json?.users?.find((u) => u.email === "chk-member@x.com");
+  check("...leaving the other capability alone", stillEditor?.devopsEditor === true, JSON.stringify(stillEditor));
 
   section("auth — changing your own password");
   /*

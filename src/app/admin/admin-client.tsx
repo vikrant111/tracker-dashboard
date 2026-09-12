@@ -20,6 +20,7 @@ import { PodList } from "./panels/pod-list";
 import { PodIdentityPanel } from "./panels/pod-identity";
 import { PodMembersPanel } from "./panels/pod-members";
 import { PodAzurePanel } from "./panels/pod-azure";
+import { ClearersSection } from "./panels/clearers-section";
 
 export function AdminClient({ adminEmail }: { adminEmail: string }) {
   const teamsReq = useSWR<{ teams: Team[] }>("/api/teams", fetcher, SWR_OPTIONS);
@@ -237,6 +238,8 @@ export function AdminClient({ adminEmail }: { adminEmail: string }) {
         </div>
 
 
+        <ClearersSection flash={flash} />
+
         <UsersPanel
           users={usersReq.data?.users ?? []}
           teams={teams}
@@ -244,6 +247,7 @@ export function AdminClient({ adminEmail }: { adminEmail: string }) {
           onChanged={() => usersReq.mutate()}
           flash={flash}
         />
+
       </div>
 
       <AnimatePresence>

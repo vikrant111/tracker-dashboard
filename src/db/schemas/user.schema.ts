@@ -40,6 +40,8 @@ export const userSchema = new Schema(
      * date. Admins always count, so it is never granted to them.
      */
     devopsEditor: { type: Boolean, default: false },
+    /* Clearing data by date. Irreversible, so never implied by any other right. */
+    canClearData: { type: Boolean, default: false },
 
     createdAt: { type: String, default: "" },
     /*

@@ -391,9 +391,10 @@ src/components/   client components, dashboard-client.tsx orchestrates
     menu-context  how an item closes the menu it is in
     menu-item     MenuSection and MenuItem
     tooltip       a label that escapes the panel through a portal
+    tooltip-place where it lands — the anchor is display:contents and has no box
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       625 end-to-end checks against a running server
+  check.mjs       641 end-to-end checks against a running server
   check-theme.mjs 1294 static checks: theme tokens, contrast, source rules,
                   and the font switch
   check-ui.mjs    2687 checks on client-side pure logic — it imports the real

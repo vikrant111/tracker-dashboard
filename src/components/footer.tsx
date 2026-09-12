@@ -29,7 +29,7 @@ export function Footer({
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: "-40px" }}
       transition={{ type: "spring", stiffness: 200, damping: 26 }}
-      className="glass mt-6 flex flex-col gap-4 p-5 sm:p-6"
+      className="glass flex flex-col gap-4 p-5 sm:p-6"
     >
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
         <div className="flex items-center gap-2.5">
