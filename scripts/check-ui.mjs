@@ -5821,6 +5821,28 @@ section("aged means what each POD says it means");
   check("...newest first", present[0] === "2026-09");
 
   /* ---------------------------------------------------------------- */
+  /* A panel heading is never painted over by its own buttons           */
+  /* ---------------------------------------------------------------- */
+  /*
+   * The header was a `flex-wrap` row with the title on `flex-1 min-w-0`. That
+   * lets the title box shrink to nothing while its text — which has no
+   * `overflow: hidden` — keeps its own size and spills out, so the action
+   * buttons painted straight over the eyebrow and the heading.
+   */
+  const surfaces = readFileSync(new URL("../src/components/ui/surfaces.tsx", import.meta.url), "utf8");
+  const header = surfaces.slice(surfaces.indexOf("<header"), surfaces.indexOf("</header>"));
+
+  check("the heading stacks before it collapses", /flex flex-col gap-3 sm:flex-row/.test(header), "the title shrinks to nothing and the buttons cover it");
+  check("...only sharing a row once there is room", /sm:items-start sm:justify-between/.test(header));
+  /* The action wraps within itself rather than pushing the title over. */
+  check("the action is its own wrapping row", /\{action && <div className="flex min-w-0 flex-wrap items-center gap-2/.test(header), "a long row of buttons overflows the panel");
+  check("...and the title can still wrap", /<div className="flex min-w-0 flex-1 items-start gap-3">/.test(header));
+
+  /* A button is one thing to press, so it wraps whole or not at all. */
+  const controls = readFileSync(new URL("../src/components/ui/controls.tsx", import.meta.url), "utf8");
+  check("a button never breaks its own label", /whitespace-nowrap/.test(controls), '"DevOps admin" split across two lines');
+
+  /* ---------------------------------------------------------------- */
   /* One dev server, one build directory                                */
   /* ---------------------------------------------------------------- */
   /*

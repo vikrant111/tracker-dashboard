@@ -54,8 +54,20 @@ export function PanelHeader({
   icon?: ReactNode;
   hue?: string;
 }) {
+  /*
+   * Stacked until there is room for a row.
+   *
+   * It was a `flex-wrap` row with the title on `flex-1 min-w-0`, which lets the
+   * title box shrink to nothing while its text — having no `overflow: hidden` —
+   * keeps its own size and spills out. The buttons then painted straight over
+   * the eyebrow and the heading. That does not read as a layout which ran out
+   * of room; it reads as broken.
+   *
+   * Below `sm` the two are separate rows, so neither can take the other's
+   * space. Above it they sit side by side as before.
+   */
   return (
-    <header className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+    <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-4">
       <div className="flex min-w-0 flex-1 items-start gap-3">
         {icon && (
           <span
@@ -80,7 +92,12 @@ export function PanelHeader({
           </h2>
         </div>
       </div>
-      {action}
+      {/*
+        * The action wraps within itself rather than pushing the title over.
+        * `min-w-0` so a long row of buttons wraps instead of overflowing the
+        * panel, which is the same failure one step further along.
+        */}
+      {action && <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">{action}</div>}
     </header>
   );
 }

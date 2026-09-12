@@ -89,7 +89,14 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-medium transition-all active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${styles} ${className}`}
+      /*
+       * `whitespace-nowrap`: a button is one thing to press, so it wraps as a
+       * whole or not at all. Without it a narrow bar broke "DevOps admin" and
+       * "Sign out" across two lines each, which reads as damage rather than as
+       * a row that ran out of room — every bar holding buttons already has
+       * `flex-wrap`, so the button moves to the next line instead.
+       */
+      className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-medium whitespace-nowrap transition-all active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-45 ${styles} ${className}`}
     >
       {children}
     </button>

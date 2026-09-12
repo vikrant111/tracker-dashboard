@@ -1038,6 +1038,27 @@ to hit directly than to fight a library's defaults, and the bundle stays small.
 - Empty buckets are rendered, not skipped — a line that jumps a gap
   misrepresents the shape.
 
+## A panel heading is never covered by its own buttons
+
+`PanelHeader` stacks the title and the action **until there is room for a row**,
+rather than sharing one from the start.
+
+It used to be a `flex-wrap` row with the title on `flex-1 min-w-0`. That
+combination lets the title *box* shrink to nothing while the title *text* — which
+has no `overflow: hidden` — keeps its own size and spills straight out of it. The
+action buttons then painted over the eyebrow and the heading. It does not read as
+a layout that ran out of room; it reads as damage.
+
+Below `sm` the two are separate rows, so neither can take the other's space.
+Above it they sit side by side as before. The action is its own wrapping row, so
+a long set of buttons wraps inside the panel instead of pushing the title over —
+the same failure one step further along.
+
+Buttons carry `whitespace-nowrap` for the same reason: a button is one thing to
+press, so it wraps as a whole or not at all. Without it a narrow bar broke
+"DevOps admin" and "Sign out" across two lines each. Every bar holding buttons
+already has `flex-wrap`, so the button moves to the next line instead.
+
 ## Tooltips sit beside what they describe
 
 The anchor is `display: contents`, deliberately: it must not introduce a wrapper
