@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "teams",
-  "updatedAt": "2026-09-04T13:05:33.770Z",
+  "updatedAt": "2026-09-10T09:01:04.531Z",
   "rows": [
     {
       "id": "tm",
@@ -159,6 +159,42 @@
       "ageingThresholdDays": 7,
       "severityThresholdDays": {},
       "createdAt": "2026-09-04T09:12:24.276Z"
+    },
+    {
+      "_id": "tes",
+      "id": "tes",
+      "name": "tes",
+      "description": "",
+      "members": [],
+      "azure": {
+        "orgUrl": "",
+        "project": "",
+        "pat": "",
+        "areaPath": "",
+        "workItemTypes": [
+          "Bug",
+          "Issue",
+          "Task",
+          "User Story"
+        ]
+      },
+      "fieldMap": {
+        "severity": "Microsoft.VSTS.Common.Severity",
+        "environment": "Custom.Environment",
+        "status": "System.State"
+      },
+      "valueMap": {
+        "severity": {},
+        "environment": {},
+        "status": {}
+      },
+      "ageingThresholdDays": 7,
+      "severityThresholdDays": {
+        "Critical": 1,
+        "Major": 6,
+        "Minor": 12
+      },
+      "createdAt": "2026-09-10T09:01:04.530Z"
     }
   ]
 }

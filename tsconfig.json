@@ -1,14 +1,18 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
     // Lets a source file write `./constants.ts` explicitly. Node's ESM resolver
-    // has no extension guessing, so `scripts/check-ui.mjs` — which imports these
-    // modules directly, rather than mirroring them — cannot load an
+    // has no extension guessing, so `scripts/check-ui.mjs` ï¿½ which imports these
+    // modules directly, rather than mirroring them ï¿½ cannot load an
     // extensionless relative import.
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
@@ -18,9 +22,27 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
-    "plugins": [{ "name": "next" }],
-    "paths": { "@/*": ["./src/*"] }
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".next-check/types/**/*.ts",
+    ".next-verify/types/**/*.ts",
+    ".next/types/**/*.ts",
+    "next-env.d.ts",
+    ".next-css/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }

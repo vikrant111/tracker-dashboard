@@ -12,12 +12,14 @@ import type { Filters } from "../../lib/metrics/types.ts";
 import type { SyncState } from "../../lib/sync.ts";
 import type { Team, User } from "../../lib/types.ts";
 import { matchesFilters } from "../query/predicate.ts";
-import { ItemModel, SyncStateModel, TeamModel, UserModel } from "../models/index.ts";
+import { AnnouncementModel, CycleModel, DeploymentModel, ItemModel, PullModel, RepoModel, SyncStateModel, TeamModel, UserModel } from "../models/index.ts";
 import { fromStored, fromStoredDoc, toDocument, toStoredRow } from "../document.ts";
+import { memoryKeyed } from "./keyed.ts";
+import type { Announcement, Cycle, Deployment, PullRecord, Repo } from "../../lib/devops/types.ts";
 import type { Store } from "./types.ts";
 
 type Row = Record<string, unknown>;
-type Tables = Record<"items" | "teams" | "users" | "sync", Map<string, Row>>;
+type Tables = Record<"items" | "teams" | "users" | "sync" | "repos" | "announcements" | "deployments" | "cycles" | "pulls", Map<string, Row>>;
 
 const g = globalThis as unknown as { __podTrackerMemory?: Tables };
 const tables: Tables = (g.__podTrackerMemory ??= {
@@ -25,6 +27,11 @@ const tables: Tables = (g.__podTrackerMemory ??= {
   teams: new Map<string, Row>(),
   users: new Map<string, Row>(),
   sync: new Map<string, Row>(),
+  repos: new Map<string, Row>(),
+  announcements: new Map<string, Row>(),
+  deployments: new Map<string, Row>(),
+  cycles: new Map<string, Row>(),
+  pulls: new Map<string, Row>(),
 });
 
 const rows = (name: keyof Tables) => [...tables[name].values()];
@@ -66,34 +73,19 @@ export function createMemoryStore(): Store {
       },
       async count() { return tables.items.size; },
     },
-    teams: {
-      async all() { return rows("teams").map((r) => fromStored<Team>(TeamModel, r)).filter((t): t is Team => t !== null); },
-      async byId(id: string) { return typeof id === "string" ? fromStored<Team>(TeamModel, tables.teams.get(id)) : null; },
-      async save(team: Team) {
-        const checked = toDocument<Team>(TeamModel, team, team?.id);
-        if (!checked.doc) throw new Error(`Cannot save that POD: ${checked.error}.`);
-        tables.teams.set(team.id, toStoredRow(TeamModel, checked.doc, team.id));
-        return checked.doc;
-      },
-      async remove(id: string) { if (typeof id === "string") tables.teams.delete(id); },
-      async count() { return tables.teams.size; },
-    },
+    teams: memoryKeyed<Team>(tables.teams, TeamModel, "POD"),
+    repos: memoryKeyed<Repo>(tables.repos, RepoModel, "repository"),
+    announcements: memoryKeyed<Announcement>(tables.announcements, AnnouncementModel, "announcement"),
+    deployments: memoryKeyed<Deployment>(tables.deployments, DeploymentModel, "deployment record"),
+    cycles: memoryKeyed<Cycle>(tables.cycles, CycleModel, "cycle"),
+    pulls: memoryKeyed<PullRecord>(tables.pulls, PullModel, "pull request"),
     users: {
-      async all() { return rows("users").map((r) => fromStored<User>(UserModel, r)).filter((u): u is User => u !== null); },
-      async byId(id: string) { return typeof id === "string" ? fromStored<User>(UserModel, tables.users.get(id)) : null; },
-      async save(user: User) {
-        const checked = toDocument<User>(UserModel, user, user?.id);
-        if (!checked.doc) throw new Error(`Cannot save that account: ${checked.error}.`);
-        tables.users.set(user.id, toStoredRow(UserModel, checked.doc, user.id));
-        return checked.doc;
-      },
-      async remove(id: string) { if (typeof id === "string") tables.users.delete(id); },
-      async count() { return tables.users.size; },
+      ...memoryKeyed<User>(tables.users, UserModel, "account"),
       async insertFirst(user: User) {
         if (tables.users.size) return false;
         const checked = toDocument<User>(UserModel, user, user?.id);
         if (!checked.doc) throw new Error(`Cannot create the first account: ${checked.error}.`);
-        tables.users.set(user.id, toStoredRow(UserModel, checked.doc, user.id));
+        tables.users.set(user.id, toStoredRow(UserModel, checked.doc as unknown as Record<string, unknown>, user.id));
         return true;
       },
     },

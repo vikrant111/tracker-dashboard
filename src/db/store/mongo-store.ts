@@ -15,7 +15,7 @@ import {
 } from "../connect.ts";
 import { ItemModel, models } from "../models/index.ts";
 import { toDocument } from "../document.ts";
-import { mongoSync, mongoTeams, mongoUsers } from "./mongo-collections.ts";
+import { mongoAnnouncements, mongoCycles, mongoDeployments, mongoPulls, mongoRepos, mongoSync, mongoTeams, mongoUsers } from "./mongo-collections.ts";
 import { buildMatch } from "../query/match.ts";
 import type { Store } from "./types.ts";
 
@@ -122,6 +122,11 @@ export function createMongoStore(): Store {
     },
 
     teams: mongoTeams(),
+    repos: mongoRepos(),
+    announcements: mongoAnnouncements(),
+    deployments: mongoDeployments(),
+    cycles: mongoCycles(),
+    pulls: mongoPulls(),
     users: mongoUsers(),
     sync: mongoSync(),
   };

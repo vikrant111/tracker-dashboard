@@ -8,6 +8,10 @@
     "build": "next build",
     "start": "next start",
     "seed": "node --env-file=.env.local scripts/seed.mjs",
+    "clear": "node scripts/clear.mjs",
+    "delete": "node scripts/delete-seed.mjs",
+    "delete:pod-seed": "node scripts/delete-seed.mjs pod-seed",
+    "delete:devops-seed": "node scripts/delete-seed.mjs devops-seed",
     "test": "node scripts/test.mjs",
     "check": "node --env-file=.env.local scripts/check.mjs",
     "check:theme": "node scripts/check-theme.mjs",
@@ -17,7 +21,8 @@
     "check:env": "node scripts/check-env.mjs",
     "mongo:local": "node scripts/mongo-local.mjs",
     "azure:probe": "node --env-file=.env.local scripts/azure-probe.mjs",
-    "parity": "node --env-file=.env.local scripts/parity.mjs"
+    "parity": "node --env-file=.env.local scripts/parity.mjs",
+    "check:render": "node scripts/check-render.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -36,6 +41,7 @@
     "@types/node": "^24.5.2",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
+    "jsdom": "^30.0.1",
     "mongodb-memory-server": "^11.2.0",
     "tailwindcss": "^4.1.13",
     "typescript": "^5.9.2"

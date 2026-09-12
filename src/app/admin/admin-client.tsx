@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Plug, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { ArrowLeft, GitBranch, Plug, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import useSWR from "swr";
@@ -15,6 +15,7 @@ import { validateTeam } from "@/lib/validation";
 import { BLANK_MEMBER, blankTeam } from "./panels/blank-team";
 import { Field, updateMember } from "./panels/field";
 import { UsersPanel } from "./panels/people-panel";
+import { useArmed } from "./panels/use-armed";
 import { PodList } from "./panels/pod-list";
 import { PodIdentityPanel } from "./panels/pod-identity";
 import { PodMembersPanel } from "./panels/pod-members";
@@ -54,21 +55,7 @@ export function AdminClient({ adminEmail }: { adminEmail: string }) {
    * button, it is a trap. The second click has to be deliberate, and the arming
    * lapses on its own so a stray first click cannot sit there waiting to fire.
    */
-  const [armed, setArmed] = useState<string | null>(null);
-  useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(null), TIMING.confirmMs);
-    return () => clearTimeout(t);
-  }, [armed]);
-
-  const confirmThen = (key: string, run: () => void) => {
-    if (armed === key) {
-      setArmed(null);
-      run();
-      return;
-    }
-    setArmed(key);
-  };
+  const { armed, setArmed, confirmThen } = useArmed();
 
   /** Close the editor, asking first only if there is something to lose. */
   const closeDraft = () => {
@@ -168,7 +155,13 @@ export function AdminClient({ adminEmail }: { adminEmail: string }) {
       <ParallaxBackdrop />
       <div className="mx-auto flex max-w-[1400px] flex-col gap-4 px-4 py-6 pb-24 sm:px-6">
         <header className="flex flex-wrap items-center gap-3">
-          <Link href="/">
+          <Link href="/admin/devops">
+              <Button>
+                <GitBranch size={14} />
+                DevOps admin
+              </Button>
+            </Link>
+            <Link href="/">
             <Button>
               <ArrowLeft size={15} />
               Dashboard
@@ -242,6 +235,7 @@ export function AdminClient({ adminEmail }: { adminEmail: string }) {
             </Panel>
           )}
         </div>
+
 
         <UsersPanel
           users={usersReq.data?.users ?? []}

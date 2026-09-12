@@ -15,6 +15,7 @@ import { useSearchScope } from "./use-search-scope";
 import { breakdownPanels } from "./breakdown-panels";
 import { Leaderboard } from "./leaderboard";
 import { agedPhrase } from "@/lib/metrics/threshold";
+import { describeSync, describeUpload } from "./board-actions";
 import { useScrollToTopOnScopeChange } from "./use-scroll-to-top";
 import { Footer } from "./footer";
 import { ParallaxBackdrop } from "./parallax-backdrop";
@@ -39,6 +40,7 @@ export function DashboardClient({
   isAdmin,
   authEnabled,
   initialTeamId,
+  canSeeDevOps,
 }: {
   teams: TeamOption[];
   userName: string;
@@ -46,6 +48,7 @@ export function DashboardClient({
   isAdmin: boolean;
   authEnabled: boolean;
   initialTeamId: string;
+  canSeeDevOps: boolean;
 }) {
   const [teamId, setTeamId] = useState(initialTeamId);
   const [kind, setKind] = useState<Kind | "all">("all");
@@ -118,10 +121,8 @@ export function DashboardClient({
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Sync failed.");
 
-      const failed = (body.results || []).filter((r: { error?: string }) => r.error);
-      const imported = (body.results || []).reduce((n: number, r: { imported: number }) => n + r.imported, 0);
-      if (failed.length) flash(failed[0].error, "bad");
-      else flash(imported ? `Synced ${imported} work item${imported === 1 ? "" : "s"}.` : "Already up to date.");
+      const said = describeSync(body);
+      flash(said.text, said.tone);
       await refreshEverything();
     } catch (err) {
       flash(err instanceof Error ? err.message : "Sync failed.", "bad");
@@ -139,13 +140,7 @@ export function DashboardClient({
       const res = await fetch("/api/upload", { method: "POST", body: form });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Upload failed.");
-      const notes = [
-        body.skipped ? `skipped ${body.skipped} without a title` : "",
-        body.duplicates ? `merged ${body.duplicates} duplicate id${body.duplicates === 1 ? "" : "s"}` : "",
-      ].filter(Boolean);
-      flash(
-        `Imported ${body.imported} row${body.imported === 1 ? "" : "s"}${notes.length ? `, ${notes.join(", ")}` : ""}.`,
-      );
+      flash(describeUpload(body));
       await refreshEverything();
     } catch (err) {
       flash(err instanceof Error ? err.message : "Upload failed.", "bad");
@@ -182,6 +177,7 @@ export function DashboardClient({
           syncing={syncing}
           uploading={uploading}
           isAdmin={isAdmin}
+          canSeeDevOps={canSeeDevOps}
           authEnabled={authEnabled}
           lastSyncedAt={data?.lastSyncedAt ?? null}
           canSeeAllPods={isAdmin}

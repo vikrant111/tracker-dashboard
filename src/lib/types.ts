@@ -103,6 +103,16 @@ export type User = {
   passwordHash: string | null;
   role: "admin" | "member";
   teamIds: string[];
+  /**
+   * May change DevOps records that already exist.
+   *
+   * Separate from `role` because it is a different question: an admin runs the
+   * instance, a DevOps editor is trusted to correct a deploy date or a sign-off
+   * after the fact. Plenty of people should be one without the other.
+   *
+   * Admins always count, so this never has to be granted to them.
+   */
+  devopsEditor?: boolean;
   createdAt: string;
   /**
    * When the password last changed, ISO.

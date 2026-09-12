@@ -129,6 +129,22 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["mongoose", "exceljs", "bcryptjs"],
 
   /*
+   * Where the build goes — `.next` unless something asks for elsewhere.
+   *
+   * A `next build` writes this directory while a `next dev` is reading it, and
+   * the running server is then serving a page whose chunks were replaced
+   * underneath it. It fails as `ChunkLoadError: Loading chunk … failed` on a
+   * page that worked a minute ago, which reads as a code fault and is not one.
+   *
+   * So anything that builds alongside a dev server gives itself its own:
+   *
+   *     NEXT_DIST_DIR=.next-check pnpm build
+   *
+   * `.next` is then only ever written by the server the developer is using.
+   */
+  distDir: process.env.NEXT_DIST_DIR?.trim() || ".next",
+
+  /*
    * A self-contained server directory, so a container copies `.next/standalone`
    * and runs it — no `node_modules` install at image-build time, and an image
    * measured in tens of megabytes rather than hundreds.

@@ -730,6 +730,83 @@ section("a status colour used as a word uses the ink, not the fill");
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Base styling must not outrank a utility                             */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * Cascade **layers**, not specificity.
+   *
+   * Tailwind declares `theme, base, components, utilities`, and unlayered CSS
+   * beats every one of them. So a bare `input { padding: 8px 12px; width: 100% }`
+   * silently overrode utilities on every form control: a `pl-9` meant to clear
+   * a search icon did nothing and the icon sat on the placeholder, and a
+   * filter select forced to full width took a row of its own — which is what
+   * made the filter bar unusable.
+   *
+   * Element styling belongs in `@layer base`, where a utility can still win.
+   */
+  const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+
+  /** The layer a rule sits in, or null when it sits outside every layer. */
+  const layerOf = (index) => {
+    let depth = 0;
+    let layer = null;
+    const stack = [];
+
+    for (let i = 0; i < index; i++) {
+      const ch = css[i];
+      if (ch === "{") {
+        // Remember which layer this brace opened, if any.
+        const before = css.slice(Math.max(0, i - 120), i);
+        const opened = before.match(/@layer\s+([\w-]+)\s*$/);
+        stack.push(opened ? opened[1] : null);
+        depth++;
+      } else if (ch === "}") {
+        stack.pop();
+        depth--;
+      }
+    }
+    for (const entry of stack) if (entry) layer = entry;
+    void depth;
+    return layer;
+  };
+
+  /* Every bare element selector that styles a form control. */
+  const bare = [...css.matchAll(/(^|\n)\s*(input|select|textarea)\s*(,\s*\n?\s*(input|select|textarea)\s*)*\{/g)];
+  check("the sweep found the form-control rule", bare.length > 0, `${bare.length}`);
+
+  const unlayered = bare.filter((m) => layerOf(m.index) === null);
+  check(
+    "no bare input/select rule sits outside a layer",
+    unlayered.length === 0,
+    unlayered.map((m) => css.slice(m.index, m.index + 40).replace(/\s+/g, " ")).join(" · "),
+  );
+
+  check("the form controls are in @layer base", /@layer base \{[\s\S]{0,400}?\binput,\n\s*select,\n\s*textarea/.test(css));
+
+  /*
+   * Tailwind v4's preflight sets `cursor: default` on buttons. On a board that
+   * is almost entirely buttons, toggles and rows that expand, nothing then
+   * looks pressable — and a control nobody believes is a control is a control
+   * nobody presses. Set once, in the layer a utility can still override.
+   */
+  check("clickable things get the pointer", /@layer base \{[\s\S]{0,600}?button:not\(:disabled\)[\s\S]{0,300}?cursor: pointer/.test(css), "Tailwind's preflight leaves buttons with the arrow cursor");
+  check("...and the row that expands is one of them", /\[role="button"\]:not\(\[aria-disabled="true"\]\)/.test(css));
+  check("...while a refusing one says so", /button:disabled[\s\S]{0,120}cursor: not-allowed/.test(css), "a disabled control invites a click that does nothing");
+  /* In a layer, or it would beat every utility that tries to say otherwise. */
+  check("...all inside a layer", css.indexOf("cursor: pointer") > css.indexOf("@layer base"), "unlayered CSS beats every utility");
+
+  /*
+   * And the filter really does clear its icon. Belt and braces: the padding is
+   * marked important, so it holds even if a rule escapes its layer again.
+   */
+  const controls = readFileSync(new URL("../src/components/devops/table-controls.tsx", import.meta.url), "utf8");
+  check("the filter input clears its icon", /!pl-8/.test(controls), "the search icon will sit on the placeholder");
+  check("...and its clear button", /!pr-7/.test(controls));
+  check("a bar select takes only the room it needs", /w-auto/.test(controls), "each control will take a row of its own");
+}
+
 console.log("\n" + "─".repeat(60));
 console.log(failures === 0 ? `All ${checks} theme checks passed.` : `${failures} of ${checks} theme checks FAILED.`);
 process.exit(failures ? 1 : 0);

@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import type { ItemDoc } from "../models/index.ts";
 import { ItemModel } from "../models/index.ts";
 import { fromStoredDoc, toDocument, toStoredRow } from "../document.ts";
-import { jsonSync, jsonTeams, jsonUsers } from "./json-collections.ts";
+import { jsonAnnouncements, jsonCycles, jsonDeployments, jsonPulls, jsonRepos, jsonSync, jsonTeams, jsonUsers } from "./json-collections.ts";
 import type { Filters } from "../../lib/metrics/types.ts";
 import { matchesFilters } from "../query/predicate.ts";
 import { drain, ensureStoreDir, mutate, readCollection } from "./json-files.ts";
@@ -136,6 +136,11 @@ export function createJsonStore(): Store {
     },
 
     teams: jsonTeams(),
+    repos: jsonRepos(),
+    announcements: jsonAnnouncements(),
+    deployments: jsonDeployments(),
+    cycles: jsonCycles(),
+    pulls: jsonPulls(),
     users: jsonUsers(),
     sync: jsonSync(),
   };

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "collection": "repos",
+  "updatedAt": "2026-09-09T20:16:16.364Z",
+  "rows": [
+    {
+      "_id": "conzumex-bfl-web-app",
+      "id": "conzumex-bfl-web-app",
+      "name": "bfl-web-app",
+      "owner": "conzumex",
+      "repo": "bfl-web-app",
+      "url": "https://github.com/conzumex/bfl-web-app.git",
+      "releaseBranch": "release",
+      "developBranch": "develop",
+      "teamId": "",
+      "token": "",
+      "freezeMethod": "ruleset",
+      "freeze": {
+        "state": "open",
+        "changedAt": "",
+        "changedBy": "",
+        "reason": "",
+        "detail": ""
+      },
+      "createdAt": "2026-09-09T14:00:14.900Z"
+    },
+    {
+      "_id": "conzumex-3in1cms",
+      "id": "conzumex-3in1cms",
+      "name": "3in1cms",
+      "owner": "conzumex",
+      "repo": "3in1cms",
+      "url": "https://github.com/conzumex/3in1cms",
+      "releaseBranch": "release",
+      "developBranch": "develop",
+      "teamIds": [
+        "amc-pod",
+        "payments-pod"
+      ],
+      "token": "",
+      "freezeMethod": "ruleset",
+      "freeze": {
+        "state": "frozen",
+        "changedAt": "2026-09-09T14:24:32.318Z",
+        "changedBy": "admin@example.com",
+        "reason": "release/09-09-2026-hotfix",
+        "detail": "Dry run — nothing was sent. Set GITHUB_MODE=live to apply it.\nPOST /repos/conzumex/3in1cms/rulesets — Add a ruleset refusing every write to develop.",
+        "rulesetId": ""
+      },
+      "createdAt": "2026-09-09T14:00:14.876Z"
+    }
+  ]
+}

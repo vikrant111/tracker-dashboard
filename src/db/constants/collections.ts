@@ -25,6 +25,11 @@ export const COLLECTIONS = {
   teams: `${PREFIX}_teams`,
   users: `${PREFIX}_users`,
   sync: `${PREFIX}_sync`,
+  repos: `${PREFIX}_repos`,
+  announcements: `${PREFIX}_announcements`,
+  deployments: `${PREFIX}_deployments`,
+  cycles: `${PREFIX}_cycles`,
+  pulls: `${PREFIX}_pulls`,
 } as const;
 
 /**
@@ -40,6 +45,11 @@ export const MODELS = {
   team: "Team",
   user: "User",
   sync: "SyncState",
+  repo: "Repo",
+  announcement: "Announcement",
+  deployment: "Deployment",
+  cycle: "Cycle",
+  pull: "PullRequest",
 } as const;
 
 export { PREFIX as COLLECTION_PREFIX };

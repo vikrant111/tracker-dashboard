@@ -209,7 +209,11 @@ file driver was dropping `_id` from items while Mongo returned it, so the same
 item came back with different keys depending on the driver.
 
 **Adding a field.** Put it in the schema, put it in the type in `lib/types.ts`,
-and both drivers store it. Leave it out of the schema and neither will — the
+and both drivers store it. Rows written **before** you added it read it back as
+its schema default: `fromStored` fills missing paths on the way out, because
+`toDocument` only fills them on the way in and Mongo's `.lean()` skips them
+entirely. Without that, a field added on Tuesday is `undefined` on every row
+from Monday while the type insists it is there. Leave it out of the schema and neither will — the
 file driver drops it exactly as Mongo's `strict: true` would, which is the point.
 
 ## Vocabulary

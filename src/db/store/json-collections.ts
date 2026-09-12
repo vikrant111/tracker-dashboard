@@ -10,90 +10,36 @@
  * refuse too. See `db/document.ts`.
  */
 import { fromStored, toDocument, toStoredRow } from "../document.ts";
-import { SyncStateModel, TeamModel, UserModel } from "../models/index.ts";
+import { AnnouncementModel, CycleModel, DeploymentModel, PullModel, RepoModel, SyncStateModel, TeamModel, UserModel } from "../models/index.ts";
+import { jsonKeyed } from "./keyed.ts";
 import { mutate, readCollection } from "./json-files.ts";
-import { removeRow, upsertRow } from "./json-rowops.ts";
+import { upsertRow } from "./json-rowops.ts";
 import type { SyncState } from "../../lib/sync.ts";
+import type { Announcement, Cycle, Deployment, PullRecord, Repo } from "../../lib/devops/types.ts";
 import type { Team, User } from "../../lib/types.ts";
 import type { Store } from "./types.ts";
 
-/** Rows of a collection, with anything unreadable left out. */
-function readAll<T>(name: "teams" | "users", model: typeof TeamModel | typeof UserModel): T[] {
-  const out: T[] = [];
-  for (const row of readCollection<Record<string, unknown>>(name)) {
-    const doc = fromStored<T>(model, row);
-    // A row we cannot read is skipped, not fatal. It predates a schema change
-    // or was edited by hand, and one bad row must not empty the admin screen.
-    if (doc) out.push(doc);
-  }
-  return out;
-}
+export const jsonTeams = (): Store["teams"] => jsonKeyed<Team>("teams", TeamModel, "POD");
 
-/** Find a row by `_id` or by its own `id` field. Older files used only `id`. */
-const findRow = (name: "teams" | "users" | "sync", id: string, alt: string) =>
-  readCollection<Record<string, unknown>>(name).find((r) => r._id === id || r[alt] === id);
+export const jsonRepos = (): Store["repos"] => jsonKeyed<Repo>("repos", RepoModel, "repository");
 
-export const jsonTeams = (): Store["teams"] => ({
-  async all() {
-    return readAll<Team>("teams", TeamModel);
-  },
+export const jsonAnnouncements = (): Store["announcements"] =>
+  jsonKeyed<Announcement>("announcements", AnnouncementModel, "announcement");
 
-  async byId(id: string) {
-    if (typeof id !== "string" || !id) return null;
-    return fromStored<Team>(TeamModel, findRow("teams", id, "id"));
-  },
+export const jsonDeployments = (): Store["deployments"] =>
+  jsonKeyed<Deployment>("deployments", DeploymentModel, "deployment record");
 
-  async save(team: Team) {
-    // One save, so a rejection throws rather than being counted. Quietly
-    // dropping a POD somebody just filled in would be worse than the error.
-    const checked = toDocument<Team>(TeamModel, team, team?.id);
-    if (!checked.doc) throw new Error(`Cannot save that POD: ${checked.error}.`);
+export const jsonCycles = (): Store["cycles"] => jsonKeyed<Cycle>("cycles", CycleModel, "cycle");
 
-    await upsertRow("teams", team.id, toStoredRow(TeamModel, checked.doc, team.id));
-    return checked.doc;
-  },
-
-  async remove(id: string) {
-    if (typeof id !== "string" || !id) return;
-    await removeRow("teams", id);
-  },
-
-  async count() {
-    return readCollection<unknown>("teams").length;
-  },
-});
+export const jsonPulls = (): Store["pulls"] => jsonKeyed<PullRecord>("pulls", PullModel, "pull request");
 
 export const jsonUsers = (): Store["users"] => ({
-  async all() {
-    return readAll<User>("users", UserModel);
-  },
-
-  async byId(id: string) {
-    if (typeof id !== "string" || !id) return null;
-    return fromStored<User>(UserModel, findRow("users", id, "id"));
-  },
-
-  async save(user: User) {
-    const checked = toDocument<User>(UserModel, user, user?.id);
-    if (!checked.doc) throw new Error(`Cannot save that account: ${checked.error}.`);
-
-    await upsertRow("users", user.id, toStoredRow(UserModel, checked.doc, user.id));
-    return checked.doc;
-  },
-
-  async remove(id: string) {
-    if (typeof id !== "string" || !id) return;
-    await removeRow("users", id);
-  },
-
-  async count() {
-    return readCollection<unknown>("users").length;
-  },
+  ...jsonKeyed<User>("users", UserModel, "account"),
 
   async insertFirst(user: User) {
     const checked = toDocument<User>(UserModel, user, user?.id);
     if (!checked.doc) throw new Error(`Cannot create the first account: ${checked.error}.`);
-    const row = toStoredRow(UserModel, checked.doc, user.id);
+    const row = toStoredRow(UserModel, checked.doc as unknown as Record<string, unknown>, user.id);
 
     /*
      * The emptiness test and the write happen inside one `mutate`, so two
@@ -112,7 +58,10 @@ export const jsonUsers = (): Store["users"] => ({
 export const jsonSync = (): Store["sync"] => ({
   async byId(teamId: string) {
     if (typeof teamId !== "string" || !teamId) return null;
-    return fromStored<SyncState>(SyncStateModel, findRow("sync", teamId, "teamId"));
+    const row = readCollection<Record<string, unknown>>("sync").find(
+      (r) => r._id === teamId || r.teamId === teamId,
+    );
+    return fromStored<SyncState>(SyncStateModel, row);
   },
 
   async save(teamId: string, state: SyncState) {

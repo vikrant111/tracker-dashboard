@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "collection": "cycles",
+  "updatedAt": "2026-09-12T13:59:52.634Z",
+  "rows": [
+    {
+      "_id": "conzumex-3in1cms-2026-09-17",
+      "id": "conzumex-3in1cms-2026-09-17",
+      "repoId": "conzumex-3in1cms",
+      "name": "2026.09.17",
+      "releaseBranch": "release/17-09-2026-hotfix-branch",
+      "plannedFor": "2026-09-17",
+      "scope": {
+        "frozen": false,
+        "changedAt": "2026-09-09T17:31:04.243Z",
+        "changedBy": "admin@example.com",
+        "reason": ""
+      },
+      "createdAt": "2026-09-09T14:53:01.991Z",
+      "updatedAt": "2026-09-09T17:31:04.243Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-2026-09",
+      "id": "conzumex-3in1cms-2026-09",
+      "repoId": "conzumex-3in1cms",
+      "name": "2026.09",
+      "releaseBranch": "release",
+      "plannedFor": "2026-09-30",
+      "scope": {
+        "frozen": false,
+        "changedAt": "2026-09-12T13:59:52.630Z",
+        "changedBy": "admin@example.com",
+        "reason": ""
+      },
+      "createdAt": "2026-09-09T14:43:49.927Z",
+      "updatedAt": "2026-09-12T13:59:52.630Z"
+    }
+  ]
+}

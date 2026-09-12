@@ -4,6 +4,7 @@ import { DashboardClient } from "@/components/dashboard-client";
 import { currentUser } from "@/lib/session";
 import { accessibleTeams } from "@/lib/api";
 import { currentWeather } from "@/lib/weather";
+import { canSeeDevOps } from "@/lib/devops/access";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,7 @@ export default async function DashboardPage() {
         authEnabled={AUTH_MODE !== "off"}
         // Admins land on the cross-POD view; members land on their own POD.
         initialTeamId={user.role === "admin" ? "" : (teams[0]?.id ?? "")}
+        canSeeDevOps={canSeeDevOps(user.role)}
       />
     </main>
   );

@@ -45,7 +45,7 @@ import { passwordActionLabel, refuseLocalPassword } from "../src/lib/password-po
 import { matchesFilters } from "../src/db/query/predicate.ts";
 import { buildMatch } from "../src/db/query/match.ts";
 import { dateFields, fromStored, fromStoredDoc, toDocument, toStoredRow } from "../src/db/document.ts";
-import { ItemModel, SyncStateModel, TeamModel, UserModel } from "../src/db/models/index.ts";
+import { CycleModel, ItemModel, RepoModel, SyncStateModel, TeamModel, UserModel } from "../src/db/models/index.ts";
 import { agreedThreshold, teamThresholds, thresholdFor, widestThreshold } from "../src/lib/metrics/threshold.ts";
 import { SEVERITIES, clampSeverityThresholds } from "../src/lib/types.ts";
 import { aggregateDashboard } from "../src/controllers/dashboard.aggregate.ts";
@@ -62,6 +62,34 @@ import { readNumbers } from "../src/lib/numbers.ts";
 import { endLabelPositions } from "../src/components/trend-end-labels.ts";
 import { shouldScrollToTop } from "../src/components/use-scroll-to-top.ts";
 import { failureReason } from "../src/lib/swr.ts";
+import { cleanBranch, parseRepoUrl, repoId } from "../src/lib/devops/types.ts";
+import { cleanTeamIds, withTeamIds } from "../src/lib/devops/repos.ts";
+import { PAGE_SIZE, cleanQuery, matchesQuery, paginate, pullRowFields, scopeRowFields } from "../src/lib/devops/table.ts";
+import { canEditRecords, refuseEdit } from "../src/lib/devops/editors.ts";
+import { cycleForPull, missingSignoffs, refuseMoveToScope } from "../src/lib/devops/to-scope.ts";
+import { cleanSignoffFilter, matchesSignoff } from "../src/lib/devops/signoff.ts";
+import { DEVOPS_ENV_FILE, DEVOPS_MOTION, SIGNOFF_FILTERS } from "../src/lib/devops/constants.ts";
+import { MIN_REMARKS, refuseRemoval, returnedPull } from "../src/lib/devops/return-to-report.ts";
+import { idForRow, linksTo, movedPulls, sameLink } from "../src/lib/devops/scope-link.ts";
+import { validateRepo } from "../src/lib/devops/validation.ts";
+import { canAdminDevOps, canSeeDevOps, devOpsAccess } from "../src/lib/devops/access.ts";
+import { describePlan, planFreeze } from "../src/lib/devops/github-plan.ts";
+import { githubMode, scrub, tokenFor } from "../src/lib/devops/github-config.ts";
+import { explain } from "../src/lib/devops/github-send.ts";
+import { inReadingOrder } from "../src/lib/devops/announcements.ts";
+import { announcementId, cleanDay, cycleId } from "../src/lib/devops/types.ts";
+import { inCycleOrder } from "../src/lib/devops/cycles.ts";
+import { refuseIfScopeFrozen } from "../src/lib/devops/records.ts";
+import { inSheetOrder } from "../src/lib/devops/deployments.ts";
+import { pickTeam, podsOfRepo } from "../src/lib/devops/pods.ts";
+import { SCOPE_COLUMNS, toCsv, toScopeRow } from "../src/lib/devops/scope-sheet.ts";
+import { describeSignoff, setSignoff, signoffState } from "../src/lib/devops/signoff.ts";
+import { REPORT_COLUMNS, countRisky, inReportOrder, toReportRow } from "../src/lib/devops/report.ts";
+import { planMergedPulls } from "../src/lib/devops/github-plan.ts";
+import { isMerged, mergePull, toPullRecord } from "../src/lib/devops/pull-sync.ts";
+import { pullId, ticketFrom } from "../src/lib/devops/pull-record.ts";
+import { MAX_PERIOD_CHARS, cleanPeriod, cleanRange, cleanSpan, describePeriod, grainOf, inPeriod, periodsPresent, rangeToSpan } from "../src/lib/devops/period.ts";
+import { MAX_YEAR, MIN_YEAR, clampYear, monthGrid, parseTyped, parseTypedSpan } from "../src/lib/devops/calendar.ts";
 import { closedRatio, healthScore } from "../src/lib/health.ts";
 import { LEGACY, numbersBundle, stringCell, zip } from "./lib/numbers-fixture.mjs";
 import { highlight, suggest } from "../src/lib/suggest.ts";
@@ -4931,6 +4959,1841 @@ section("aged means what each POD says it means");
   check("the fetcher checks the body parsed", /body && typeof body === "object"/.test(swr));
   check("...and throws something worth showing", /It may be restarting/.test(swr));
   check("...naming the status when there is one", /res\.status\} \$\{res\.statusText/.test(swr));
+}
+
+/* ------------------------------------------------------------------ */
+/* DevOps board — onboarding a repository                              */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * Onboarding is a form somebody pastes into, so the parser has to accept what
+   * people actually have in their clipboard, and refuse what is not a repo at
+   * all. Everything downstream — the id, the API path a freeze is sent to — is
+   * built from what this returns.
+   */
+  const forms = [
+    ["the browser URL", "https://github.com/acme/3in1cms"],
+    ["without the scheme", "github.com/acme/3in1cms"],
+    ["the clone URL", "https://github.com/acme/3in1cms.git"],
+    ["an ssh remote", "git@github.com:acme/3in1cms.git"],
+    ["a trailing slash", "https://github.com/acme/3in1cms/"],
+    ["a deep link", "https://github.com/acme/3in1cms/tree/develop/src"],
+    ["a pull request", "https://github.com/acme/3in1cms/pull/42"],
+    ["surrounding space", "  https://github.com/acme/3in1cms  "],
+    ["just owner/repo", "acme/3in1cms"],
+    ["an enterprise host", "https://github.acme-corp.com/acme/3in1cms"],
+  ];
+  for (const [label, input] of forms) {
+    const got = parseRepoUrl(input);
+    check(`${label} parses`, got?.owner === "acme" && got?.repo === "3in1cms", JSON.stringify(got));
+  }
+
+  /* And what must not parse, because a wrong repo is worse than no repo. */
+  for (const [label, input] of [
+    ["nothing", ""],
+    ["whitespace", "   "],
+    ["a sentence", "please add the cms repo"],
+    ["a bare word", "3in1cms"],
+    ["null", null],
+    ["a number", 42],
+    ["an object", {}],
+  ]) {
+    check(`${label} does not parse`, parseRepoUrl(input) === null, JSON.stringify(parseRepoUrl(input)));
+  }
+
+  /*
+   * The id is deterministic, so onboarding the same repository twice updates
+   * one row rather than leaving two, each with its own freeze state and no way
+   * to tell which is telling the truth.
+   */
+  check("the id is stable", repoId("acme", "3in1cms") === repoId("acme", "3in1cms"));
+  check("...and case-folded", repoId("ACME", "3in1CMS") === repoId("acme", "3in1cms"));
+  check("...and punctuation-folded", repoId("acme", "bfl.web-app") === "acme-bfl-web-app", repoId("acme", "bfl.web-app"));
+  check("two repos do not collide", repoId("acme", "cms") !== repoId("acme", "cms2"));
+  check("a missing half has no id", repoId("acme", "") === "" && repoId("", "cms") === "");
+
+  // -- branch names ------------------------------------------------------
+  /*
+   * A branch name is interpolated into a GitHub API path, so anything that
+   * would break the path falls back to the default rather than being sent.
+   */
+  check("a plain branch survives", cleanBranch("develop", "x") === "develop");
+  check("a slashed branch survives", cleanBranch("release/2026.09", "x") === "release/2026.09");
+  check("refs/heads is stripped", cleanBranch("refs/heads/develop", "x") === "develop");
+  for (const bad of ["", "  ", "with space", "a..b", "/leading", "trailing/", ".dotted", "star*", "q?", "tilde~", "caret^", "colon:", "back\\slash"]) {
+    check(`"${bad}" falls back`, cleanBranch(bad, "fallback") === "fallback");
+  }
+  check("a very long branch falls back", cleanBranch("b".repeat(300), "fallback") === "fallback");
+
+  // -- the form ----------------------------------------------------------
+  const draft = (over = {}) => ({
+    url: "https://github.com/acme/3in1cms",
+    name: "3in1cms",
+    releaseBranch: "release",
+    developBranch: "develop",
+    freezeMethod: "ruleset",
+    token: "",
+    ...over,
+  });
+  check("a filled form is valid", validateRepo(draft()) === null, validateRepo(draft()) ?? "");
+  check("no form at all is refused", validateRepo(null) !== null);
+  check("a non-URL is refused", /GitHub address/.test(validateRepo(draft({ url: "the cms repo" })) ?? ""));
+  check("an unusable release branch is refused", /release branch/.test(validateRepo(draft({ releaseBranch: "a b" })) ?? ""));
+  check("an unusable develop branch is refused", /develop branch/.test(validateRepo(draft({ developBranch: "x..y" })) ?? ""));
+
+  /*
+   * The same branch for both is the expensive mistake: freezing develop would
+   * freeze the branch releases are cut from.
+   */
+  check("the same branch twice is refused", /same/.test(validateRepo(draft({ releaseBranch: "main", developBranch: "main" })) ?? ""));
+  check("an unknown freeze method is refused", validateRepo(draft({ freezeMethod: "vibes" })) !== null);
+  check("an oversized token is refused", validateRepo(draft({ token: "t".repeat(LIMITS.githubToken + 1) })) !== null);
+
+  // -- who may look at any of it ----------------------------------------
+  /*
+   * Two readings of the brief pull opposite ways: members must see whether
+   * develop is frozen and fill in the deployment form, and the board is also
+   * described as an admin's tool. It is a switch, defaulting to the reading
+   * that lets members do the jobs the board exists for.
+   */
+  check("an admin always gets in", canSeeDevOps("admin", "admins") && canSeeDevOps("admin", "members"));
+  check("a member gets in by default", canSeeDevOps("member", "members"));
+  check("...and not in admins-only mode", !canSeeDevOps("member", "admins"));
+  check("a signed-out reader never gets in", !canSeeDevOps(null, "members") && !canSeeDevOps(undefined, "members"));
+  check("an unknown role never gets in", !canSeeDevOps("wizard", "members"));
+
+  check("the default mode is members", devOpsAccess({}) === "members");
+  check("an explicit mode is honoured", devOpsAccess({ DEVOPS_ACCESS: "admins" }) === "admins");
+  check("case and space do not matter", devOpsAccess({ DEVOPS_ACCESS: "  ADMINS " }) === "admins");
+  check("nonsense falls back rather than locking everyone out", devOpsAccess({ DEVOPS_ACCESS: "yes" }) === "members");
+
+  /* Writing is an admin's job whichever mode is set. */
+  check("only an admin may change anything", canAdminDevOps("admin") && !canAdminDevOps("member") && !canAdminDevOps(null));
+
+  // -- the schema, same gate as every other collection --------------------
+  const repo = (over = {}) => ({
+    id: "acme-3in1cms", name: "3in1cms", owner: "acme", repo: "3in1cms",
+    url: "https://github.com/acme/3in1cms", releaseBranch: "release", developBranch: "develop",
+    teamId: "", token: "", freezeMethod: "ruleset",
+    freeze: { state: "open", changedAt: "", changedBy: "", reason: "", detail: "" },
+    createdAt: "2026-09-09T00:00:00.000Z", ...over,
+  });
+  const ok = toDocument(RepoModel, repo(), "acme-3in1cms");
+  check("a repository passes the schema", ok.doc !== null, ok.error ?? "");
+  check("an unknown freeze method is refused by the schema", toDocument(RepoModel, repo({ freezeMethod: "vibes" }), "x").doc === null);
+  check("an unknown freeze state is refused", toDocument(RepoModel, repo({ freeze: { state: "melted" } }), "x").doc === null);
+  check("a repo with no owner is refused", toDocument(RepoModel, repo({ owner: undefined }), "x").doc === null);
+  const extra = toDocument(RepoModel, repo({ secretNote: "kept?" }), "acme-3in1cms");
+  check("a key the schema does not declare is dropped", extra.doc !== null && !("secretNote" in extra.doc));
+
+  // -- the token never reaches a browser ---------------------------------
+  /*
+   * The same rule as the Azure PAT on a POD. The form is shown whether a token
+   * is set, never what it is, and sending the mask back means "keep the stored
+   * one" — a plain assignment would overwrite the secret with bullet characters.
+   */
+  const route = readFileSync(new URL("../src/app/api/repos/route.ts", import.meta.url), "utf8");
+  check("the repos route redacts the token", /token: r\.token \? TOKEN_MASK : ""/.test(route));
+  check("...on the way out of every read", /\(await listRepos\(\)\)\.map\(redact\)/.test(route));
+  check("...and on the way back from a save", /redact\(await saveRepo\(body/.test(route));
+  check("reading is open to anyone signed in", /await requireUser\(\)/.test(route));
+  check("writing is admin-only", (route.match(/await requireAdmin\(\)/g) ?? []).length >= 2);
+
+  const repoRules = readFileSync(new URL("../src/lib/devops/repos.ts", import.meta.url), "utf8");
+  check("a masked token keeps the stored one", /incoming\.startsWith\("••"\)/.test(repoRules));
+  check("freeze state is never taken from the form", /freeze: existing\?\.freeze \?\?/.test(repoRules));
+
+  /* The board must not be able to claim a branch is locked when it is not. */
+  const panel = readFileSync(new URL("../src/app/admin/panels/repo-form.tsx", import.meta.url), "utf8");
+  check("the form does not offer a freeze state", !/freeze\.state|freeze:/.test(panel));
+}
+
+/* ------------------------------------------------------------------ */
+/* Freezing a branch — what actually gets sent                         */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * The plan is the part that has to be right. A wrong path fails loudly; a
+   * wrong body succeeds at something nobody asked for, on somebody's real
+   * repository. It is pure so every shape is checked here rather than against a
+   * live repo — which is also why the live mode ships off by default.
+   */
+  const repo = (over = {}) => ({
+    owner: "acme", repo: "3in1cms", developBranch: "develop", freezeMethod: "ruleset", ...over,
+  });
+
+  // -- ruleset -----------------------------------------------------------
+  const freeze = planFreeze(repo(), true);
+  check("freezing sends one request", freeze.length === 1, `${freeze.length}`);
+  check("...a POST to the repo's rulesets", freeze[0].method === "POST" && freeze[0].path === "/repos/acme/3in1cms/rulesets", freeze[0].path);
+  check("...targeting the develop branch", JSON.stringify(freeze[0].body).includes("refs/heads/develop"));
+  check("...actively enforced", freeze[0].body.enforcement === "active");
+
+  /*
+   * Nobody may bypass. A freeze that repository admins can push through is not
+   * a freeze, and admins are exactly the people most likely to push anyway.
+   */
+  check("nobody can bypass the freeze", Array.isArray(freeze[0].body.bypass_actors) && freeze[0].body.bypass_actors.length === 0);
+
+  const rules = freeze[0].body.rules.map((r) => r.type).sort();
+  check("pushes are refused", rules.includes("update"));
+  check("deleting the branch is refused", rules.includes("deletion"));
+  check("...and recreating it, which would dodge the other two", rules.includes("creation"));
+
+  // -- unfreezing needs to remove the right one --------------------------
+  const byId = planFreeze(repo(), false, "12345");
+  check("unfreezing deletes the recorded ruleset", byId[0].method === "DELETE" && byId[0].path === "/repos/acme/3in1cms/rulesets/12345", byId[0].path);
+
+  /*
+   * With no id recorded it looks the ruleset up rather than guessing. Deleting
+   * by guess would remove somebody else's rules.
+   */
+  const byName = planFreeze(repo(), false);
+  check("with no id it looks the ruleset up first", byName[0].method === "GET" && byName[0].path === "/repos/acme/3in1cms/rulesets");
+  check("...and does not delete anything blind", byName.every((c) => c.method !== "DELETE"));
+
+  // -- classic branch protection ----------------------------------------
+  const prot = planFreeze(repo({ freezeMethod: "protection" }), true);
+  check("protection PUTs to the branch", prot[0].method === "PUT" && prot[0].path === "/repos/acme/3in1cms/branches/develop/protection", prot[0].path);
+  check("...with the branch locked", prot[0].body.lock_branch === true);
+  check("...and admins included", prot[0].body.enforce_admins === true);
+
+  /*
+   * The endpoint requires every field even when null. Omitting one is a 422,
+   * not a default, and the nulls are what say "change nothing else about how
+   * this branch is protected" on a repo that already has rules.
+   */
+  for (const field of ["required_status_checks", "required_pull_request_reviews", "restrictions"]) {
+    check(`protection sends ${field}, as the endpoint requires`, field in prot[0].body);
+    check(`...as null, changing nothing else`, prot[0].body[field] === null);
+  }
+  const unprot = planFreeze(repo({ freezeMethod: "protection" }), false);
+  check("unfreezing removes the protection", unprot[0].method === "DELETE" && unprot[0].path.endsWith("/protection"));
+
+  // -- record ------------------------------------------------------------
+  check("the record method sends nothing at all", planFreeze(repo({ freezeMethod: "record" }), true).length === 0);
+  check("...in either direction", planFreeze(repo({ freezeMethod: "record" }), false).length === 0);
+  check("...and says so", /Nothing is sent/.test(describePlan([])));
+
+  // -- a branch name is a URL segment ------------------------------------
+  /*
+   * Branch names are interpolated into a path. `saveRepo` refuses the ones that
+   * would break it, and everything that survives is escaped here too — a
+   * release branch legitimately contains a slash.
+   */
+  const slashed = planFreeze(repo({ freezeMethod: "protection", developBranch: "release/2026.09" }), true);
+  check("a slashed branch is escaped in the path", slashed[0].path === "/repos/acme/3in1cms/branches/release%2F2026.09/protection", slashed[0].path);
+  const odd = planFreeze(repo({ owner: "acme corp", repo: "a/b" }), true);
+  check("an odd owner or repo is escaped too", odd[0].path === "/repos/acme%20corp/a%2Fb/rulesets", odd[0].path);
+
+  // -- every plan explains itself ----------------------------------------
+  check("every call says why it exists", [...freeze, ...prot, ...byId, ...byName].every((c) => c.why && c.why.length > 10));
+  check("the plan reads as prose", /POST \/repos\/acme\/3in1cms\/rulesets — /.test(describePlan(freeze)));
+}
+
+/* ------------------------------------------------------------------ */
+/* Live is a decision, and a token never comes back out                */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * The failure mode of guessing wrong about the mode is a branch nobody meant
+   * to lock, so anything other than an explicit "live" is a dry run.
+   */
+  check("unset is a dry run", githubMode({}) === "dry-run");
+  check("blank is a dry run", githubMode({ GITHUB_MODE: "  " }) === "dry-run");
+  check("live is honoured", githubMode({ GITHUB_MODE: "live" }) === "live");
+  check("case and space do not matter", githubMode({ GITHUB_MODE: " LIVE " }) === "live");
+  for (const near of ["true", "yes", "1", "livee", "production", "on"]) {
+    check(`"${near}" is not live`, githubMode({ GITHUB_MODE: near }) === "dry-run");
+  }
+
+  // -- the token ---------------------------------------------------------
+  check("a repo's own token wins", tokenFor({ token: "ghp_repo" }, { GITHUB_TOKEN: "ghp_env" }) === "ghp_repo");
+  check("...and the environment is the fallback", tokenFor({ token: "" }, { GITHUB_TOKEN: "ghp_env" }) === "ghp_env");
+  check("no token anywhere is empty, not undefined", tokenFor({ token: "" }, {}) === "");
+  check("a missing repo does not throw", tokenFor(null, {}) === "");
+
+  /*
+   * `freeze.detail` is stored on the repo and rendered in a tooltip members can
+   * read. A 401 from GitHub can echo back what was sent, so everything that
+   * could carry a token is scrubbed before it is kept.
+   */
+  /*
+   * Two separate defences, and they must be checked separately.
+   *
+   * The first version of this used a `ghp_`-shaped token for both, so deleting
+   * the exact-token removal entirely still passed — the shape regex was quietly
+   * doing all the work. A legacy 40-hex token, or an enterprise one, matches no
+   * shape at all and would have gone straight into a tooltip members can read.
+   */
+  const shapeless = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+  check("the exact token is removed, whatever it looks like", !scrub(`bad credentials for ${shapeless}`, shapeless).includes(shapeless));
+  check("...and something is left to read", /bad credentials/.test(scrub(`bad credentials for ${shapeless}`, shapeless)));
+  check("a short value is not treated as a token", scrub("status 404", "404") === "status 404");
+
+  const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+  check("a known token is removed", !scrub(`bad credentials for ${secret}`, secret).includes(secret));
+  check("a token from elsewhere is removed too", !scrub(`saw ${secret} in a header`, "").includes(secret));
+  check("a fine-grained token is removed", !scrub("github_pat_11ABCDEFG0abcdefghijklmnop", "").includes("github_pat_11ABCDEFG0"));
+  check("ordinary text is untouched", scrub("GitHub answered 404", "") === "GitHub answered 404");
+  check("nothing at all is safe", scrub(undefined, "") === "" && scrub(null, "x") === "");
+
+  // -- what a failure says -----------------------------------------------
+  const where = { owner: "acme", repo: "3in1cms" };
+  check("401 blames the token", /token/i.test(explain(401, "", where)));
+  check("403 names the missing right", /admin rights/i.test(explain(403, "", where)));
+  check("...unless it is the rate limit", /rate limit/i.test(explain(403, "API rate limit exceeded", where)));
+  /*
+   * GitHub answers 404 when a token cannot see a private repo at all, so "not
+   * found" on its own sends people hunting for a typo in a name that is correct.
+   */
+  check("404 mentions visibility, not just absence", /cannot see it/i.test(explain(404, "", where)));
+  check("...and names the repository", explain(404, "", where).includes("acme/3in1cms"));
+  check("422 passes GitHub's own reason through", /invalid/i.test(explain(422, "branch not found", where)) && explain(422, "branch not found", where).includes("branch not found"));
+  check("5xx says it is their side", /their side/i.test(explain(503, "", where)));
+
+  /* And the route that fires it is admin-only and records what happened. */
+  const route = readFileSync(new URL("../src/app/api/repos/[id]/freeze/route.ts", import.meta.url), "utf8");
+  check("freezing is admin-only", /await requireAdmin\(\)/.test(route));
+  check("a freeze needs a reason", /if \(frozen && !reason\)/.test(route));
+  check("...and unfreezing does not", /reason: frozen \? reason : ""/.test(route));
+  check("a refusal is recorded as failed, not as the change", /outcome\.ok \? \(frozen \? "frozen" : "open"\) : "failed"/.test(route));
+  check("the token is redacted on the way out", /token: saved\.token \? "••••••••" : ""/.test(route));
+  check("who froze it is recorded", /changedBy: user\.email/.test(route));
+}
+
+/* ------------------------------------------------------------------ */
+/* Announcements                                                       */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * Pinned first, then newest. Somebody opening the board mid-release wants the
+   * freeze notice at the top, not whatever happened to be posted last.
+   */
+  const a = (id, pinned, createdAt) => ({ id, pinned, createdAt, repoId: "r", branch: "release", kind: "note", title: id, body: "", author: "" });
+  const order = inReadingOrder([
+    a("old-note", false, "2026-01-01T00:00:00.000Z"),
+    a("pinned-old", true, "2026-01-02T00:00:00.000Z"),
+    a("newest", false, "2026-09-01T00:00:00.000Z"),
+    a("pinned-new", true, "2026-03-01T00:00:00.000Z"),
+  ]).map((x) => x.id);
+  check("pinned come first", order.slice(0, 2).every((id) => id.startsWith("pinned")), order.join(","));
+  check("...newest pinned first", order[0] === "pinned-new", order.join(","));
+  check("...then the rest, newest first", order[2] === "newest" && order[3] === "old-note", order.join(","));
+  check("sorting does not mutate the input", inReadingOrder([]).length === 0);
+
+  /* The id sorts by time within a repo and cannot collide across repos. */
+  check("the id carries the repo", announcementId("acme-cms", 1).startsWith("acme-cms-"));
+  check("...and sorts by time as text", announcementId("r", 2) > announcementId("r", 1));
+  check("...even across a digit boundary", announcementId("r", 1000) > announcementId("r", 999));
+  check("two repos never collide", announcementId("a", 1) !== announcementId("b", 1));
+
+  const route = readFileSync(new URL("../src/app/api/announcements/route.ts", import.meta.url), "utf8");
+  check("anyone signed in can read announcements", /await requireUser\(\)/.test(route));
+  check("posting is admin-only", /await requireAdmin\(\)/.test(route));
+
+  const rules = readFileSync(new URL("../src/lib/devops/announcements.ts", import.meta.url), "utf8");
+  check("an announcement must belong to a real repo", /Pick a repository this announcement is about/.test(rules));
+  check("...and needs a title", /Give the announcement a title/.test(rules));
+  check("an edit does not steal the byline", /author: existing\?\.author \|\| author/.test(rules));
+  check("the branch defaults to the repo's release branch", /repo\.releaseBranch/.test(rules));
+}
+
+/* ------------------------------------------------------------------ */
+/* Scope sheets and the freeze that closes them                        */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * Scope belongs to a *cycle*, not to a repository. "What is in 2026.09" is a
+   * different list from "what is in 2026.10", and agreeing one must not close
+   * the other. That correction arrived after the first cut of this and is the
+   * reason the id carries both.
+   */
+  check("a cycle id carries repo and name", cycleId("acme-cms", "2026.09") === "acme-cms-2026-09", cycleId("acme-cms", "2026.09"));
+  check("...folded the same way every time", cycleId("acme-cms", "Sprint 42") === cycleId("acme-cms", "sprint-42"));
+  check("two cycles of one repo differ", cycleId("r", "2026.09") !== cycleId("r", "2026.10"));
+  check("the same name on two repos differs", cycleId("a", "2026.09") !== cycleId("b", "2026.09"));
+  check("a missing half has no id", cycleId("", "x") === "" && cycleId("r", "  ") === "");
+
+  // -- the freeze rule, which the form and the API both ask ---------------
+  /*
+   * One function, shared. Two wordings for one rule is how a form ends up
+   * claiming it is open while the server refuses every row.
+   */
+  check("an open sheet refuses nothing", refuseIfScopeFrozen({ name: "x", scope: { frozen: false } }) === null);
+  check("a missing cycle refuses nothing", refuseIfScopeFrozen(null) === null && refuseIfScopeFrozen(undefined) === null);
+  const shut = refuseIfScopeFrozen({ name: "2026.09", scope: { frozen: true, reason: "signed off" } });
+  check("a frozen sheet refuses", shut !== null);
+  check("...naming the cycle", shut.includes("2026.09"), shut);
+  check("...and quoting the reason", shut.includes("signed off"), shut);
+  const bare = refuseIfScopeFrozen({ name: "2026.09", scope: { frozen: true, reason: "" } });
+  check("a frozen sheet with no reason still says who can reopen it", /admin can reopen/i.test(bare), bare);
+
+  // -- dates are stored so they can be grouped ---------------------------
+  /*
+   * `YYYY-MM-DD` strings, because a year, a month and a day are then the same
+   * filter — a prefix — with no date maths and no timezone. Stage 4's grouping
+   * rests entirely on this.
+   */
+  check("a real day survives", cleanDay("2026-09-04") === "2026-09-04");
+  check("whitespace is trimmed", cleanDay("  2026-09-04  ") === "2026-09-04");
+  check("a datetime keeps only the day", cleanDay("2026-09-04T10:00:00Z") === "2026-09-04");
+  /* Shape alone is not enough: this matches the pattern and is not a day. */
+  check("the 31st of February is refused", cleanDay("2026-02-31") === "", cleanDay("2026-02-31"));
+  check("month 13 is refused", cleanDay("2026-13-01") === "");
+  check("day 00 is refused", cleanDay("2026-09-00") === "");
+  for (const bad of ["", "  ", "04/09/2026", "2026-9-4", "yesterday", "20260904", null, undefined, 42, {}]) {
+    check(`${JSON.stringify(bad)} is not a day`, cleanDay(bad) === "");
+  }
+  check("a leap day in a leap year survives", cleanDay("2024-02-29") === "2024-02-29");
+  check("...and is refused in a common year", cleanDay("2026-02-29") === "");
+
+  // -- the order the sheet reads in --------------------------------------
+  /*
+   * Rows with no date yet are not deployed, so they belong at the top with the
+   * things still to come rather than buried under everything that has shipped.
+   */
+  const row = (id, deployedOn, createdAt) => ({ id, deployedOn, createdAt, repoId: "r", cycleId: "c" });
+  const order = inSheetOrder([
+    row("shipped-old", "2026-01-01", "2026-01-01T00:00:00.000Z"),
+    row("not-yet", "", "2026-02-01T00:00:00.000Z"),
+    row("shipped-new", "2026-09-01", "2026-03-01T00:00:00.000Z"),
+  ]).map((r) => r.id);
+  check("undated rows lead", order[0] === "not-yet", order.join(","));
+  check("...then newest deployed first", order[1] === "shipped-new" && order[2] === "shipped-old", order.join(","));
+
+  const cycleOrder = inCycleOrder([
+    { id: "old", plannedFor: "2026-01-01", createdAt: "a" },
+    { id: "unplanned", plannedFor: "", createdAt: "b" },
+    { id: "next", plannedFor: "2026-09-01", createdAt: "c" },
+  ]).map((c) => c.id);
+  check("an unplanned cycle leads", cycleOrder[0] === "unplanned", cycleOrder.join(","));
+
+  // -- the sheet as a file ------------------------------------------------
+  /*
+   * The last two columns are the join back to the tracker: what a bug's
+   * severity and status are *now*, not what somebody typed weeks ago. That is
+   * the whole reason the row stores a work item id rather than a copy.
+   */
+  const headers = SCOPE_COLUMNS.map((c) => c.header);
+  check("the sheet carries the live bug columns", headers.includes("Bug severity now") && headers.includes("Bug status now"));
+  check("...and which branch and environment", headers.includes("Branch") && headers.includes("Environment"));
+  check("...and the PR", headers.includes("PR"));
+  check("every column has a field and a width", SCOPE_COLUMNS.every((c) => c.field && c.width > 0));
+
+  const built = toScopeRow(
+    { repoId: "r", cycleId: "c", kind: "bug", state: "deployed", ticket: "1234", title: "Fix the thing",
+      branch: "release", environment: "Production", prUrl: "", author: "a@b.com", notes: "", deployedOn: "2026-09-04" },
+    { repo: "3in1cms", cycle: "2026.09" },
+    { severity: "Critical", status: "Closed" },
+  );
+  check("a row resolves the repo and cycle names", built.repo === "3in1cms" && built.cycle === "2026.09");
+  check("...and carries the live severity", built.liveSeverity === "Critical" && built.liveStatus === "Closed");
+  const noLive = toScopeRow({ repoId: "r", cycleId: "c", kind: "bug", state: "planned", ticket: "nope", title: "t", branch: "", environment: "", prUrl: "", author: "", notes: "", deployedOn: "" }, {});
+  check("a ticket the tracker does not know leaves the live columns blank", noLive.liveSeverity === "" && noLive.liveStatus === "");
+  check("...and falls back to the ids for names", noLive.repo === "r" && noLive.cycle === "c");
+
+  /* CSV has to survive the things people type into a notes field. */
+  const csv = toCsv([{ ...built, title: 'He said "ship it", then, later', notes: "line one\nline two" }]);
+  check("a quote in a cell is doubled", csv.includes('""ship it""'), csv.slice(0, 200));
+  check("a cell with a comma is quoted", /"He said/.test(csv));
+  check("a newline does not break the row", csv.split("\r\n").length === 2 + 1 || csv.includes('"line one\nline two"'));
+  check("the header row comes first", csv.startsWith("Repository,Cycle,"), csv.slice(0, 40));
+
+  // -- who may do what ----------------------------------------------------
+  const rows = readFileSync(new URL("../src/app/api/deployments/route.ts", import.meta.url), "utf8");
+  /*
+   * Members fill this in. They are the people who know what their change is and
+   * which branch it is on, and a sheet only an admin can write is a sheet
+   * nobody fills.
+   */
+  check("members may add a row", /const user = await requireUser\(\);/.test(rows));
+  check("removing a row is admin-only", /await requireAdmin\(\)/.test(rows));
+  check("...and a frozen sheet refuses the delete too", /refuseIfScopeFrozen\(await findCycleById\(row\.cycleId\)\)/.test(rows));
+
+  const scope = readFileSync(new URL("../src/app/api/cycles/[id]/scope/route.ts", import.meta.url), "utf8");
+  check("freezing scope is admin-only", /await requireAdmin\(\)/.test(scope));
+  check("who froze it is recorded", /changedBy: user\.email/.test(scope));
+  check("the reason is dropped when reopened", /reason: frozen \? reason : ""/.test(scope));
+
+  const dom = readFileSync(new URL("../src/lib/devops/deployments.ts", import.meta.url), "utf8");
+  check("a row must name a cycle", /Pick the deployment cycle/.test(dom));
+  check("...belonging to the same repo", /is not a cycle of that repository/.test(dom));
+  check("a frozen cycle refuses writes", /const shut = refuseIfScopeFrozen\(cycle\)/.test(dom));
+  check("an edit does not steal the byline", /author: existing\?\.author \|\| author/.test(dom));
+
+  const cyc = readFileSync(new URL("../src/lib/devops/cycles.ts", import.meta.url), "utf8");
+  check("renaming a cycle cannot reopen its scope", /scope: existing\?\.scope \?\?/.test(cyc));
+}
+
+/* ------------------------------------------------------------------ */
+/* Client components may not reach the server                          */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * A `"use client"` file that imports a *value* from the store, a controller,
+   * or a server-side lib pulls that module's whole dependency tree into the
+   * browser bundle. Anything touching `db/store` reaches mongoose, which
+   * reaches `net`, and the build fails with a message naming none of the code
+   * that caused it.
+   *
+   * That shipped: the scope-sheet form imported one shared function from
+   * `devops/cycles.ts` so the form and the API would agree, and `cycles.ts`
+   * reaches the store. `tsc` was happy — the types are fine — and no check
+   * compiled the page, so every suite passed while the page refused to render.
+   *
+   * `import type` is fine and deliberately allowed: it is erased before
+   * bundling, which is why four components import `PodMatch` from a controller
+   * and always could.
+   */
+  const SERVER_ONLY = /@\/(db|controllers)\/|@\/lib\/devops\/(cycles|deployments|repos|github|announcements|scope-sheet)"/;
+
+  const walk = (dir) =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(new URL(`${e.name}/`, dir)) : /\.tsx?$/.test(e.name) ? [new URL(e.name, dir)] : [],
+    );
+
+  let clientFiles = 0;
+  const reaching = [];
+
+  for (const file of walk(new URL("../src/", import.meta.url))) {
+    const src = readFileSync(file, "utf8");
+    if (!/^\s*["']use client["']/m.test(src)) continue;
+    clientFiles++;
+
+    for (const line of src.split("\n")) {
+      const isImport = /^\s*import\s/.test(line);
+      const isTypeOnly = /^\s*import\s+type\s/.test(line);
+      if (isImport && !isTypeOnly && SERVER_ONLY.test(line)) {
+        reaching.push(`${file.pathname.split("/src/")[1]}: ${line.trim().slice(0, 90)}`);
+      }
+    }
+  }
+
+  check("the sweep found the client components", clientFiles > 10, `${clientFiles}`);
+  check("no client component imports a value from the server", reaching.length === 0, reaching.slice(0, 4).join(" · "));
+
+  /* And the rule the form needs really does live in a client-safe module. */
+  const records = readFileSync(new URL("../src/lib/devops/records.ts", import.meta.url), "utf8");
+  check("the scope rule lives where the form can reach it", /export function refuseIfScopeFrozen/.test(records));
+  check("...and that module imports nothing server-side", !SERVER_ONLY.test(records));
+  check("...while the server module re-exports it, so there is still one copy",
+    /export \{ refuseIfScopeFrozen \} from "\.\/records\.ts";/.test(
+      readFileSync(new URL("../src/lib/devops/cycles.ts", import.meta.url), "utf8"),
+    ));
+}
+
+/* ------------------------------------------------------------------ */
+/* Sign-offs, and what merged without them                             */
+/* ------------------------------------------------------------------ */
+{
+  const sig = (by = "a@b.com") => ({ by, at: "2026-09-04T00:00:00.000Z" });
+
+  check("nothing signed is 'none'", signoffState({}, true).label === "none");
+  check("all three signed is complete", signoffState({ biz: sig(), qa: sig(), pod: sig() }, true).complete);
+  check("...and not a risk", !signoffState({ biz: sig(), qa: sig(), pod: sig() }, true).risk);
+  check("some signed is 'partial'", signoffState({ biz: sig() }, true).label === "partial");
+
+  /*
+   * The question the report exists to answer: merged to the release branch
+   * without business or QA. Those two are the ones that mean somebody outside
+   * the change agreed it should ship.
+   */
+  check("merged with no biz is a risk", signoffState({ qa: sig(), pod: sig() }, true).risk);
+  check("merged with no QA is a risk", signoffState({ biz: sig(), pod: sig() }, true).risk);
+  check("merged with neither is a risk", signoffState({ pod: sig() }, true).risk);
+
+  /*
+   * POD verification missing is worth showing and is not the same problem. If
+   * it counted, every fresh PR would be flagged and the real ones would drown.
+   */
+  check("only POD verification missing is not a risk", !signoffState({ biz: sig(), qa: sig() }, true).risk);
+
+  /*
+   * An unmerged PR missing sign-offs is a PR awaiting review, which is the
+   * normal state of things. Flagging it would bury the merged ones.
+   */
+  check("an open PR is never a risk", !signoffState({}, false).risk);
+  check("...however little is signed", !signoffState({ pod: sig() }, false).risk);
+
+  check("a signature with no name does not count", signoffState({ biz: { by: "", at: "x" } }, true).missing.includes("biz"));
+  check("missing levels come back in order", signoffState({}, true).missing.join(",") === "biz,qa,pod");
+
+  // -- what the column says ----------------------------------------------
+  check("complete reads plainly", describeSignoff({ biz: sig(), qa: sig(), pod: sig() }, true) === "All sign-offs");
+  const partial = describeSignoff({ biz: sig() }, true);
+  /* Names what is missing. "2 of 3" makes somebody open the row to find out. */
+  check("partial names what is missing", /missing QA, POD verification/.test(partial), partial);
+  check("...and what is present", /Business/.test(partial), partial);
+  check("none says so", /^Missing /.test(describeSignoff({}, true)));
+
+  // -- ticking and unticking ---------------------------------------------
+  const after = setSignoff({}, "qa", true, "q@a.com", "2026-09-04T00:00:00.000Z");
+  check("a tick records who", after.qa?.by === "q@a.com");
+  check("...and when", after.qa?.at === "2026-09-04T00:00:00.000Z");
+  check("untick removes it", setSignoff(after, "qa", false, "x", "y").qa === undefined);
+  check("...and leaves the others", Object.keys(setSignoff({ ...after, biz: sig() }, "qa", false, "x", "y")).join() === "biz");
+  check("setSignoff does not mutate its input", (() => { const before = { biz: sig() }; setSignoff(before, "qa", true, "a", "b"); return before.qa === undefined; })());
+
+  // -- the report ---------------------------------------------------------
+  const pr = (over = {}) => ({
+    id: "r-1", repoId: "r", cycleId: "", number: 1, title: "Fix it", url: "https://github.com/a/b/pull/1",
+    author: "dev", baseBranch: "release", mergedAt: "2026-09-04T10:00:00Z", mergedOn: "2026-09-04",
+    deployedOn: "", ticket: "", signoffs: {}, syncedAt: "", ...over,
+  });
+
+  const row = toReportRow(pr(), { project: "AMC POD", repo: "3in1cms" });
+  const headers = REPORT_COLUMNS.map((c) => c.header);
+  for (const wanted of ["Project", "Repo", "PR", "Sign-off status", "Merged date", "Release branch", "Deployed on"]) {
+    check(`the report has a ${wanted} column`, headers.includes(wanted), headers.join(","));
+  }
+  check("a row carries the POD as the project", row.project === "AMC POD");
+  check("...the PR link", row.pr === "https://github.com/a/b/pull/1");
+  check("...and the release branch it merged into", row.branch === "release");
+  /* Spelled out: a reader scanning a spreadsheet should not have to know an
+     empty cell is the good case. */
+  check("a risky row says so in words", /Merged without biz and qa sign-off/.test(row.risk), row.risk);
+  check("a safe row leaves it blank", toReportRow(pr({ signoffs: { biz: sig(), qa: sig(), pod: sig() } }), {}).risk === "");
+
+  const ordered = inReportOrder([
+    pr({ id: "safe-new", mergedOn: "2026-09-10", signoffs: { biz: sig(), qa: sig(), pod: sig() } }),
+    pr({ id: "risky-old", mergedOn: "2026-01-01" }),
+    pr({ id: "safe-old", mergedOn: "2026-02-01", signoffs: { biz: sig(), qa: sig(), pod: sig() } }),
+  ]).map((p) => p.id);
+  check("risky rows sort to the top", ordered[0] === "risky-old", ordered.join(","));
+  check("...then newest merged", ordered[1] === "safe-new", ordered.join(","));
+  check("the risky count is the headline", countRisky([pr(), pr({ id: "x", signoffs: { biz: sig(), qa: sig(), pod: sig() } })]) === 1);
+
+  // -- reading from GitHub ------------------------------------------------
+  const call = planMergedPulls({ owner: "acme", repo: "cms" }, "release");
+  check("the PR list is a GET", call.method === "GET");
+  check("...on the repo's pulls", call.path.startsWith("/repos/acme/cms/pulls?"), call.path);
+  /* GitHub has no "merged" filter: a closed PR may have been abandoned, and
+     only merged_at tells them apart. */
+  check("...asking for closed, which is the only way", call.path.includes("state=closed"));
+  check("...on the given base branch", call.path.includes("base=release"));
+  check("...newest first, so a cap truncates the tail", call.path.includes("direction=desc"));
+  check("a slashed branch is escaped", planMergedPulls({ owner: "a", repo: "b" }, "release/2026.09").path.includes("release%2F2026.09"));
+
+  check("a PR id is deterministic", pullId("acme-cms", 42) === "acme-cms-42");
+  check("...and refuses nonsense", pullId("r", 0) === "" && pullId("r", -1) === "" && pullId("", 1) === "" && pullId("r", "x") === "");
+
+  /* The ticket is guessed from the title or branch, because teams write it
+     four different ways and a guess beats nothing — the join looks it up. */
+  check("a bracketed id is found", ticketFrom("[1234] fix the thing") === "1234");
+  check("a hash id is found", ticketFrom("fix #4242 properly") === "4242");
+  check("a project key is found", ticketFrom("AB-99 tidy up") === "AB-99");
+  check("a leading number is found", ticketFrom("1234 fix") === "1234");
+  check("the branch is a fallback", ticketFrom("no id here", "bugfix/AB-77-thing") === "AB-77");
+  check("nothing found is blank, not a guess", ticketFrom("just some words", "develop") === "");
+
+  /*
+   * Closed is not merged. GitHub has no "merged" filter, so a listing returns
+   * abandoned PRs beside shipped ones — and an abandoned one on this report is
+   * a change somebody investigates that never happened.
+   */
+  check("a merged PR is merged", isMerged({ merged_at: "2026-09-04T10:00:00Z" }));
+  check("a closed-but-abandoned PR is not", !isMerged({ merged_at: null }));
+  check("...nor one with the field missing", !isMerged({}) && !isMerged(null) && !isMerged(undefined));
+  check("...nor one with an empty string", !isMerged({ merged_at: "" }));
+
+  const mapped = toPullRecord(
+    { number: 7, title: "[88] Fix it", html_url: "https://x/pull/7", merged_at: "2026-09-04T10:00:00Z",
+      user: { login: "dev" }, base: { ref: "release" }, head: { ref: "bugfix/88" } },
+    { id: "acme-cms", releaseBranch: "release" },
+    "2026-09-05T00:00:00.000Z",
+  );
+  check("a mapped row takes GitHub's number", mapped?.number === 7);
+  check("...splits the merged day out for filtering", mapped?.mergedOn === "2026-09-04", mapped?.mergedOn);
+  check("...finds the ticket in the title", mapped?.ticket === "88", mapped?.ticket);
+  /* Sign-offs are ours. GitHub knows nothing about who agreed a change ships. */
+  check("...and starts with no sign-offs", Object.keys(mapped?.signoffs ?? {}).length === 0);
+  check("a PR with no number maps to nothing", toPullRecord({ title: "x" }, { id: "r", releaseBranch: "b" }, "t") === null);
+
+  /* A re-sync must never erase the evidence the report exists to keep. */
+  const stored = pr({ signoffs: { biz: sig("boss@x.com") }, deployedOn: "2026-09-05", ticket: "CORRECTED", cycleId: "c1" });
+  const merged = mergePull(pr({ title: "Renamed upstream" }), stored);
+  check("a re-sync keeps our sign-offs", merged.signoffs.biz?.by === "boss@x.com");
+  check("...and the deploy date", merged.deployedOn === "2026-09-05");
+  check("...and a hand-corrected ticket", merged.ticket === "CORRECTED");
+  check("...and the cycle it was filed under", merged.cycleId === "c1");
+  check("...while taking GitHub's title", merged.title === "Renamed upstream");
+  check("a first sync stores what GitHub said", mergePull(pr(), null).title === "Fix it");
+}
+
+/* ------------------------------------------------------------------ */
+/* Periods, and clearing one                                           */
+/* ------------------------------------------------------------------ */
+{
+  check("a year is a period", cleanPeriod("2026") === "2026");
+  check("a month is a period", cleanPeriod("2026-09") === "2026-09");
+  check("a day is a period", cleanPeriod("2026-09-04") === "2026-09-04");
+  check("the grain is read from the length", grainOf("2026") === "year" && grainOf("2026-09") === "month" && grainOf("2026-09-04") === "day");
+
+  /*
+   * Strict on purpose: this value decides what a **delete** matches. `2026-9`
+   * quietly becoming `2026` is the difference between clearing September and
+   * clearing the year.
+   */
+  for (const bad of ["2026-9", "2026-13", "2026-00", "26", "202", "2026-09-", "2026-02-31", "", "  ", "all", null, undefined, {}]) {
+    check(`${JSON.stringify(bad)} is not a period`, cleanPeriod(bad) === "", cleanPeriod(bad));
+  }
+
+  check("a day falls in its own year", inPeriod("2026-09-04", "2026"));
+  check("...and its own month", inPeriod("2026-09-04", "2026-09"));
+  check("...and itself", inPeriod("2026-09-04", "2026-09-04"));
+  check("a different month does not match", !inPeriod("2026-10-04", "2026-09"));
+  check("a different year does not match", !inPeriod("2025-09-04", "2026"));
+  /*
+   * The prefix has to end on a boundary.
+   *
+   * The first version of this check fed a malformed *period* and passed even
+   * with the boundary removed, because `cleanPeriod` rejects the period before
+   * `inPeriod` ever compares anything — it was testing the parser, not the
+   * comparison it named. A malformed *date* against a valid period is what
+   * actually exercises it.
+   */
+  check("a partial period is rejected before comparing", !inPeriod("2026-09-04", "2026-0"));
+  check("a corrupt date cannot over-match a year", !inPeriod("2026x-09-04", "2026"), "boundary not enforced");
+  check("...while a real date in that year still matches", inPeriod("2026-09-04", "2026"));
+
+  /*
+   * The safety rule: an empty period matches **nothing**, not everything. This
+   * backs a delete, and a missing parameter meaning "all" would turn a
+   * malformed request into the most destructive one available.
+   */
+  check("an empty period matches nothing", !inPeriod("2026-09-04", ""));
+  check("...including undefined", !inPeriod("2026-09-04", undefined) && !inPeriod("2026-09-04", null));
+  check("a missing date matches nothing", !inPeriod("", "2026") && !inPeriod(undefined, "2026"));
+
+  check("a period reads as prose", describePeriod("2026-09") === "September 2026", describePeriod("2026-09"));
+  check("...a year as itself", describePeriod("2026") === "2026");
+  check("...and rubbish as nothing", describePeriod("nope") === "");
+
+  /* ---------------------------------------------------------------- */
+  /* A from/to range, which is the fourth thing this one control picks  */
+  /* ---------------------------------------------------------------- */
+
+  check("a range parses to its two ends", cleanRange("2026-09-01..2026-09-30")?.from === "2026-09-01");
+  /*
+   * Backwards is swapped, not refused. Somebody who clicks the 30th and then
+   * the 1st has said what they mean; answering that with nothing reads as
+   * "there is no data" rather than "you clicked in an order I disliked".
+   */
+  check("...and a backwards one is swapped", rangeToSpan(cleanRange("2026-09-30..2026-09-01")) === "2026-09-01..2026-09-30");
+  /* Days only. A month at one end would make the range mean two things. */
+  check("a month at an end is refused", cleanRange("2026-09..2026-10") === null);
+  check("an impossible day is refused", cleanRange("2026-02-31..2026-03-01") === null);
+  check("a half-written range is refused", cleanRange("2026-09-01..") === null && cleanRange("..2026-09-01") === null);
+  check("a plain period is not a range", cleanRange("2026-09") === null && cleanRange("2026") === null);
+
+  check("a date inside the range matches", inPeriod("2026-09-15", "2026-09-01..2026-09-30"));
+  /* Inclusive at both ends: a filter that dropped the day you picked would be
+     wrong in the way nobody checks. */
+  check("...and so do both ends", inPeriod("2026-09-01", "2026-09-01..2026-09-30") && inPeriod("2026-09-30", "2026-09-01..2026-09-30"));
+  check("...but not the day after", !inPeriod("2026-10-01", "2026-09-01..2026-09-30"));
+  check("a range spans months and years", inPeriod("2026-10-05", "2026-09-28..2027-01-02"));
+  check("a one-day range is just that day", inPeriod("2026-09-08", "2026-09-08..2026-09-08") && !inPeriod("2026-09-09", "2026-09-08..2026-09-08"));
+
+  /*
+   * The safety rule again, for the new shape. `inPeriod` backs a **delete**,
+   * and a range that half-parses must match nothing rather than falling
+   * through to some wider reading of the text.
+   */
+  check("a broken range matches nothing", !inPeriod("2026-09-15", "2026-09-01..nonsense"), "a malformed range deleted rows");
+  check("...and a bare separator matches nothing", !inPeriod("2026-09-15", ".."));
+
+  /* Prefixes must behave exactly as they did; the range branch is additive. */
+  check("a year prefix is untouched", inPeriod("2026-09-15", "2026") && !inPeriod("2027-01-01", "2026"));
+  check("a month prefix is untouched", inPeriod("2026-09-15", "2026-09") && !inPeriod("2026-10-01", "2026-09"));
+
+  check("cleanSpan keeps a prefix as a prefix", cleanSpan("2026-09") === "2026-09");
+  check("...normalises a range", cleanSpan("2026-09-30..2026-09-01") === "2026-09-01..2026-09-30");
+  check("...and refuses everything else", cleanSpan("nope") === "" && cleanSpan("2026-09-01..") === "" && cleanSpan("") === "");
+  /* `cleanPeriod` stays strictly a prefix: widening it would quietly widen
+     `grainOf` and everything built on it. */
+  check("cleanPeriod still refuses a range", cleanPeriod("2026-09-01..2026-09-30") === "");
+
+  check("a range reads as both its ends", describePeriod("2026-09-01..2026-09-30") === "1 September 2026 – 30 September 2026", describePeriod("2026-09-01..2026-09-30"));
+  check("...and a one-day range is written once", describePeriod("2026-09-08..2026-09-08") === "8 September 2026", describePeriod("2026-09-08..2026-09-08"));
+
+  /* Typing a range. `..` and `to`, both unambiguous — a bare dash is not, since
+     every date here already contains dashes. */
+  check("a typed range works", parseTypedSpan("2026-09-01..2026-09-30") === "2026-09-01..2026-09-30");
+  check("...spelled with 'to'", parseTypedSpan("01/09/2026 to 30/09/2026") === "2026-09-01..2026-09-30", parseTypedSpan("01/09/2026 to 30/09/2026"));
+  check("...and typed backwards is swapped", parseTypedSpan("30/09/2026 to 01/09/2026") === "2026-09-01..2026-09-30");
+  check("a range of months is refused, not guessed", parseTypedSpan("sep 2026 to oct 2026") === "", "two readings of one filter");
+  check("a single value still parses", parseTypedSpan("sep 2026") === "2026-09" && parseTypedSpan("2026") === "2026");
+
+  // -- the calendar lights what the filter keeps ---------------------------
+  /*
+   * The grid asks `inPeriod`, the same function that decides which rows
+   * survive. Two answers to "is this day selected" is how a calendar starts
+   * showing something the table disagrees with.
+   */
+  const gridSrc = readFileSync(new URL("../src/components/devops/month-grid.tsx", import.meta.url), "utf8");
+  check("the calendar asks the filter's own rule", /inPeriod\(day, shown\)/.test(gridSrc), "a second opinion about what is selected");
+  check("...and marks the two ends apart from the days between", /ends\.from \|\| day === ends\.to/.test(gridSrc));
+  check("...previewing a half-made range under the cursor", /pending && hover/.test(gridSrc));
+
+  const pickerSrc = readFileSync(new URL("../src/components/devops/period-picker.tsx", import.meta.url), "utf8");
+  const selSrc = readFileSync(new URL("../src/components/devops/use-period-selection.ts", import.meta.url), "utf8");
+  /* Filling From commits nothing: a range with one end is not a range. */
+  check("picking From waits for To", /if \(active === "from"\)/.test(selSrc));
+  check("...and picking To commits the range", /onChange\(cleanSpan\(`\$\{from \|\| day\}\$\{RANGE_SEP\}\$\{day\}`\)/.test(selSrc));
+  /* A month or a year is one click, not two: a range is for "the 3rd to the
+     17th", not for a period that already has a name. */
+  check("a whole month is still one click", /period\.length === 10 \? sel\.pickDay\(period\) : sel\.pick\(period\)/.test(pickerSrc));
+
+  /* ---------------------------------------------------------------- */
+  /* Guards: the calendar is fed from a URL, so it must not throw       */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * `monthGrid` threw. A `NaN` year reached `Array(lead)` as `Array(NaN)` and
+   * raised `RangeError: Invalid array length` — which is not an empty
+   * calendar, it is the whole panel gone. The year comes from a query string,
+   * so `Number("")` was one bad link away.
+   */
+  const survives = (label, fn) => {
+    let threw = "";
+    try { fn(); } catch (err) { threw = err instanceof Error ? err.message : String(err); }
+    check(label, threw === "", threw);
+  };
+
+  survives("a NaN year does not throw", () => monthGrid(NaN, 0));
+  survives("...nor a NaN month", () => monthGrid(2026, NaN));
+  survives("...nor nothing at all", () => monthGrid(undefined, undefined));
+  survives("...nor a year past what Date can hold", () => monthGrid(1e21, 0));
+  check("an unusable month gives an empty grid, not a crash", monthGrid(2026, NaN).length === 0);
+
+  /*
+   * The other half: a month outside 0..11 used to build strings like
+   * `2026-100-01` from the raw number and hand them out as dates. Normalising
+   * through `Date` rolls it into the next year instead.
+   */
+  check("a month past December rolls into the next year", monthGrid(2026, 12).filter(Boolean)[0] === "2027-01-01", String(monthGrid(2026, 12).filter(Boolean)[0]));
+  check("...and no cell is ever a 13th month", !monthGrid(2026, 99).filter(Boolean).some((d) => /-\d{3}-/.test(d)), "dates like 2026-100-01");
+  check("a real month is untouched", monthGrid(2026, 8).filter(Boolean).length === 30);
+  check("...and still starts on the right weekday", monthGrid(2026, 8).indexOf("2026-09-01") === 1, "September 2026 starts on a Tuesday");
+
+  check("the year is clamped at the bottom", clampYear(1) === MIN_YEAR);
+  check("...and at the top", clampYear(999999) === MAX_YEAR);
+  check("...and junk falls back to something real", Number.isFinite(clampYear("nope")) && Number.isFinite(clampYear(undefined)) && Number.isFinite(clampYear(NaN)));
+
+  const picker = readFileSync(new URL("../src/components/devops/use-period-selection.ts", import.meta.url), "utf8");
+  check("the picker clamps where it opens", /clampYear\(anchor\.slice\(0, 4\)\)/.test(picker), "a NaN year from the URL");
+  check("...and clamps the month it opens on", /openMonth >= 0 && openMonth <= 11/.test(picker));
+  check("...and clamps stepping through months", /stepped < MIN_YEAR \|\| stepped > MAX_YEAR/.test(picker), "holding the arrow key walks off the end of Date");
+  /* Completing a range must never reach onChange("") — that silently clears the
+     filter, the one thing somebody finishing a range cannot have meant. */
+  check("...and a range that will not parse falls back to the day", /\|\| day\);/.test(picker));
+
+  /*
+   * Everything here arrives in a query string, so it is capped before it is
+   * walked — `String(value).trim()` has already walked a megabyte by the time
+   * a later check could refuse it.
+   */
+  check("a period is length-capped", cleanPeriod("2026".padEnd(100_000, "0")) === "");
+  check("...and so is a range", cleanRange("2026-09-01..2026-09-30".padEnd(100_000, "9")) === null);
+  check("...at a bound that still fits a real range", MAX_PERIOD_CHARS >= "2026-09-01..2026-09-30".length);
+
+  /*
+   * The scope sheet filtered dates with a raw `startsWith`, which was wrong
+   * twice: `2026-0` matched `2026-09-15` because a prefix has to end on a
+   * boundary, and a range matched nothing at all — so a filtered download came
+   * back empty with no explanation.
+   */
+  const deploy = readFileSync(new URL("../src/lib/devops/deployments.ts", import.meta.url), "utf8");
+  check("the scope sheet asks the shared date rule", /inPeriod\(row\.deployedOn, q\.on\)/.test(deploy), "a raw startsWith over-matches and drops ranges");
+  check("...and no longer prefixes by hand", !/deployedOn \?\? ""\)\.startsWith/.test(deploy));
+  check("the boundary really is enforced", !inPeriod("2026-09-15", "2026-0") && "2026-09-15".startsWith("2026-0"), "the bug the shared rule exists to stop");
+
+  const present = periodsPresent(["2026-09-04", "2026-09-20", "2026-01-02", "", undefined, "bad"], "month");
+  check("only real months are offered", present.join(",") === "2026-09,2026-01", present.join(","));
+  check("...newest first", present[0] === "2026-09");
+
+  // -- what the purge route will and will not do -------------------------
+  const purge = readFileSync(new URL("../src/app/api/devops/purge/route.ts", import.meta.url), "utf8");
+  check("counting and deleting are different handlers", /export async function GET/.test(purge) && /export async function POST/.test(purge));
+  check("both are admin-only", (purge.match(/await requireAdmin\(\)/g) ?? []).length === 2);
+  /* The caller has to name what it clears; defaulting to everything would turn
+     a malformed request into the most destructive one available. */
+  check("a request with no targets clears nothing", /Array\.isArray\(asked\) \? asked : \[\]/.test(purge));
+  check("...and unknown targets are dropped", /PURGE_TARGETS as readonly string\[\]\)\.includes/.test(purge));
+
+  const lib = readFileSync(new URL("../src/lib/devops/purge.ts", import.meta.url), "utf8");
+  check("an empty target list is refused outright", /Nothing was selected to clear/.test(lib));
+  check("a bad period is refused before anything is read", /Pick a year, a month, a day or a date range to clear/.test(lib));
+
+  const panel = readFileSync(new URL("../src/components/devops/purge-panel.tsx", import.meta.url), "utf8");
+  check("the panel counts before it deletes", /\/api\/devops\/purge\?period=/.test(panel));
+  check("...and asks twice", /armed \? purge\(\) : setArmed\(true\)/.test(panel));
+  check("...saying there is no undo", /cannot be undone/.test(panel));
+
+  // -- typing a date -------------------------------------------------------
+  check("a typed year works", parseTyped("2026") === "2026");
+  check("a short month is padded", parseTyped("2026-9") === "2026-09");
+  check("a month name works", parseTyped("sep 2026") === "2026-09");
+  check("...spelled out", parseTyped("September 2026") === "2026-09");
+  check("...in either order", parseTyped("2026 sep") === "2026-09");
+  check("a day-first date works", parseTyped("04/09/2026") === "2026-09-04");
+  check("...with dashes", parseTyped("04-09-2026") === "2026-09-04");
+  check("nonsense is not a date", parseTyped("next tuesday") === "" && parseTyped("") === "");
+  check("an impossible typed date is refused", parseTyped("31/02/2026") === "");
+
+  // -- the calendar grid ---------------------------------------------------
+  const sept = monthGrid(2026, 8);
+  check("a month grid is whole weeks", sept.length % 7 === 0, `${sept.length}`);
+  check("...holding every day", sept.filter(Boolean).length === 30, `${sept.filter(Boolean).length}`);
+  check("...starting Monday", monthGrid(2026, 8).indexOf("2026-09-01") === 1, `${sept.indexOf("2026-09-01")}`);
+  check("February has 28 in a common year", monthGrid(2026, 1).filter(Boolean).length === 28);
+  check("...and 29 in a leap year", monthGrid(2024, 1).filter(Boolean).length === 29);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reported problems, and what stops them coming back                  */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * A repository is routinely worked on by several teams — a shared web app, a
+   * platform service — and a single owner forced somebody to pick one and be
+   * wrong about the rest.
+   */
+  check("a repo takes several PODs", cleanTeamIds(["amc", "payments"]).join() === "amc,payments");
+  check("blanks are dropped", cleanTeamIds(["amc", "", "  "]).join() === "amc");
+  check("duplicates collapse", cleanTeamIds(["amc", "amc"]).join() === "amc");
+  check("a bare string still works", cleanTeamIds("amc").join() === "amc");
+  check("nothing is an empty list, not a crash", cleanTeamIds(undefined).length === 0 && cleanTeamIds(null).length === 0 && cleanTeamIds(42).length === 0);
+
+  const repoSrc = readFileSync(new URL("../src/lib/devops/repos.ts", import.meta.url), "utf8");
+  /*
+   * A repo onboarded before this was a list still carries a single `teamId`.
+   * Dropping it would silently unlink every repository already assigned.
+   */
+  check("a repo saved before the change keeps its POD", /legacyTeamId\(input, existing\)/.test(repoSrc));
+
+  const repoTable = readFileSync(new URL("../src/components/devops/repo-table.tsx", import.meta.url), "utf8");
+  check("the table lists every POD, not one", /\(repo\.teamIds \?\? \[\]\)\.map/.test(repoTable));
+  check("...and says so in the header", /"PODs"/.test(repoTable));
+
+  // -- the popover that was being clipped ---------------------------------
+  /*
+   * Every `Panel` is `overflow-hidden` and framer gives it a transform, so an
+   * absolutely-positioned popover inside one is cut at the panel edge and can
+   * paint under the table it covers. That is what the date picker did.
+   */
+  const popover = readFileSync(new URL("../src/components/devops/popover.tsx", import.meta.url), "utf8");
+  check("the popover escapes through a portal", /createPortal\(/.test(popover));
+  check("...positioned fixed, not absolute", /className="fixed z-\[90\]/.test(popover));
+  check("...above the panels it covers", /z-\[90\]/.test(popover));
+  check("...on an opaque background", /bg-\[var\(--panel\)\]/.test(popover));
+  check("...flipping up when there is no room below", /fitsBelow \? below :/.test(popover));
+  check("...pulled back from the window edge", /window\.innerWidth - width - MARGIN/.test(popover));
+  check("...closing on Escape", /e\.key === "Escape"/.test(popover));
+  check("...and on a click outside", /mousedown/.test(popover));
+
+  const picker = readFileSync(new URL("../src/components/devops/period-picker.tsx", import.meta.url), "utf8");
+  check("the date picker uses it", /<Popover open=\{open\}/.test(picker));
+  check("...and no longer positions itself absolutely", !/absolute left-0 top-full/.test(picker));
+
+  const panel = readFileSync(new URL("../src/components/ui/surfaces.tsx", import.meta.url), "utf8");
+  check("Panel really does clip, which is why the portal is needed", /overflow-hidden/.test(panel));
+
+  // -- editing a scope row -------------------------------------------------
+  /*
+   * The person who filled a row in is the one who finds out it moved
+   * environment or shipped a day later. Making them ask an admin is how a
+   * sheet goes stale.
+   */
+  /*
+   * Whether a scope row opens, and whether Edit appears inside it, is checked
+   * by `check-render.mjs` — it mounts the table and clicks. A regex here only
+   * ever proved the markup existed, which it did while the row would not open.
+   */
+  const scopeTable = readFileSync(new URL("../src/components/devops/scope-table.tsx", import.meta.url), "utf8");
+  check("the scope body is not wrapped in AnimatePresence", !/<AnimatePresence/.test(scopeTable), "the detail row will open and never close");
+  check("...and the open row is decided by the parent", /openId === row\.id/.test(scopeTable));
+  check("a scope row names its POD", /podOf\(row\) \|\|/.test(scopeTable));
+
+  const scopeSheet = readFileSync(new URL("../src/components/devops/scope-sheet.tsx", import.meta.url), "utf8");
+  check("the sheet filters before it pages", /paginate\(matched, page\)/.test(scopeSheet), "paging a list then filtering one page shows an empty table");
+  check("...and a new filter returns to page one", /setQuery\(q\); setPage\(1\);/.test(scopeSheet));
+
+  // -- where a change actually reached ------------------------------------
+  /*
+   * Merged is not deployed, and deployed to UAT is not deployed to production.
+   * The report showed a date with no environment beside it, answering "when"
+   * while leaving "where" — the question somebody chasing a release has —
+   * unanswered.
+   */
+  check("the report has a Deployed to column", REPORT_COLUMNS.some((c) => c.header === "Deployed to"));
+  check("...beside the date it belongs with", (() => {
+    const at = REPORT_COLUMNS.findIndex((c) => c.header === "Deployed on");
+    return REPORT_COLUMNS[at + 1]?.header === "Deployed to";
+  })());
+
+  const pr = {
+    id: "r-1", repoId: "r", cycleId: "", number: 1, title: "t", url: "", author: "", baseBranch: "release",
+    mergedAt: "2026-09-04T10:00:00Z", mergedOn: "2026-09-04", deployedOn: "2026-09-06",
+    environment: "Production", ticket: "", signoffs: {}, syncedAt: "",
+  };
+  check("a row carries the environment", toReportRow(pr, {}).environment === "Production");
+  check("...and blank when it has not shipped", toReportRow({ ...pr, environment: "" }, {}).environment === "");
+
+  /* A re-sync must not wipe an environment somebody recorded. */
+  check("a re-sync keeps the environment", mergePull({ ...pr, environment: "" }, { ...pr, environment: "CUG" }).environment === "CUG");
+
+  const pullsRoute = readFileSync(new URL("../src/app/api/pulls/route.ts", import.meta.url), "utf8");
+  check("the row's own fields can be corrected", /"deployedOn", "environment", "ticket", "cycleId"/.test(pullsRoute));
+  /*
+   * Sign-offs after the merge are the normal case, not an exception: a PR is
+   * merged, and business signs it off the next morning. Nothing may gate that
+   * on the merge having happened first.
+   */
+  check("recording a sign-off needs only a signed-in user", /const user = await requireUser\(\);/.test(pullsRoute));
+  check("...and withdrawing somebody else's needs an admin", /if \(signer && signer !== user\.email\) await requireAdmin\(\);/.test(pullsRoute));
+
+  const detail = readFileSync(new URL("../src/components/devops/report-row-detail.tsx", import.meta.url), "utf8");
+  check("an opened row can set where it landed", /Deployed to/.test(detail));
+  check("...and says which fields survive a sync", /read from GitHub each sync/.test(detail));
+  /* Sign-offs stay on the row, not in the drawer: getting one after the merge
+     must not be hidden behind opening something first. */
+  check("a missing sign-off says how to record it", /tick it on the row above/.test(detail));
+
+  /*
+   * Whether the row *opens* is checked by `check-render.mjs`, which mounts it
+   * and clicks it twice. A regex here proved only that the markup existed —
+   * which it did, the whole time it was broken.
+   *
+   * What is worth asserting from source is the structure that made it break:
+   * the detail row is a plain `<tr>`, so the table body must not be wrapped in
+   * `AnimatePresence`, which tracks non-motion children for an exit they can
+   * never finish and holds the old row set.
+   */
+  const reportTable = readFileSync(new URL("../src/components/devops/report-table.tsx", import.meta.url), "utf8");
+  check("the report body is not wrapped in AnimatePresence", !/<AnimatePresence/.test(reportTable), "the detail row will open and never close");
+  check("...and the open row is decided by the parent", /openId === pr\.id/.test(reportTable));
+  check("...showing the detail underneath", /<ReportRowDetail/.test(reportTable));
+  check("...and the environment in the row itself", /\{pr\.environment \|\| /.test(reportTable));
+
+  // -- the DevOps admin is its own screen ---------------------------------
+  const devopsAdmin = readFileSync(new URL("../src/app/admin/devops/devops-admin-client.tsx", import.meta.url), "utf8");
+  check("DevOps admin is its own screen", /<ReposSection/.test(devopsAdmin) && /<CyclesSection/.test(devopsAdmin));
+  check("...linking back to the board", /href="\/devops"/.test(devopsAdmin));
+  check("...and to POD admin", /href="\/admin"/.test(devopsAdmin));
+
+  const podAdmin = readFileSync(new URL("../src/app/admin/admin-client.tsx", import.meta.url), "utf8");
+  check("POD admin no longer carries the DevOps sections", !/<ReposSection|<CyclesSection/.test(podAdmin));
+  check("...but points at them", /href="\/admin\/devops"/.test(podAdmin));
+
+  const page = readFileSync(new URL("../src/app/admin/devops/page.tsx", import.meta.url), "utf8");
+  check("the DevOps admin page is admin-only", /user\.role !== "admin"/.test(page) && /redirect\("\/"\)/.test(page));
+}
+
+/* ------------------------------------------------------------------ */
+/* A row written before a field existed                                */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * `toDocument` applies schema defaults on the way in. Nothing applied them on
+   * the way out, so a document stored before a field was added came back
+   * without it while the type promised it was there — which crashed a page on
+   * `repo.teamIds.length` for a repository onboarded a week earlier.
+   *
+   * Neither driver saved us: Mongo's `.lean()` skips defaults too, so both were
+   * wrong identically and the parity check compared them and was satisfied.
+   */
+  const old = { _id: "acme-cms", id: "acme-cms", name: "cms", owner: "acme", repo: "cms" };
+  const read = fromStored(RepoModel, { ...old });
+
+  check("a missing array field reads as an array", Array.isArray(read?.teamIds), JSON.stringify(read?.teamIds));
+  check("...and is empty, not undefined", read?.teamIds.length === 0);
+  check("a missing string field reads as its default", read?.releaseBranch === "release", `${read?.releaseBranch}`);
+  check("a missing enum reads as its default", read?.freezeMethod === "ruleset", `${read?.freezeMethod}`);
+
+  /* Nested groups too: a row can predate the whole `freeze` object. */
+  check("a missing nested group is built", typeof read?.freeze === "object" && read?.freeze !== null);
+  check("...with its own defaults", read?.freeze?.state === "open", JSON.stringify(read?.freeze));
+  check("...including the ones added later", read?.freeze?.rulesetId === "", JSON.stringify(read?.freeze));
+
+  /*
+   * Only genuinely absent keys are filled. A stored empty string, zero or false
+   * is a value somebody wrote, and overwriting it with a default would be a
+   * different bug wearing the same clothes.
+   */
+  const kept = fromStored(RepoModel, { ...old, releaseBranch: "", teamIds: ["amc"], freezeMethod: "record" });
+  check("a stored empty string is left alone", kept?.releaseBranch === "", JSON.stringify(kept?.releaseBranch));
+  check("a stored list is left alone", kept?.teamIds.join() === "amc");
+  check("a stored enum is left alone", kept?.freezeMethod === "record");
+
+  const flags = fromStored(CycleModel, { _id: "c", id: "c", repoId: "r", name: "2026.09", scope: { frozen: true } });
+  check("a stored true survives", flags?.scope?.frozen === true, JSON.stringify(flags?.scope));
+  check("...while its siblings are filled in", flags?.scope?.reason === "", JSON.stringify(flags?.scope));
+
+  /* Every collection, not just the one that crashed. */
+  const item = fromStoredDoc(ItemModel, { _id: "x", id: "x", workItemId: "1", teamId: "t", source: "excel", kind: "bug", isActive: true });
+  check("an item gets its defaults too", Array.isArray(item?.tags) && item?.severity === "Unknown", JSON.stringify(item?.tags));
+  const user = fromStored(UserModel, { _id: "a@b.com", id: "a@b.com", email: "a@b.com" });
+  check("an account gets its defaults", user?.role === "member" && Array.isArray(user?.teamIds));
+
+  /* Defaults are made fresh, or two rows would share one array. */
+  const a = fromStored(RepoModel, { ...old });
+  const b = fromStored(RepoModel, { ...old, id: "other" });
+  a.teamIds.push("mine");
+  check("two rows do not share one default array", b.teamIds.length === 0, JSON.stringify(b.teamIds));
+
+  /*
+   * And the legacy single owner is folded in on read, not only on save. Run
+   * rather than matched: the first version of this checked that a function
+   * called `migrate` existed, and passed with its body gutted.
+   */
+  check("a repo's old single teamId becomes the list", withTeamIds({ teamId: "amc-pod", teamIds: [] })?.teamIds.join() === "amc-pod");
+  check("...and a missing list is handled", withTeamIds({ teamId: "amc-pod" })?.teamIds.join() === "amc-pod");
+  check("a repo that already has PODs is untouched", withTeamIds({ teamId: "old", teamIds: ["new"] })?.teamIds.join() === "new");
+  check("a repo with neither stays empty", (withTeamIds({ teamIds: [] })?.teamIds ?? []).length === 0);
+  check("a blank legacy id is not a POD", (withTeamIds({ teamId: "  ", teamIds: [] })?.teamIds ?? []).length === 0);
+  check("nothing in, nothing out", withTeamIds(null) === null);
+
+  /* Both read paths have to use it, or one of them still loses the PODs. */
+  const controller = readFileSync(new URL("../src/controllers/repos.controller.ts", import.meta.url), "utf8");
+  check("the list migrates", /\.map\(\(r\) => withTeamIds\(r\)!\)/.test(controller));
+  check("...and so does a single lookup", /withTeamIds\(await store\.repos\.byId\(id\)\)/.test(controller));
+}
+
+/* ------------------------------------------------------------------ */
+/* Filtering, paging, and who may correct a record                     */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * Every word has to match, in any field, in any order. People type
+   * "813 production" meaning *both*; an any-word match would answer that with
+   * every production row on the board.
+   */
+  const row = ["#813", "Refactor settlement retry loop", "release", "Production", "AMC POD"];
+  check("a single word matches", matchesQuery(row, "settlement"));
+  check("case does not matter", matchesQuery(row, "SETTLEMENT"));
+  check("two words must both match", matchesQuery(row, "813 production"));
+  check("...even across different fields", matchesQuery(row, "amc release"));
+  check("...and in any order", matchesQuery(row, "production 813"));
+  check("a word that is nowhere fails the row", !matchesQuery(row, "813 staging"));
+  check("an empty filter matches everything", matchesQuery(row, "") && matchesQuery(row, "   "));
+  check("a number field is searchable", matchesQuery([813, null, undefined], "813"));
+  check("a row of nothing does not throw", matchesQuery([], "x") === false);
+
+  // -- paging -------------------------------------------------------------
+  const rows = Array.from({ length: 23 }, (_, i) => i + 1);
+  const first = paginate(rows, 1);
+  check("a page holds seven", first.rows.length === PAGE_SIZE, `${first.rows.length}`);
+  check("...starting at the first row", first.rows[0] === 1);
+  check("...and says the range in human numbers", first.from === 1 && first.to === 7, `${first.from}-${first.to}`);
+  check("...out of the total", first.total === 23 && first.pages === 4);
+
+  const last = paginate(rows, 4);
+  check("the last page holds the remainder", last.rows.length === 2, `${last.rows.length}`);
+  check("...and its range stops at the end", last.to === 23, `${last.to}`);
+
+  /*
+   * The page is clamped, not trusted. Filtering a long list down while sitting
+   * on page 4 would otherwise show an empty table and no way back — which reads
+   * as "my data is gone", not "there is no page 4".
+   */
+  check("a page past the end clamps to the last", paginate(rows, 99).page === 4);
+  check("a page before the first clamps to one", paginate(rows, 0).page === 1 && paginate(rows, -5).page === 1);
+  check("nonsense clamps to one", paginate(rows, NaN).page === 1);
+
+  const none = paginate([], 1);
+  check("an empty list is one empty page", none.pages === 1 && none.rows.length === 0);
+  check("...and says nothing rather than 1–0 of 0", none.from === 0 && none.to === 0);
+  check("exactly one page needs no second", paginate(rows.slice(0, 7), 1).pages === 1);
+  check("one over spills to a second", paginate(rows.slice(0, 8), 1).pages === 2);
+
+  // -- who may change a saved record --------------------------------------
+  /*
+   * Three separate rights. Adding a row is open to everyone, because the person
+   * who shipped a change is the one who knows what it was. Changing a saved row
+   * is not: it is evidence once written.
+   */
+  check("an admin may edit", canEditRecords({ role: "admin" }));
+  check("...without being granted it", canEditRecords({ role: "admin", devopsEditor: false }));
+  check("a chosen editor may", canEditRecords({ role: "member", devopsEditor: true }));
+  check("an ordinary member may not", !canEditRecords({ role: "member" }));
+  check("...nor one explicitly turned off", !canEditRecords({ role: "member", devopsEditor: false }));
+  check("nobody signed in may not", !canEditRecords(null) && !canEditRecords(undefined));
+  check("a truthy-looking value is not a yes", !canEditRecords({ role: "member", devopsEditor: "yes" }));
+
+  /* The refusal names who can fix it, rather than only saying no. */
+  check("the refusal says to ask an admin", /Ask an admin/.test(refuseEdit()));
+
+  /*
+   * The capability survives an unrelated edit. Renaming somebody or resetting
+   * their password must not quietly revoke it.
+   */
+  const users = readFileSync(new URL("../src/lib/users.ts", import.meta.url), "utf8");
+  check("an edit that omits the flag keeps it", /input\.devopsEditor === undefined \? Boolean\(existing\?\.devopsEditor\)/.test(users));
+
+  /* And the server enforces it, not only the screen. */
+  const deploys = readFileSync(new URL("../src/lib/devops/deployments.ts", import.meta.url), "utf8");
+  check("changing a saved row is refused server-side", /if \(existing && !canEditRecords\(editor\)\) throw new HttpError\(403/.test(deploys));
+  check("...while adding one is not", !/if \(!existing && !canEditRecords/.test(deploys));
+
+  const pulls = readFileSync(new URL("../src/app/api/pulls/route.ts", import.meta.url), "utf8");
+  check("correcting a PR record is refused too", /if \(!canEditRecords\(\{ role: user\.role, devopsEditor: account\?\.devopsEditor \}\)\)/.test(pulls));
+  /*
+   * Recording a sign-off is deliberately not gated: that is somebody putting
+   * their own name to something, which carries its own accountability.
+   */
+  check("...but recording a sign-off is not gated", /const user = await requireUser\(\);/.test(pulls));
+}
+
+/* ------------------------------------------------------------------ */
+/* Which POD a scope row is for                                        */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * A repository can be worked on by several teams, so a row that inherited the
+   * repo's whole list read "AMC POD, Payments POD" and answered nobody's
+   * question about whose work it was. A row belongs to one POD, chosen when it
+   * is filled in.
+   */
+  const both = ["amc-pod", "payments-pod"];
+
+  check("a chosen POD is kept", pickTeam("payments-pod", both) === "payments-pod");
+  /*
+   * And only if the repo really has it. A row filed against a team that does
+   * not work on the repository is worse than a blank one: it reads as an answer
+   * and is wrong.
+   */
+  check("a POD the repo does not have is refused", pickTeam("some-other-pod", both) === "");
+  check("...and so is rubbish", pickTeam({ $ne: null }, both) === "" && pickTeam(42, both) === "");
+
+  /* One POD is not a choice, so it is filled in rather than asked for. */
+  check("a repo with one POD needs no choosing", pickTeam("", ["amc-pod"]) === "amc-pod");
+  check("...even when something wrong was sent", pickTeam("nope", ["amc-pod"]) === "amc-pod");
+
+  /* Several PODs and no choice stays blank: guessing whose work it is would be
+     exactly the wrong thing to do. */
+  check("several PODs and no choice stays blank", pickTeam("", both) === "");
+  check("a repo linked to no POD stays blank", pickTeam("amc-pod", []) === "" && pickTeam("", undefined) === "");
+
+  /* Whether the picker appears is checked by mounting the form — see
+     `check-render.mjs`. This is the rule behind it. */
+  const picks = readFileSync(new URL("../src/components/devops/scope-picks.tsx", import.meta.url), "utf8");
+  check("the form offers only the repo's PODs", /pods\.map\(\(p\) => /.test(picks));
+  check("...and only asks when there is a decision", /pods\.length > 1 && \(/.test(picks));
+
+  const sheet = readFileSync(new URL("../src/components/devops/scope-sheet.tsx", import.meta.url), "utf8");
+  check("a new row starts on the only POD when there is one", /teamId: pods\.length === 1 \? pods\[0\]\.id : ""/.test(sheet));
+
+  /*
+   * The same rule on the other table. A pull request belongs to one POD too —
+   * the report was showing every POD on the repo against every row, which is
+   * the same complaint on a different screen.
+   */
+  const named = podsOfRepo({ teamIds: ["amc-pod", "payments-pod"] }, { "amc-pod": "AMC POD", "payments-pod": "Payments POD" });
+  check("a repo's PODs come back named", named.pods.map((p) => p.name).join() === "AMC POD,Payments POD");
+  check("a row shows the POD it is for", named.podOf({ teamId: "payments-pod" }) === "Payments POD");
+  check("...and nothing when it has none", named.podOf({ teamId: "" }) === "");
+  /* A POD that was deleted still tells the reader more as a slug than as a blank. */
+  check("a POD with no name shows its id", named.podOf({ teamId: "ghost-pod" }) === "ghost-pod");
+  check("the fallback lists every POD on the repo", named.repoPods === "AMC POD, Payments POD");
+
+  const pullsLib = readFileSync(new URL("../src/lib/devops/pulls.ts", import.meta.url), "utf8");
+  check("a PR's POD is checked against its repo", /teamId: "teamId" in patch \? pickTeam\(patch\.teamId, repo\?\.teamIds\)/.test(pullsLib));
+  const sync = readFileSync(new URL("../src/lib/devops/pull-sync.ts", import.meta.url), "utf8");
+  check("a re-sync keeps the POD somebody chose", /teamId: stored\.teamId \|\| fresh\.teamId/.test(sync));
+  check("...and never invents one", /teamId: "",/.test(sync));
+
+  const fields = readFileSync(new URL("../src/components/devops/pull-fields.tsx", import.meta.url), "utf8");
+  check("the PR drawer offers a POD when there is a choice", /pods\.length > 1 && \(/.test(fields));
+
+  const table = readFileSync(new URL("../src/components/devops/scope-table.tsx", import.meta.url), "utf8");
+  check("the table shows the row's own POD", /podOf\(row\) \|\|/.test(table));
+  /* A row from before this field shows the repo's PODs greyed, rather than an
+     empty cell that reads as a mistake. */
+  check("...falling back to the repo's for older rows", /\{repoPods \|\| "Not linked"\}/.test(table));
+}
+
+/* ------------------------------------------------------------------ */
+/* The download carries what the board shows                           */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * A file mailed to somebody who cannot open the board is the whole point of
+   * the download, so anything the board shows has to be in it. Both sheets had
+   * drifted: the scope sheet had gained a POD column and the file had not, and
+   * the sign-off report carried a bare URL with no title, so a row could not be
+   * read without opening every link.
+   */
+  const scope = SCOPE_COLUMNS.map((c) => c.header);
+  for (const wanted of ["Repository", "Cycle", "POD", "Kind", "Ticket", "Title", "Branch", "Environment", "State", "PR", "Deployed on", "Filled by", "Notes"]) {
+    check(`the scope sheet exports ${wanted}`, scope.includes(wanted), scope.join(", "));
+  }
+  check("...and when the row was filed", scope.includes("Added on"));
+  check("...and the bug's current state", scope.includes("Bug severity now") && scope.includes("Bug status now"));
+
+  const report = REPORT_COLUMNS.map((c) => c.header);
+  for (const wanted of ["Project", "Repo", "PR", "Title", "Opened by", "Ticket", "Cycle", "PR link", "Sign-off status", "Merged date", "Release branch", "Deployed on", "Deployed to", "Risk"]) {
+    check(`the report exports ${wanted}`, report.includes(wanted), report.join(", "));
+  }
+  /* Who signed and when, per level: the prose says what is missing, these say
+     who to go back to. */
+  for (const wanted of ["Business sign-off", "QA sign-off", "POD verification"]) {
+    check(`the report exports ${wanted}`, report.includes(wanted), report.join(", "));
+  }
+
+  // -- and the rows really carry those values ----------------------------
+  const row = toScopeRow(
+    { repoId: "r", teamId: "amc-pod", cycleId: "c", kind: "bug", state: "deployed", ticket: "42",
+      title: "Fix it", branch: "release", environment: "Production", prUrl: "https://x/pull/1",
+      author: "a@b.com", notes: "careful", deployedOn: "2026-09-04", createdAt: "2026-09-01T10:00:00.000Z", updatedAt: "" },
+    { repo: "cms", cycle: "2026.09", pod: "AMC POD" },
+    { severity: "Critical", status: "Closed" },
+  );
+  check("a scope row carries its POD", row.pod === "AMC POD");
+  check("...its filing date, as a day", row.createdOn === "2026-09-01", row.createdOn);
+  check("...and every column it declares", SCOPE_COLUMNS.every((c) => c.field in row), SCOPE_COLUMNS.filter((c) => !(c.field in row)).map((c) => c.field).join(", "));
+
+  const sig = { by: "biz@x.com", at: "2026-09-03T09:00:00.000Z" };
+  const out = toReportRow(
+    { id: "p", repoId: "r", teamId: "amc-pod", cycleId: "c", number: 813, title: "Refactor the loop",
+      url: "https://x/pull/813", author: "kabir", baseBranch: "release", mergedAt: "2026-09-05T00:00:00Z",
+      mergedOn: "2026-09-05", deployedOn: "2026-09-07", environment: "Production", ticket: "41205",
+      signoffs: { biz: sig }, syncedAt: "" },
+    { project: "AMC POD", repo: "cms", cycle: "2026.09" },
+  );
+  check("a report row carries the title", out.title === "Refactor the loop", "a row is a bare URL again");
+  check("...the number on its own", out.number === "813");
+  check("...who opened it", out.author === "kabir");
+  check("...the ticket and cycle", out.ticket === "41205" && out.cycle === "2026.09");
+  check("...who signed off, and when", out.biz === "biz@x.com · 2026-09-03", out.biz);
+  check("...leaving blank the ones nobody signed", out.qa === "" && out.pod === "");
+  check("...and every column it declares", REPORT_COLUMNS.every((c) => c.field in out), REPORT_COLUMNS.filter((c) => !(c.field in out)).map((c) => c.field).join(", "));
+
+  /*
+   * The strongest of these: no column may be declared without the row builder
+   * filling it. A header with no value is a column of blanks in a spreadsheet
+   * somebody is trying to read.
+   */
+  check("no scope column is left empty by the builder", SCOPE_COLUMNS.every((c) => typeof row[c.field] === "string"));
+  check("no report column is left empty by the builder", REPORT_COLUMNS.every((c) => typeof out[c.field] === "string"));
+}
+
+/* ------------------------------------------------------------------ */
+/* Moving a merged PR onto the scope sheet                             */
+/* ------------------------------------------------------------------ */
+{
+  const sig = { by: "a@b.com", at: "2026-09-03T00:00:00.000Z" };
+  const merged = { mergedAt: "2026-09-05T00:00:00Z", signoffs: { biz: sig, qa: sig, pod: sig } };
+  const open = { name: "2026.09", scope: { frozen: false } };
+
+  check("a merged, fully signed-off PR may be moved", refuseMoveToScope(merged, open, true) === null, refuseMoveToScope(merged, open, true) ?? "");
+
+  /*
+   * Permission is checked first on purpose. Telling somebody the scope is
+   * frozen when they also may not do this at all sends them to ask the wrong
+   * person about the wrong thing.
+   */
+  const noRight = refuseMoveToScope(merged, { name: "x", scope: { frozen: true } }, false);
+  check("permission is refused before anything else", /DevOps editor/.test(noRight ?? ""), noRight ?? "");
+  /* Before even "there is nothing to move": the answer must not tell somebody
+     without rights whether a given pull request exists. */
+  check("...before the row is even looked at", /DevOps editor/.test(refuseMoveToScope(null, null, false) ?? ""));
+  check("...naming who can grant it", /Ask an admin/.test(noRight ?? ""));
+
+  /*
+   * Every sign-off, not just business and QA. The sheet is the record of what
+   * shipped; an unverified change on it makes the record say something nobody
+   * agreed to.
+   */
+  const partly = refuseMoveToScope({ ...merged, signoffs: { biz: sig, qa: sig } }, open, true);
+  check("a missing POD verification stops the move", partly !== null, "moved without every sign-off");
+  check("...and names what is waited on", /POD verification/.test(partly ?? ""), partly ?? "");
+  const none = refuseMoveToScope({ ...merged, signoffs: {} }, open, true);
+  check("...listing all of them when none are in", /Business/.test(none ?? "") && /QA/.test(none ?? ""), none ?? "");
+
+  /* A frozen sheet refuses, with the reason it was frozen for. */
+  const frozen = refuseMoveToScope(merged, { name: "2026.09", scope: { frozen: true, reason: "signed off by biz" } }, true);
+  check("a frozen sheet refuses the move", frozen !== null);
+  check("...quoting why it is frozen", /signed off by biz/.test(frozen ?? ""), frozen ?? "");
+
+  check("no cycle at all is refused", refuseMoveToScope(merged, null, true) !== null);
+  check("an unmerged PR is refused", refuseMoveToScope({ ...merged, mergedAt: "" }, open, true) !== null);
+
+  /* Twice would make the sheet an argument rather than a record. */
+  check("one already moved is refused", /already on the sheet/i.test(refuseMoveToScope({ ...merged, movedToScope: true }, open, true) ?? ""));
+  check("nothing at all is refused", refuseMoveToScope(null, open, true) !== null);
+
+  check("the missing list names the levels", missingSignoffs({ signoffs: { biz: sig } }).join(", ") === "QA, POD verification");
+  check("...and is empty when all are in", missingSignoffs(merged).length === 0);
+
+  // -- the route asks the same function -----------------------------------
+  const route = readFileSync(new URL("../src/app/api/pulls/to-scope/route.ts", import.meta.url), "utf8");
+  check("the route refuses with the shared rule", /refuseMoveToScope\(pr, cycle, canEdit\)/.test(route), "the button and the server could disagree");
+  /*
+   * Permission is answered before the row is looked up, so a reader without
+   * rights gets 403 and learns nothing about whether the pull request exists.
+   */
+  check("permission is answered before the lookup", route.indexOf("if (!canEdit)") < route.indexOf("await findPullOnSheets("), "a member is told whether a PR exists");
+  check("...as a 403", /status: 403/.test(route));
+  check("...and everything else as a 409", /status: 409/.test(route));
+  check("the row is built from the PR, not retyped", /title: pr\.title/.test(route) && /prUrl: pr\.url/.test(route));
+  check("...and the PR is marked so it cannot go twice", /movedToScope: true/.test(route));
+
+  const sync = readFileSync(new URL("../src/lib/devops/pull-sync.ts", import.meta.url), "utf8");
+  check("a re-sync does not un-move it", /movedToScope: stored\.movedToScope === true/.test(sync));
+
+  // -- it goes onto its OWN cycle's sheet, and no other -------------------
+  /*
+   * The move used to land on "the first cycle whose scope is still open", which
+   * made the cycle field decorative: correcting it changed nothing about where
+   * the change was recorded, and changes went onto the wrong release.
+   */
+  const c09 = { id: "acme-cms-2026-09", name: "2026.09", repoId: "acme-cms", scope: { frozen: false } };
+  const c10 = { id: "acme-cms-2026-10", name: "2026.10", repoId: "acme-cms", scope: { frozen: false } };
+  const other = { id: "pay-2026-09", name: "2026.09", repoId: "pay", scope: { frozen: false } };
+  const assigned = { ...merged, repoId: "acme-cms", cycleId: c10.id };
+
+  check("a PR moves onto the cycle it is assigned to", cycleForPull(assigned, [c09, c10])?.id === c10.id);
+  check("...not the first open one", cycleForPull(assigned, [c09, c10])?.id !== c09.id, "the cycle field was decorative");
+  check("no cycle set means no sheet", cycleForPull({ ...merged, cycleId: "" }, [c09]) === undefined);
+  check("...and neither does one that is gone", cycleForPull({ ...merged, cycleId: "deleted" }, [c09]) === undefined);
+  /* Two repositories can both have a `2026.09`; the wrong one is a record that
+     is quietly wrong rather than obviously missing. */
+  check(
+    "a cycle of another repository is refused",
+    cycleForPull({ ...merged, repoId: "acme-cms", cycleId: other.id }, [other]) === undefined,
+    "a change filed against the wrong repository's release",
+  );
+  check("...and refused by the rule too", /not a cycle of/.test(refuseMoveToScope({ ...merged, repoId: "acme-cms" }, other, true) ?? ""));
+
+  /* The refusal a frozen sheet gives a move is worded around the pull request,
+     because that is what the reader is holding — not a form. */
+  const frozenMove = refuseMoveToScope(assigned, { ...c10, scope: { frozen: true, reason: "scope agreed" } }, true);
+  check("a frozen sheet says the PR cannot move", /can't be moved/.test(frozenMove ?? ""), frozenMove ?? "");
+  check("...naming the sheet", /2026\.10/.test(frozenMove ?? ""));
+  check("...and quoting why", /scope agreed/.test(frozenMove ?? ""));
+  check("no cycle at all says to set one", /cycle/i.test(refuseMoveToScope({ ...merged, cycleId: "" }, undefined, true) ?? ""));
+
+  /*
+   * The server takes the cycle off the stored record, not the body. A browser
+   * does not get to pick which release a change is recorded against.
+   */
+  const moveRoute2 = readFileSync(new URL("../src/app/api/pulls/to-scope/route.ts", import.meta.url), "utf8");
+  check("the route takes the cycle from the record", /const cycleId = String\(pr\.cycleId/.test(moveRoute2), "the browser could pick the sheet");
+  check("...and refuses a body that names another", /moveCycleMismatch/.test(moveRoute2));
+  check("...rather than obeying it", !/body as \{ cycleId[\s\S]{0,200}saveDeployment/.test(moveRoute2));
+
+  const reportPanel = readFileSync(new URL("../src/components/devops/signoff-report.tsx", import.meta.url), "utf8");
+  check("the panel asks per row", /cycleForPull\(pr, cycles\)/.test(reportPanel), "one cycle for the whole table");
+  check("...and no longer picks the first open cycle", !/find\(\(c\) => !c\.scope\.frozen\)/.test(reportPanel));
+}
+
+/* ------------------------------------------------------------------ */
+/* Filtering the sign-off report by whether it is signed off           */
+/* ------------------------------------------------------------------ */
+{
+  const sig = { by: "a@b.com", at: "2026-09-03T00:00:00.000Z" };
+  const allIn = { biz: sig, qa: sig, pod: sig };
+  const partial = { biz: sig, qa: sig };
+
+  check("the vocabulary is all/complete/incomplete", SIGNOFF_FILTERS.join(",") === "all,complete,incomplete");
+  check("all matches everything", matchesSignoff(partial, true, "all") && matchesSignoff(allIn, true, "all"));
+  /* Complete means all three, the same definition the column uses — the filter
+     and the words in the row must never disagree. */
+  check("complete means every level", matchesSignoff(allIn, true, "complete"));
+  check("...so two of three is incomplete", !matchesSignoff(partial, true, "complete"));
+  check("incomplete is the other half", matchesSignoff(partial, true, "incomplete") && !matchesSignoff(allIn, true, "incomplete"));
+  check("nothing signed is incomplete", matchesSignoff({}, true, "incomplete") && matchesSignoff(undefined, false, "incomplete"));
+
+  /* A typo in a URL should show the report, not an empty table that reads as
+     "there is nothing here". */
+  check("an unknown filter widens to all", cleanSignoffFilter("nonsense") === "all");
+  check("...as does a missing one", cleanSignoffFilter(undefined) === "all" && cleanSignoffFilter("") === "all");
+  check("a real one survives", cleanSignoffFilter("Complete") === "complete" && cleanSignoffFilter(" incomplete ") === "incomplete");
+
+  const panel = readFileSync(new URL("../src/components/devops/signoff-report.tsx", import.meta.url), "utf8");
+  check("the report offers the filter", /SIGNOFF_FILTERS\.map/.test(panel));
+  check("...and applies it before paging", panel.indexOf("matchesSignoff(") < panel.indexOf("paginate(matched"));
+}
+
+/* ------------------------------------------------------------------ */
+/* A download holds exactly the rows the screen was showing            */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * The screen and the file have to search the same fields, or a filter that
+   * found eleven rows on screen quietly writes nine into the file. One
+   * definition each, in `lib/devops/table.ts`.
+   */
+  const row = { ticket: "813", title: "Statement PDF", branch: "release", environment: "Production",
+    state: "deployed", kind: "bug", author: "a@b.com", deployedOn: "2026-09-04" };
+  check("a scope row is searched by every column", matchesQuery(scopeRowFields(row, "AMC POD"), "813 production"));
+  check("...including its POD", matchesQuery(scopeRowFields(row, "AMC POD"), "amc"));
+
+  const pr = { number: 42, title: "Fix it", author: "dev", baseBranch: "release", mergedOn: "2026-09-04",
+    deployedOn: "", environment: "", ticket: "813" };
+  check("a PR row is searched by every column", matchesQuery(pullRowFields(pr, "cms", "AMC POD"), "42 release"));
+  check("...including its repo and POD", matchesQuery(pullRowFields(pr, "cms", "AMC POD"), "cms amc"));
+
+  /* An unbounded needle is an unbounded scan, triggered by whatever somebody
+     puts in a URL. */
+  check("a filter from a query string is bounded", cleanQuery("x".repeat(5000)).length <= 200);
+  check("...and trimmed", cleanQuery("  813  ") === "813");
+  check("...and never throws", cleanQuery(undefined) === "" && cleanQuery(null) === "" && cleanQuery(7) === "7");
+
+  const scopeExport = readFileSync(new URL("../src/app/api/deployments/export/route.ts", import.meta.url), "utf8");
+  check("the scope download takes the filter", /cleanQuery\(p\.get\("q"\)\)/.test(scopeExport), "a download that ignored the filter");
+  check("...and applies the shared rule", /matchesQuery\(scopeRowFields\(/.test(scopeExport), "a second copy of the filter");
+  /* Filter first: a narrow download must not read the whole item collection to
+     join live severities it will throw away. */
+  check("...before joining the live bug columns", scopeExport.indexOf("const filtered =") < scopeExport.indexOf("store.items.find"));
+
+  const reportExport = readFileSync(new URL("../src/app/api/pulls/export/route.ts", import.meta.url), "utf8");
+  check("the report download takes the filter", /cleanQuery\(p\.get\("q"\)\)/.test(reportExport));
+  check("...and the sign-off state", /cleanSignoffFilter\(p\.get\("signoff"\)\)/.test(reportExport));
+  check("...applying both shared rules", /matchesSignoff\(/.test(reportExport) && /matchesQuery\(pullRowFields\(/.test(reportExport));
+
+  const filters = readFileSync(new URL("../src/components/devops/use-report-filters.ts", import.meta.url), "utf8");
+  check("the report's links carry the filter", /params\.set\("q", q\)/.test(filters));
+  check("...and the sign-off state", /params\.set\("signoff", signoff\)/.test(filters));
+  /* Narrowing a list while on page 4 leaves an empty table with rows behind it,
+     which reads as "my data is gone". */
+  check("...and every filter returns to page one", /setPage\(1\)/.test(filters));
+
+  const actions = readFileSync(new URL("../src/components/devops/scope-actions.tsx", import.meta.url), "utf8");
+  check("the scope sheet's links carry the filter", /params\.set\("q", q\)/.test(actions));
+  check("...as links, so the browser streams the file", /<a href=\{href\(/.test(actions));
+}
+
+/* ------------------------------------------------------------------ */
+/* A row opens by animating its height                                 */
+/* ------------------------------------------------------------------ */
+{
+  /*
+   * The first version appeared at full size in one frame while a `motion.div`
+   * faded and slid four pixels — the table jumped under the cursor and the
+   * animation played after the jolt it was meant to soften.
+   */
+  const drawer = readFileSync(new URL("../src/components/devops/row-drawer.tsx", import.meta.url), "utf8");
+  check("the drawer animates to the content's height", /height: "auto", opacity: 1/.test(drawer));
+  check("...from nothing", /\{ height: 0, opacity: 0 \}/.test(drawer));
+  /*
+   * Reduced motion fades, it does not freeze. Dropping the animation entirely
+   * leaves the drawer appearing in one frame — the jolt this exists to remove,
+   * handed to the people least likely to want it. Same rule as `ui/menu.tsx`.
+   */
+  check("...fading rather than freezing under reduced motion", /reduced \? \{ opacity: 1 \}/.test(drawer), "reduced motion got no animation at all");
+  /* A partial height has to show a partial drawer, not the whole thing
+     spilling over the row below it. */
+  check("...clipped while it opens", /overflow: "hidden"/.test(drawer));
+
+  /*
+   * Not CSS. `grid-template-rows: 0fr → 1fr` needs Chrome 107 / Firefox 127 /
+   * Safari 17.4, and the blanket reduced-motion rule zeroes `animation-duration`
+   * on `*` with `!important` — so on an older browser, or any machine with the
+   * setting on, it silently did not animate at all. That shipped once.
+   */
+  const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  const cssRules = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  check("the drawer is not a CSS animation", !/@keyframes row-open/.test(cssRules), "it does not animate on older browsers");
+  check("...and the dead class is gone", !/\.devops-row-drawer/.test(cssRules));
+  /* Honoured explicitly, rather than by having its duration taken away — which
+     is what a JavaScript animation slips past. */
+  check("...and reduced motion is still respected", /useReducedMotion/.test(drawer), "an animation that ignores the setting");
+
+  check("the durations are a constant, not a literal", DEVOPS_MOTION.rowOpenMs > 0 && DEVOPS_MOTION.chevronMs > 0);
+  /* One curve in two spellings, because the two mechanisms want different
+     ones. The arrow and the panel are one gesture. */
+  check("...and one easing curve serves both", DEVOPS_MOTION.ease.includes(DEVOPS_MOTION.easeCurve.join(", ")), DEVOPS_MOTION.ease);
+  check("...with the chevron using it", /transition: `transform \$\{DEVOPS_MOTION\.chevronMs\}ms \$\{DEVOPS_MOTION\.ease\}`/.test(drawer));
+  check("...and the drawer too", /ease: DEVOPS_MOTION\.easeCurve/.test(drawer));
+
+  for (const name of ["report-row-detail.tsx", "scope-row-detail.tsx"]) {
+    const detail = readFileSync(new URL(`../src/components/devops/${name}`, import.meta.url), "utf8");
+    check(`${name} carries no motion of its own`, !/from "framer-motion"/.test(detail), "two things moving at once");
+  }
+
+  for (const name of ["report-table.tsx", "scope-table.tsx"]) {
+    const table = readFileSync(new URL(`../src/components/devops/${name}`, import.meta.url), "utf8");
+    check(`${name} wraps the detail in the drawer`, /<RowDrawer>/.test(table));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* One env file, one constants file, and nothing else reads either     */
+/* ------------------------------------------------------------------ */
+{
+  check("the board's env file is named once", DEVOPS_ENV_FILE === ".env.devopsdashboard");
+
+  /*
+   * `constants.ts` is imported by browser components. A `node:fs` or a
+   * `process.env` in it is a build break waiting to happen — this project has
+   * already had one, with mongoose.
+   *
+   * Comments are stripped first, exactly as the theme suite does it, so a
+   * comment explaining a rule cannot trip the rule.
+   */
+  const stripped = (path) =>
+    readFileSync(new URL(path, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+  const constants = stripped("../src/lib/devops/constants.ts");
+  check("the constants file is client-safe", !/node:fs|node:path|process\.env/.test(constants), "the filesystem in a browser bundle");
+  check("...and imports nothing that is not", !/^import /m.test(constants));
+
+  /* One module reads the environment for this board. Anything else hardcoding
+     a default is a second opinion about what "unset" means. */
+  const config = readFileSync(new URL("../src/lib/devops/config.ts", import.meta.url), "utf8");
+  check("the env file is loaded once per process", /if \(loaded\) return;/.test(config));
+  /*
+   * Most specific first. Loading is first-wins, so the git-ignored `.local` has
+   * to be read **before** the committed file — the other way round it is a file
+   * that silently never has any effect, which is exactly where a real token
+   * goes. It shipped that way round once.
+   */
+  check(
+    "the local override is read before the committed file",
+    /ENV_FILES = \[`\$\{DEVOPS_ENV_FILE\}\.local`, DEVOPS_ENV_FILE\]/.test(config),
+    "a .local that never overrides anything",
+  );
+  const scriptEnv = readFileSync(new URL("../scripts/lib/env.mjs", import.meta.url), "utf8");
+  check(
+    "...and the scripts read them in the same order",
+    scriptEnv.indexOf('".env.devopsdashboard.local"') < scriptEnv.indexOf('".env.devopsdashboard"'),
+  );
+  /* A variable already on the process was set by whoever started it; a file in
+     the repository does not get to override an operator. */
+  check("...never overriding the process", /if \(process\.env\[key\] === undefined\)/.test(config));
+  /* Every setting has a default, so a missing or unreadable file must not stop
+     the server coming up. */
+  check("...and a missing file is not fatal", /if \(!existsSync\(path\)\) continue;/.test(config));
+  check("...nor an unreadable one", /try \{[\s\S]{0,400}\} catch \{/.test(config));
+
+  for (const [file, name] of [["access.ts", "access"], ["github-config.ts", "the GitHub config"]]) {
+    const source = readFileSync(new URL(`../src/lib/devops/${file}`, import.meta.url), "utf8");
+    check(`${name} reads its keys from the constants file`, /DEVOPS_ENV_KEYS/.test(source), "a hardcoded variable name");
+    check(`${name} takes its defaults from there too`, /DEVOPS_DEFAULTS/.test(source));
+  }
+
+  const env = readFileSync(new URL("../.env.devopsdashboard", import.meta.url), "utf8");
+  for (const key of ["DEVOPS_ACCESS", "GITHUB_MODE", "GITHUB_API_URL", "GITHUB_TOKEN", "DB_DRIVER"]) {
+    check(`${key} is in the env file`, new RegExp(`^${key}=`, "m").test(env));
+  }
+  /* Committed so a clone runs, which means anything in it is public. The real
+     token goes in the git-ignored `.local` beside it. */
+  check("the committed file carries no token", /^GITHUB_TOKEN=\s*$/m.test(env), "a secret in the repository");
+  const ignore = readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
+  check("...and the local override is ignored", ignore.includes(".env.devopsdashboard.local"));
+}
+
+/* ------------------------------------------------------------------ */
+/* Clearing the project, and clearing seeded data                      */
+/* ------------------------------------------------------------------ */
+{
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  for (const script of ["clear", "delete", "delete:pod-seed", "delete:devops-seed"]) {
+    check(`pnpm ${script} exists`, typeof pkg.scripts[script] === "string");
+  }
+
+  /* Comments stripped, so a comment explaining a rule cannot trip it. */
+  const source = (path) =>
+    readFileSync(new URL(path, import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+
+  const clear = source("../scripts/clear.mjs");
+  /* The guard that matters: a recursive delete that can be pointed outside its
+     own directory is a footgun however carefully the list is written. */
+  check("clear refuses anything outside the project", /full\.startsWith\(ROOT \+ sep\)/.test(clear));
+  /* What it deletes is the list, and the data store is not on it. */
+  const list = clear.slice(clear.indexOf("const EXACT"), clear.indexOf("function bytesIn"));
+  check("...and never touches the data store", !/DB_store/.test(list), "a clear that deleted the board");
+  check("...or an env file", !/\.env/.test(list));
+  check("...using Node's own rm, so Windows behaves", /rmSync\(/.test(clear) && !/rm -rf/.test(clear));
+  /*
+   * The guard that was missing. `.next` and `node_modules` are exactly what a
+   * running `next dev` is reading; removing them does not stop it, it keeps
+   * serving and the next request dies on
+   * `Invariant: Expected clientReferenceManifest to be defined` — which reads
+   * as a Next.js bug rather than as "somebody deleted my build directory".
+   */
+  check("clear refuses while a dev server is running", /devServerRunning\(\)/.test(clear), "it deletes .next underneath a live server");
+  check("...before it removes anything", clear.indexOf("if (running && !force)") < clear.indexOf("rmSync("));
+  check("...with a way to override it", /--force/.test(clear));
+  /* A platform it cannot inspect gets a warning, not a refusal to work. */
+  check("...and warns rather than refusing when it cannot tell", /running === null/.test(clear));
+  /* Listing what would go touches nothing, so it never needs the guard. */
+  check("...while a dry run is never blocked", /const running = dryRun \? false : devServerRunning\(\)/.test(clear));
+
+  const del = source("../scripts/delete-seed.mjs");
+  /* Deleting the admin is how somebody locks themselves out of an instance
+     they are in the middle of setting up. */
+  check("deleting seed data never touches accounts", !/store\.users/.test(del), "locked out of your own instance");
+  /* Irreversible, and there is no undo anywhere in this app. */
+  check("...counting before it deletes", del.indexOf("const counts") < del.indexOf("async function clear("));
+  check("...and asking first", /createInterface/.test(del) && /cannot be undone/.test(del));
+  /* A script that silently deletes when nobody is watching is the version of
+     this that ends badly. */
+  check("...refusing without a terminal unless told", /!process\.stdin\.isTTY[\s\S]{0,200}process\.exit\(1\)/.test(del));
+  check("...offering a dry run", /--dry-run/.test(del));
+  /* Through the store, so `DB_DRIVER=mongodb` needs no second implementation. */
+  check("it goes through the store, not the files", /getStore/.test(del) && !/readFileSync\(.*DB_store/.test(del));
+  /* `items` and `sync` both read PODs, so they must run before `teams` empties
+     the list they read. */
+  check("...clearing PODs last", del.indexOf('"items"') < del.lastIndexOf('"teams"'));
+}
+
+/* ------------------------------------------------------------------ */
+/* Taking a moved row back off the sheet                               */
+/* ------------------------------------------------------------------ */
+{
+  // -- and back off the sheet again ---------------------------------------
+  /*
+   * A row that came from a pull request does not simply vanish when it is
+   * removed: the pull request returns to the sign-off report carrying the
+   * reason, because the person who moved it has to decide whether to fix
+   * something and move it again or take the change out of the release branch.
+   */
+  const fromPull = { id: "d1", pullId: "p1", title: "Refactor settlement retry loop" };
+  const typedIn = { id: "d2", pullId: "", title: "Config change" };
+
+  check("removing a moved row asks why", refuseRemoval(fromPull, "") !== null);
+  check("...saying who reads it", /sign-off report/i.test(refuseRemoval(fromPull, "") ?? ""), refuseRemoval(fromPull, "") ?? "");
+  check("...refusing a shrug", refuseRemoval(fromPull, "no") !== null, "one word passed for a reason");
+  check("...refusing whitespace dressed as one", refuseRemoval(fromPull, "      ") !== null);
+  check("...and accepting a real one", refuseRemoval(fromPull, "QA sign-off was wrong") === null);
+  check("the minimum is short enough to be honest", MIN_REMARKS >= 3 && MIN_REMARKS <= 12);
+
+  /*
+   * A row somebody typed in by hand has nobody waiting to hear about it.
+   * Demanding a sentence to delete a typo is friction with no reader.
+   */
+  check("a hand-typed row needs no remark", refuseRemoval(typedIn, "") === null);
+  check("...nor does a row that is not there", refuseRemoval(null, "") === null);
+
+  const handedBack = returnedPull({ id: "p1", url: "u", movedToScope: true }, "lead@x.com", "  QA missed it  ", "2026-09-09T10:00:00.000Z");
+  check("the returned PR is movable again", handedBack.movedToScope === false, "it stayed marked as moved and the report would hide it");
+  check("...carrying the reason", handedBack.returned.remarks === "QA missed it", handedBack.returned.remarks);
+  check("...with it trimmed", !/^\s|\s$/.test(handedBack.returned.remarks));
+  check("...and who and when", handedBack.returned.by === "lead@x.com" && handedBack.returned.at.startsWith("2026-09-09"));
+  check("...keeping the rest of the record", handedBack.url === "u" && handedBack.id === "p1");
+  check("a novel is cut to something storable", returnedPull({}, "a", "x".repeat(5000), "t").returned.remarks.length === 1000);
+
+  // -- the join, rather than the flag ---------------------------------------
+  /*
+   * `movedToScope` was believed on its own, and a stored flag drifts. A row
+   * moved by a build that did not yet write the link back was deleted with no
+   * way to find its pull request, and the flag then said "moved" with no row
+   * anywhere — the change belonged to no screen at all. What is true is
+   * whether a scope row for it exists, and that is a join.
+   */
+  check("a row and its PR match on the id", linksTo({ pullId: "p1" }, { id: "p1", url: "u" }));
+  check("...and a different id does not", !linksTo({ pullId: "p1" }, { id: "p2", url: "u" }));
+  /* The id wins outright: a row that carries one is not second-guessed by a
+     URL somebody may have edited. */
+  check("...with the id winning over a matching URL", !linksTo({ pullId: "p1", prUrl: "u" }, { id: "p2", url: "u" }));
+  check("a row with no id falls back to the URL", linksTo({ prUrl: "https://github.com/a/b/pull/9" }, { id: "p1", url: "https://github.com/a/b/pull/9" }));
+  check("...and matches nothing when it has neither", !linksTo({}, { id: "p1", url: "u" }));
+
+  /* GitHub answers to more than one spelling of the same pull request. */
+  for (const [a2, b2, want, why] of [
+    ["https://github.com/a/b/pull/9", "https://github.com/a/b/pull/9/", true, "a trailing slash"],
+    ["https://github.com/a/b/pull/9/files", "https://github.com/a/b/pull/9", true, "the files tab"],
+    ["http://github.com/a/b/pull/9", "https://github.com/a/b/pull/9", true, "http against https"],
+    ["https://github.com/a/b/pull/9#issue-1", "https://github.com/a/b/pull/9", true, "an anchor"],
+    ["https://github.com/a/b/pull/9", "https://github.com/a/b/pull/90", false, "a different PR"],
+    ["", "", false, "two empty strings, which are not a match"],
+  ]) {
+    check(`URLs match across ${why}`, sameLink(a2, b2) === want, `${a2} vs ${b2}`);
+  }
+
+  const known = [{ id: "p1", url: "https://github.com/a/b/pull/9" }];
+  check("a legacy row is given the id its URL points at", idForRow({ prUrl: "https://github.com/a/b/pull/9" }, known) === "p1");
+  check("...and one that already has an id is left alone", idForRow({ pullId: "p2", prUrl: "https://github.com/a/b/pull/9" }, known) === "");
+  /* A URL typed into the form by hand is not a move, and must not start
+     behaving like one — the sheet would then demand a reason to delete it. */
+  check("...and a URL matching nothing stays unlinked", idForRow({ prUrl: "https://github.com/a/b/pull/404" }, known) === "");
+  check("...as does a row with no URL at all", idForRow({}, known) === "");
+
+  const onSheet = movedPulls([{ id: "p1", url: "u1", movedToScope: false }], [{ pullId: "p1" }]);
+  check("a PR with a row on a sheet reads as moved", onSheet[0].movedToScope === true, "the report would offer to move it twice");
+  const orphan = movedPulls([{ id: "p1", url: "u1", movedToScope: true }], []);
+  check("...and one whose row is gone comes back", orphan[0].movedToScope === false, "the PR belonged to no screen at all");
+  const viaUrl = movedPulls([{ id: "p1", url: "https://github.com/a/b/pull/9", movedToScope: false }], [{ prUrl: "https://github.com/a/b/pull/9" }]);
+  check("...including a row that only has the URL", viaUrl[0].movedToScope === true, "a row moved by an older build read as not moved");
+  check("nothing is rewritten when the flag already agrees", movedPulls([{ id: "p1", movedToScope: false }], [])[0].movedToScope === false);
+
+  const pullsLib = readFileSync(new URL("../src/lib/devops/pulls.ts", import.meta.url), "utf8");
+  check("the report derives it rather than trusting the flag", /reconcileMoved\(matched\)/.test(pullsLib), "a drifted flag would hide a PR from every screen");
+  /*
+   * And writes the correction back. Deriving it for the report alone fixed
+   * what the reader saw and left the record wrong — so the button offered a
+   * move and the API, which reads the record, refused it as already on the
+   * sheet. One shared rule is worth nothing if the two sides read different
+   * copies of the same fact.
+   */
+  check("...and stores the correction", /await store\.pulls\.save\(pr\)/.test(pullsLib), "the button and the API would give opposite answers");
+  check("...writing only what changed", /if \(pr !== pulls\[i\]\)/.test(pullsLib));
+
+  const moveRoute = readFileSync(new URL("../src/app/api/pulls/to-scope/route.ts", import.meta.url), "utf8");
+  check("the move route reads the corrected record", /findPullOnSheets\(id\)/.test(moveRoute), "it would refuse a move the button had just offered");
+  check("...not the raw one", !/findPullById\(id\)/.test(moveRoute));
+
+  const deployLib = readFileSync(new URL("../src/lib/devops/deployments.ts", import.meta.url), "utf8");
+  check("reading a sheet fills in a missing link", /healScopeLinks\(await findAllDeployments\(\)\)/.test(deployLib));
+  check("...and stores it, so it is done once", /await store\.deployments\.save\(row\)/.test(deployLib));
+  check("...only for rows that have a URL and no id", /!row\.pullId && row\.prUrl/.test(deployLib));
+
+  const pullsCtl = readFileSync(new URL("../src/controllers/pulls.controller.ts", import.meta.url), "utf8");
+  check("the PR for a row is found by id first", pullsCtl.indexOf("if (row.pullId) return findPullById") < pullsCtl.indexOf("sameLink(row.prUrl"));
+
+    const del = readFileSync(new URL("../src/app/api/deployments/route.ts", import.meta.url), "utf8");
+  check("the delete route asks the shared rule", /refuseRemoval\(\{ pullId: pr\?\.id \}, remarks\)/.test(del), "the table and the server could disagree");
+  check("...answering a missing remark as a 400", /needsWhy[\s\S]{0,80}status: 400/.test(del));
+  check("...and hands the pull request back", /savePullDoc\(returnedPull\(/.test(del));
+  check("...only when there is one to hand back", /if \(pr\) \{/.test(del));
+  /* Found before the remark is judged: whether one is owed depends on whether
+     anybody is going to read it. */
+  check("...found before the remark is judged", del.indexOf("await findPullForRow(row)") < del.indexOf("refuseRemoval("));
+  check("...including a legacy row, matched on its URL", /findPullForRow/.test(del), "a row from an older build would be deleted silently");
+  /* The freeze is answered first: a frozen sheet refuses the removal outright,
+     so asking for a reason that will be thrown away wastes somebody's time. */
+  check("a frozen sheet is answered before the remark", del.indexOf("refuseIfScopeFrozen") < del.indexOf("refuseRemoval("), "typed a reason for a removal that was never going to happen");
+  check("the remark may arrive in the body", /body[\s\S]{0,120}remarks/.test(del), "a paragraph in a query string");
+
+  const toScope = readFileSync(new URL("../src/app/api/pulls/to-scope/route.ts", import.meta.url), "utf8");
+  check("the moved row remembers which PR it came from", /pullId: pr\.id/.test(toScope), "removing it could not find the PR to hand back");
+  check("...and moving again clears the old remark", /returned: \{ at: "", by: "", remarks: "" \}/.test(toScope), "the report would keep complaining about something already fixed");
+
+  const removeUi = readFileSync(new URL("../src/components/devops/scope-remove.tsx", import.meta.url), "utf8");
+  check("the table collects the remark inline", /Why is it coming off\?/.test(removeUi));
+  check("...not in a prompt that blocks the page", !/window\.prompt\(/.test(removeUi));
+  check("...and will not remove without one", /if \(held\) return;/.test(removeUi));
+  check("...only asking a row that owes one", /const owes = Boolean\(row\.pullId\)/.test(removeUi), "a typo could not be deleted without writing a sentence about it");
+
+  const note = readFileSync(new URL("../src/components/devops/row-notes.tsx", import.meta.url), "utf8");
+  check("the report shows the remark on the row", /Back off the sheet: \{pr\.returned\?\.remarks\}/.test(note), "the reason was written and nobody ever saw it");
+  check("...only while it is off the sheet", /!pr\.movedToScope/.test(note));
+  check("...and names who to go back to", /returnedBy\(pr\)/.test(note));
+
+  const button = readFileSync(new URL("../src/components/devops/move-to-scope.tsx", import.meta.url), "utf8");
+  check("the button asks the same rule", /refuseMoveToScope\(pr, cycle, canEdit\)/.test(button));
+  check("...and shows the reason it is off", /label=\{[\s\S]{0,40}refusal \?\?/.test(button), "a disabled button with no explanation");
+
+  // -- syncing a chosen branch --------------------------------------------
+  /*
+   * Teams cut from more than one branch — a hotfix branch, last quarter's
+   * release — and a report that could only read the release branch left the
+   * rest invisible.
+   */
+  const syncRoute = readFileSync(new URL("../src/app/api/pulls/sync/route.ts", import.meta.url), "utf8");
+  const syncLib = readFileSync(new URL("../src/lib/devops/pull-sync.ts", import.meta.url), "utf8");
+  check("the sync route takes a branch", /branch \|\| undefined/.test(syncRoute));
+  check("...and falls back to the release branch", /cleanBranch\(branch \?\? repo\.releaseBranch, repo\.releaseBranch\)/.test(syncLib));
+  /* How far back a sync reaches is an operator's decision — a first import
+     wants more pages than a nightly top-up. */
+  check("...and how far back it reads is configurable", /devopsConfig\(\)\.syncPages/.test(readFileSync(new URL("../src/lib/devops/pulls.ts", import.meta.url), "utf8")), "a hardcoded page count");
+  const control = readFileSync(new URL("../src/components/devops/sync-control.tsx", import.meta.url), "utf8");
+  check("the control asks which repo and which branch", /Repository/.test(control) && /Branch/.test(control));
+  check("...prefilled with the repo's release branch", /placeholder=\{repo\?\.releaseBranch/.test(control));
 }
 
 console.log("\n" + "─".repeat(60));

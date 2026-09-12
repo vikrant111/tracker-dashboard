@@ -34,6 +34,13 @@ export const userSchema = new Schema(
     role: { type: String, enum: ["admin", "member"], default: "member" },
     teamIds: { type: [String], default: [] },
 
+    /*
+     * May correct DevOps records after the fact. A different question from
+     * `role`: an admin runs the instance; an editor is trusted with a deploy
+     * date. Admins always count, so it is never granted to them.
+     */
+    devopsEditor: { type: Boolean, default: false },
+
     createdAt: { type: String, default: "" },
     /*
      * Sessions issued before this are refused, so changing a password because

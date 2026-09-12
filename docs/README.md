@@ -18,6 +18,7 @@ pages are the internals.
 | [operations.md](operations.md) | Environment variables, running, seeding, deploying. |
 | [excel-upload.md](excel-upload.md) | The spreadsheet format, column by column — and the download that round-trips through it. |
 | [troubleshooting.md](troubleshooting.md) | Symptoms → causes, including bugs already fixed here. |
+| [devops.md](devops.md) | The DevOps board: onboarding repos, freezing a branch, announcements. Dry run until GITHUB_MODE=live. |
 | [restricted-environments.md](restricted-environments.md) | A corporate laptop: TLS interception, no Docker, no internet. Start with `pnpm check:env`. |
 | [decisions.md](decisions.md) | Why the non-obvious choices were made, and what would change them. |
 
@@ -52,6 +53,8 @@ src/db/           storage. Two drivers behind one interface, picked by DB_DRIVER
                   blocking the event loop
     json-paths    where DB_store lives and what each file is called
     json-rowops   upsert/remove for the three small keyed collections
+    keyed         one keyed-collection implementation per driver, so a new
+                  collection costs a line rather than three hand-written copies
     json-collections  PODs, accounts and watermarks for the file driver
     memory-store  the same contract in memory; for bisecting a failure
     mongo-store   the same contract against a real cluster
@@ -72,6 +75,12 @@ src/db/           storage. Two drivers behind one interface, picked by DB_DRIVER
     team.schema   a POD, with its Azure connection and value overrides
     user.schema   an account and the PODs it can see
     sync-state.schema  one watermark per POD
+    repo.schema   a GitHub repository the DevOps board tracks, and where its
+                  develop branch stands
+    announcement.schema  a release-branch announcement, keyed by repo + time
+    cycle.schema  one release going out of a repo; owns the scope sheet
+    deployment.schema  one bug or hotfix in a cycle's scope
+    pull.schema   a PR that reached a release branch, with our sign-offs
   models/index.ts the compiled models, looked up before compiling so a hot
                   reload cannot throw OverwriteModelError
   document.ts     the one gate every write passes through, on every driver.
@@ -99,6 +108,11 @@ src/controllers/  what routes and lib/* call
   dashboard.roster      the leaderboard's roster half, narrowed by the same
                         search the items were
   teams.controller      POD persistence
+  repos.controller      onboarded GitHub repositories
+  announcements.controller  release-branch announcements
+  cycles.controller     deployment cycles
+  deployments.controller  scope-sheet rows
+  pulls.controller      pull request records
   users.controller      account persistence
   sync-state.controller the sync watermark
 
@@ -151,6 +165,56 @@ src/lib/          domain and data. No React, server-only
   validation-team the POD form's own rules, including per-severity ageing
   validation-email  the address test both of them need, in one place so they
                   do not have to import each other
+  devops/
+    types         repos, freeze states and the URL parsing (client-safe, pure)
+    access        who may open the DevOps board — DEVOPS_ACCESS (pure)
+    repos         a repository before it is stored: slug, defaults, and
+                  keeping a stored token when the form sends back a mask
+    validation    what the repository form must satisfy (client-safe, pure)
+    github-plan   the exact requests a freeze sends — pure, so the shapes are
+                  checked without a repository, which is why live mode is off
+                  by default
+    github-config mode, host, token and the scrubbing that keeps a secret out
+                  of anything stored or rendered (pure)
+    github-send   one request, and turning GitHub's terse statuses into
+                  something worth reading
+    github        freeze and unfreeze; dry run unless GITHUB_MODE=live
+    announcements pinned first, then newest — what the board opens to
+    records       cycles and scope-sheet rows, split out of types (pure)
+    cycles        a cycle, and whether its scope sheet is frozen. The refusal
+                  is one shared function, so the form and the API cannot
+                  disagree about whether the sheet is open
+    deployments   the rows: query, order, and what the form may set
+    scope-sheet   the columns, once, for the screen and the download — the last
+                  two join back to the tracker for a bug's *current* severity
+    pull-record   PRs that reached a release branch (pure)
+    signoff       who agreed a change should ship, and the one rule that
+                  matters: merged without business or QA (pure)
+    report        the sign-off report's columns and order (pure)
+    pull-sync     reading merged PRs from GitHub. Not gated by GITHUB_MODE —
+                  reading changes nothing; the token gates it
+    pulls         listing, signing off, recording a deploy date
+    period        a year, a month and a day are one thing: a YYYY-MM-DD prefix.
+                  An empty period matches NOTHING, because this backs a delete
+    calendar      typing and laying out dates (pure, in .ts so it is checkable)
+    branch        branch names, cleaned once for the form and the save path
+    purge-targets what a purge may clear — its own module so the panel can
+                  import it without reaching the store
+    purge         count first, then delete. Two functions, deliberately
+    editors       who may correct a record after it is saved — a named list,
+                  not a role, because an admin runs the instance and an editor
+                  is trusted with a deploy date (pure)
+    table         filter and page, once, so both sections behave the same
+    pods          which PODs a repo has, and which one a row is for (pure)
+    to-scope      whether a merged PR may be put on a scope sheet, and the one
+                  reason it may not — asked by the button and by the API (pure)
+    return-to-report
+                  the way back: a row that came from a PR cannot be removed
+                  without a reason, and the PR returns to the report carrying
+                  it — asked by the table and by the API             (pure)
+    scope-link    the join between a PR and the scope row it was moved into.
+                  "Already moved" is derived from whether a row exists, not
+                  read off a stored flag that drifts                 (pure)
   spreadsheet.ts  what an uploaded file actually is, from its bytes — so a
                   CSV from Numbers or Sheets works without Excel installed
                                                          (client-safe, pure)
@@ -200,6 +264,16 @@ src/app/admin/
     pod-members   who is in it
     pod-azure     the Boards connection, field mapping and sync controls
     people-panel  who can sign in, what they see, and their passwords
+    repos-panel   the onboarded repositories, as a list
+    repo-form     onboarding one repository: paste the URL, the rest follows
+    repos-section the panel with its own data, so admin-client stays short
+    cycles-section  deployment cycles, likewise
+    editors-section who may correct a saved record
+  devops/
+    page          the DevOps admin screen — its own, because onboarding a repo
+                  and onboarding a POD are different jobs
+    devops-admin-client  its layout: repositories and cycles, and a toast
+    use-armed     a destructive control that asks once, and disarms itself
     pod-access    granting and revoking a member's PODs: a tick when granted, a
                   plus when not, so the control does not read as a static list
     add-person-form  the row that adds one
@@ -240,6 +314,49 @@ src/components/   client components, dashboard-client.tsx orchestrates
   use-scroll-to-top     changing POD returns the reader to the top — the whole
                         board changed, and the roll-up they clicked from is
                         gone (client-safe rule, pure)
+  board-actions         what Sync and Upload say when they finish (pure)
+  devops/
+    board-switch        moving between the POD board and the DevOps board
+    devops-client       the DevOps board shell — same layout, same motion
+    repo-table          every repository and where its branches stand
+    freeze-badge        open / frozen / working / failed, never by colour alone
+    freeze-control      freezing a branch, showing the exact requests first and
+                        asking for a reason everyone blocked will read
+    announcements       the release-note feed
+    announcement-composer  writing one
+    scope-sheet         a cycle's rows: which bug, which branch, which env
+    scope-form          adding a row; only the title is required
+    scope-table         the rows themselves
+    scope-actions       download, freeze scope, add a row
+    signoff-report      what reached the release branch, and who agreed
+    report-table        its rows; risky ones tinted, labelled and worded
+    report-row-detail   a PR opened up: where it landed, and the four fields
+                        that are ours rather than GitHub's
+    popover             a panel that hangs off a trigger through a portal, so
+                        an overflow-hidden Panel cannot clip it
+    toast               the one-line confirmation, shared by three screens
+    move-to-scope       the per-row button, disabled with the reason why
+    scope-remove        taking a row off the sheet; a row that came from a PR
+                        asks for a reason before it can go
+    row-notes           the warning lines under a PR title — merged without
+                        sign-off, and taken back off the scope sheet
+    signoff-toggles     the three sign-off chips; each stores who pressed it
+    expandable-row      makes a whole table row open when it is clicked, without
+                        stealing the clicks of the controls inside it
+    sync-control        which repo and which branch to read PRs from
+    period-picker       type a date, click one, or pick a month that has data
+    month-grid          one month, with a dot on the days that hold rows
+    purge-panel         clearing a period: counts first, asks twice
+    scope-bar           which repo, which cycle, and a filter — one row
+    scope-picks         the form's dropdowns; the POD only when there is a
+                        decision to make
+    table-controls      the controls above a table — one row of repo, cycle,
+                        filter and count, plus the pager. Shared, so both
+                        sections look and behave the same
+    scope-row-detail    a scope row opened up; Edit only for chosen people
+    pull-fields         the four PR fields that are ours, not GitHub's
+    use-scope-writes    adding, changing and removing a scope row
+    use-report-writes   syncing, annotating and signing off
   skeleton-board  the board's shape before its numbers arrive
   greeting        the sky: places the sun and moon, assembles the scene
   greeting-card   the reader's name and caption over it
@@ -276,12 +393,19 @@ src/components/   client components, dashboard-client.tsx orchestrates
     tooltip       a label that escapes the panel through a portal
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       330 end-to-end checks against a running server
-  check-theme.mjs 728 static checks: theme tokens, contrast, source rules,
+  check.mjs       625 end-to-end checks against a running server
+  check-theme.mjs 1294 static checks: theme tokens, contrast, source rules,
                   and the font switch
-  check-ui.mjs    1660 checks on client-side pure logic — it imports the real
+  check-ui.mjs    2687 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
+  check-render.mjs  `pnpm check:render` — compiles the components for real,
+                  server-renders them at a given state, then mounts them in
+                  jsdom and clicks. The only check that catches a bug which
+                  appears after mount rather than in the markup. Mounts the
+                  *panels* too, not only the tables they wire up: a panel that
+                  refers to a const before it is declared throws on render, and
+                  nothing else here would ever have rendered it
   check-docs.mjs  these pages still match the code
   check-env.mjs   `pnpm check:env` — what is broken on THIS machine, and how to
                   fix it: certificates, registry, fonts, the database, config.
@@ -299,7 +423,10 @@ scripts/
                   DB_DRIVER=json and again under DB_DRIVER=mongodb: the two
                   outputs must be identical, or the data does not move cleanly.
                   Cleans up after itself
-  test.mjs        runs every suite, managing the dev server itself
+  test.mjs        runs every suite, managing the dev server itself — including
+                  `next build`, which is the only step that compiles the client
+                  bundle and so the only one that catches a client component
+                  importing a server module
   lib/
     numbers-fixture.mjs
                   writes .numbers files for the checks, from the zip/Snappy/

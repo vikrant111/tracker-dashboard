@@ -1206,3 +1206,24 @@ Two details that are easy to get wrong:
   on click, closing the list before the choice registers.
 - **Escape closes the list; a second Escape clears the search.** Doing both in
   one keystroke throws away a query somebody meant to keep.
+
+## Element styling belongs in `@layer base`
+
+Tailwind declares `@layer theme, base, components, utilities`, and **unlayered
+CSS beats every layer**. A bare rule like
+
+```css
+input, select, textarea { padding: 8px 12px; width: 100%; }
+```
+
+therefore outranks `pl-9` and `w-auto` on every form control in the app — not
+because of specificity, but because it sits outside the layer system entirely.
+
+That shipped once. A search icon overlapped its own placeholder because the
+input's left padding never applied, and three filter controls each took a full
+row because `w-auto` was ignored. Neither looked like a CSS-layer problem; both
+looked like sloppy markup.
+
+Base styling goes in `@layer base`, where it stays a default a utility can
+override. `check:theme` refuses a bare `input`/`select`/`textarea` rule outside
+a layer.

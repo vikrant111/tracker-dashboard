@@ -55,6 +55,7 @@ export async function saveUser(input: {
   password?: string;
   role?: User["role"];
   teamIds?: unknown;
+  devopsEditor?: unknown;
 }): Promise<User> {
   const id = userId(input.email);
   const existing = await findUserById(id);
@@ -68,6 +69,12 @@ export async function saveUser(input: {
       : existing?.passwordHash ?? null,
     role: ROLES.includes(input.role as User["role"]) ? (input.role as User["role"]) : (existing?.role ?? "member"),
     teamIds: cleanTeamIds(input.teamIds) ?? existing?.teamIds ?? [],
+    /*
+     * Only changed when the caller says so. An edit that leaves the field out —
+     * renaming somebody, resetting a password — must not quietly revoke a
+     * capability that was granted separately.
+     */
+    devopsEditor: input.devopsEditor === undefined ? Boolean(existing?.devopsEditor) : input.devopsEditor === true,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
 

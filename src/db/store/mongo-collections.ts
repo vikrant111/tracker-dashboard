@@ -11,80 +11,32 @@
  * arrives before startup finished still waits for it.
  */
 import { fromStored, toDocument } from "../document.ts";
-import { SyncStateModel, TeamModel, UserModel } from "../models/index.ts";
+import { AnnouncementModel, CycleModel, DeploymentModel, PullModel, RepoModel, SyncStateModel, TeamModel, UserModel } from "../models/index.ts";
+import { mongoKeyed } from "./keyed.ts";
 import { connectToDatabase } from "../connect.ts";
 import type { SyncState } from "../../lib/sync.ts";
+import type { Announcement, Cycle, Deployment, PullRecord, Repo } from "../../lib/devops/types.ts";
 import type { Team, User } from "../../lib/types.ts";
 import type { Store } from "./types.ts";
 
 type Row = Record<string, unknown>;
 
-export const mongoTeams = (): Store["teams"] => ({
-  async all() {
-    await connectToDatabase();
-    const docs = (await TeamModel.find({}).lean()) as Row[];
-    return docs.map((d) => fromStored<Team>(TeamModel, d)).filter((t): t is Team => t !== null);
-  },
+export const mongoTeams = (): Store["teams"] => mongoKeyed<Team>(TeamModel, "POD");
 
-  async byId(id: string) {
-    if (typeof id !== "string" || !id) return null;
-    await connectToDatabase();
-    return fromStored<Team>(TeamModel, (await TeamModel.findById(id).lean()) as Row | null ?? undefined);
-  },
+export const mongoRepos = (): Store["repos"] => mongoKeyed<Repo>(RepoModel, "repository");
 
-  async save(team: Team) {
-    await connectToDatabase();
-    const checked = toDocument<Team>(TeamModel, team, team?.id);
-    if (!checked.doc) throw new Error(`Cannot save that POD: ${checked.error}.`);
+export const mongoAnnouncements = (): Store["announcements"] =>
+  mongoKeyed<Announcement>(AnnouncementModel, "announcement");
 
-    await TeamModel.replaceOne({ _id: team.id }, checked.doc, { upsert: true });
-    return checked.doc;
-  },
+export const mongoDeployments = (): Store["deployments"] =>
+  mongoKeyed<Deployment>(DeploymentModel, "deployment record");
 
-  async remove(id: string) {
-    if (typeof id !== "string" || !id) return;
-    await connectToDatabase();
-    await TeamModel.deleteOne({ _id: id });
-  },
+export const mongoCycles = (): Store["cycles"] => mongoKeyed<Cycle>(CycleModel, "cycle");
 
-  async count() {
-    await connectToDatabase();
-    return TeamModel.countDocuments({});
-  },
-});
+export const mongoPulls = (): Store["pulls"] => mongoKeyed<PullRecord>(PullModel, "pull request");
 
 export const mongoUsers = (): Store["users"] => ({
-  async all() {
-    await connectToDatabase();
-    const docs = (await UserModel.find({}).lean()) as Row[];
-    return docs.map((d) => fromStored<User>(UserModel, d)).filter((u): u is User => u !== null);
-  },
-
-  async byId(id: string) {
-    if (typeof id !== "string" || !id) return null;
-    await connectToDatabase();
-    return fromStored<User>(UserModel, (await UserModel.findById(id).lean()) as Row | null ?? undefined);
-  },
-
-  async save(user: User) {
-    await connectToDatabase();
-    const checked = toDocument<User>(UserModel, user, user?.id);
-    if (!checked.doc) throw new Error(`Cannot save that account: ${checked.error}.`);
-
-    await UserModel.replaceOne({ _id: user.id }, checked.doc, { upsert: true });
-    return checked.doc;
-  },
-
-  async remove(id: string) {
-    if (typeof id !== "string" || !id) return;
-    await connectToDatabase();
-    await UserModel.deleteOne({ _id: id });
-  },
-
-  async count() {
-    await connectToDatabase();
-    return UserModel.countDocuments({});
-  },
+  ...mongoKeyed<User>(UserModel, "account"),
 
   async insertFirst(user: User) {
     await connectToDatabase();

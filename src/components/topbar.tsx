@@ -11,6 +11,7 @@ import { ThemeToggle } from "./theme-toggle";
 import { Button, Menu, MenuItem, MenuSection, SegmentedControl } from "./ui";
 import { BoardActions } from "./topbar-actions";
 import { ChangePassword } from "./change-password";
+import { BoardSwitch } from "./devops/board-switch";
 
 export type TeamOption = { id: string; name: string };
 
@@ -36,6 +37,7 @@ export function Topbar({
   syncing,
   uploading,
   isAdmin,
+  canSeeDevOps,
   authEnabled,
   lastSyncedAt,
   canSeeAllPods,
@@ -56,6 +58,8 @@ export function Topbar({
   syncing: boolean;
   uploading: boolean;
   isAdmin: boolean;
+  /** Whether to offer the DevOps board at all. */
+  canSeeDevOps: boolean;
   authEnabled: boolean;
   lastSyncedAt: string | null;
   canSeeAllPods: boolean;
@@ -111,6 +115,9 @@ export function Topbar({
         </Link>
 
         <span aria-hidden className="hidden h-6 w-px bg-[var(--wash-2)] sm:block" />
+
+        {/* Only for a reader who is allowed on the other board. */}
+        {canSeeDevOps && <BoardSwitch current="/" />}
 
         {/*
          * The POD picker and the kind filter are *filters*, not actions — they

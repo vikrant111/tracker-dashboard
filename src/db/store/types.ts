@@ -21,6 +21,8 @@ import type { ItemDoc } from "../models/index.ts";
 import type { Filters } from "../../lib/metrics/types.ts";
 import type { Team, User } from "../../lib/types.ts";
 import type { SyncState } from "../../lib/sync.ts";
+import type { Announcement, Cycle, Deployment, PullRecord, Repo } from "../../lib/devops/types.ts";
+import type { KeyedStore } from "./keyed.ts";
 
 export type ItemStore = {
   /** Every item matching the filters, already narrowed by the driver. */
@@ -32,20 +34,9 @@ export type ItemStore = {
   count(): Promise<number>;
 };
 
-export type TeamStore = {
-  all(): Promise<Team[]>;
-  byId(id: string): Promise<Team | null>;
-  save(team: Team): Promise<Team>;
-  remove(id: string): Promise<void>;
-  count(): Promise<number>;
-};
+export type TeamStore = KeyedStore<Team>;
 
-export type UserStore = {
-  all(): Promise<User[]>;
-  byId(id: string): Promise<User | null>;
-  save(user: User): Promise<User>;
-  remove(id: string): Promise<void>;
-  count(): Promise<number>;
+export type UserStore = KeyedStore<User> & {
   /** Insert only when there is nobody at all. Returns false if somebody exists. */
   insertFirst(user: User): Promise<boolean>;
 };
@@ -73,6 +64,16 @@ export type Store = {
 
   items: ItemStore;
   teams: TeamStore;
+  /** GitHub repositories the DevOps board tracks. */
+  repos: KeyedStore<Repo>;
+  /** Release-branch announcements, per repository. */
+  announcements: KeyedStore<Announcement>;
+  /** One row per bug or hotfix going out. */
+  deployments: KeyedStore<Deployment>;
+  /** One per release going out of a repository. Owns the scope sheet. */
+  cycles: KeyedStore<Cycle>;
+  /** Pull requests read from GitHub, with our sign-offs on them. */
+  pulls: KeyedStore<PullRecord>;
   users: UserStore;
   sync: SyncStore;
 };

@@ -19,6 +19,13 @@
 | `AZDO_WEBHOOK_TOKEN` | — | unset rejects every webhook call |
 | `WEATHER_LAT` / `WEATHER_LON` | blank | optional; blank means no weather at all |
 
+**The DevOps board has its own file**, `.env.devopsdashboard`, holding every
+setting and token it reads — `DEVOPS_ACCESS`, `GITHUB_MODE`, `GITHUB_TOKEN`,
+`GITHUB_API_URL`, `DEVOPS_SYNC_PAGES`, `DEVOPS_PAGE_SIZE`. One file to open when
+that board is misconfigured, and one place its secrets go. See
+[devops.md](devops.md#environment). It is loaded by `src/lib/devops/config.ts`,
+because Next reads only `.env` and `.env.local`.
+
 ### Weather is opt-in
 
 The greeting sky follows the clock on its own. Set both `WEATHER_LAT` and
@@ -78,12 +85,62 @@ seed` fails fast with a sentence naming the real problem when it cannot reach
 the cluster — a blocked port, an IP that is not on the Atlas allowlist, or a
 password with an unencoded `@` in it.
 
+### Clearing up
+
+```bash
+pnpm clear                  # node_modules, .next, .next-*, caches
+pnpm clear --dry-run        # print what would go, remove nothing
+pnpm clear --force          # clear even with a dev server running
+
+pnpm delete pod-seed        # work items, PODs, their sync watermarks
+pnpm delete devops-seed     # repos, cycles, scope rows, PRs, announcements
+pnpm delete all             # both
+```
+
+`pnpm clear` (`scripts/clear.mjs`) removes only what is installed or generated —
+`pnpm install` and `pnpm build` put all of it back. It never touches `DB_store/`
+or any `.env` file. Every target is resolved and checked against the project
+root before anything is deleted, and it uses Node's own `rm` rather than shelling
+out, so it behaves the same on Windows.
+
+**It refuses while a dev server is running.** `.next` and `node_modules` are
+exactly what `next dev` is reading, and removing them does not stop it: it keeps
+serving, and the next request fails with
+
+```
+Invariant: Expected clientReferenceManifest to be defined. This is a bug in Next.js.
+```
+
+which reads as a framework bug and is not one — it is a build directory that
+vanished mid-flight. Stop the server, clear, then `pnpm install && pnpm dev`.
+`--force` overrides; `--dry-run` lists without touching anything, so it is never
+blocked. On a platform the check cannot inspect it warns instead of refusing.
+
+If you hit that invariant: stop the dev server, `rm -rf .next`, start it again.
+That alone fixes it — `.next` is rebuilt on the next request.
+
+`pnpm delete` (`scripts/delete-seed.mjs`) removes seeded data, one board at a
+time — split by board rather than by collection, because "clear the DevOps demo"
+is one decision, not five. **Accounts are never touched**: deleting the admin is
+how somebody locks themselves out of an instance they are setting up.
+
+It is irreversible and there is no undo anywhere in this app, so it counts
+first, prints what it found, and asks. `--dry-run` counts only; `--yes` skips
+the question, and without a terminal to ask it **refuses** rather than assuming.
+The aliases `pnpm delete:pod-seed` and `pnpm delete:devops-seed` do the same
+thing for anything that cannot pass an argument.
+
+Both go through the same store the app does, so they work on whichever driver
+`DB_DRIVER` selects. The sync watermark is reset rather than deleted — the store
+has no remove for it, and a blank one makes the next sync a first run, which is
+exactly what a cleared board needs. `pnpm seed` puts the demo data back.
+
 ## Verifying a change
 
 ## One command
 
 ```bash
-pnpm test          # every suite; starts a dev server if none is listening
+pnpm test          # every suite; starts a dev server of its own
 ```
 
 It runs the typecheck and the three static suites, then the end-to-end one.
@@ -93,6 +150,23 @@ If nothing is on port 3000 it starts a dev server, waits for it, and shuts down
 `pnpm test --no-server` skips the end-to-end suite, `pnpm test invariants` runs
 one group of it, and `pnpm test --keep` leaves the server up for poking at.
 
+**It never touches your data, and never touches your dev server.** The
+end-to-end suite writes as it runs — repositories, pull requests, scope rows —
+so it gives itself:
+
+- a **store of its own**, seeded into a temp directory and thrown away after
+- a **port of its own**, the first free one from 3000 up
+- a **build directory of its own** (`.next-check`, via `NEXT_DIST_DIR`)
+
+It used to reuse whatever was listening on 3000, which is normally your
+`pnpm dev` reading the real `DB_store/`. Test pull requests then appeared on a
+live sign-off report looking exactly like something a colleague had added, and
+the `next build` step replaced the chunks your running server was serving —
+which surfaces as `ChunkLoadError` on a page that worked a minute earlier.
+
+Setting `CHECK_BASE` still points the checks at a named server. That is the one
+path with no isolation, and the suite says so in red before it starts.
+
 ## The individual suites
 
 ```bash
@@ -100,9 +174,9 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass
 
 pnpm dev           # in one terminal
-pnpm check         # in another — 330 end-to-end checks
-pnpm check:theme   # static, no server needed — 728 theme-token checks
-pnpm check:ui      # static — 1660 checks on client-side pure logic
+pnpm check         # in another — 625 end-to-end checks
+pnpm check:theme   # static, no server needed — 1294 theme-token checks
+pnpm check:ui      # static — 2687 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code
 ```
 

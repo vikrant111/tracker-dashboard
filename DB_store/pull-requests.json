@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "collection": "pulls",
+  "updatedAt": "2026-09-10T08:55:56.149Z",
+  "rows": [
+    {
+      "_id": "conzumex-3in1cms-812",
+      "id": "conzumex-3in1cms-812",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "amc-pod",
+      "cycleId": "conzumex-3in1cms-2026-09-17",
+      "number": 812,
+      "title": "[41190] Fix asset sync timeout",
+      "url": "https://github.com/conzumex/3in1cms/pull/812",
+      "author": "nantha",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-04T11:00:00Z",
+      "mergedOn": "2026-09-04",
+      "deployedOn": "2026-09-10",
+      "environment": "IT-UAT",
+      "ticket": "41190",
+      "signoffs": {
+        "qa": {
+          "by": "qa@conzumex.com",
+          "at": "2026-09-03T09:00:00.000Z"
+        },
+        "pod": {
+          "by": "lead@conzumex.com",
+          "at": "2026-09-03T09:00:00.000Z"
+        },
+        "biz": {
+          "by": "admin@example.com",
+          "at": "2026-09-09T20:55:00.379Z"
+        }
+      },
+      "movedToScope": true,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-09T15:20:29.294Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-814",
+      "id": "conzumex-3in1cms-814",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "",
+      "cycleId": "conzumex-3in1cms-2026-09-17",
+      "number": 814,
+      "title": "[41205] Tighten CSV import guard",
+      "url": "https://github.com/conzumex/3in1cms/pull/814",
+      "author": "tara",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-06T08:00:00Z",
+      "mergedOn": "2026-09-06",
+      "deployedOn": "2026-09-09",
+      "environment": "CUG",
+      "ticket": "41205",
+      "signoffs": {
+        "pod": {
+          "by": "admin@example.com",
+          "at": "2026-09-09T18:16:57.185Z"
+        },
+        "qa": {
+          "by": "admin@example.com",
+          "at": "2026-09-09T18:16:57.174Z"
+        },
+        "biz": {
+          "by": "admin@example.com",
+          "at": "2026-09-10T08:55:49.584Z"
+        }
+      },
+      "movedToScope": true,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-09T15:20:29.294Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-813",
+      "id": "conzumex-3in1cms-813",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "",
+      "cycleId": "conzumex-3in1cms-2026-09-17",
+      "number": 813,
+      "title": "Refactor settlement retry loop",
+      "url": "https://github.com/conzumex/3in1cms/pull/813",
+      "author": "kabir",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-05T15:00:00Z",
+      "mergedOn": "2026-09-05",
+      "deployedOn": "2026-09-07",
+      "environment": "Production",
+      "ticket": "",
+      "signoffs": {
+        "pod": {
+          "by": "admin@example.com",
+          "at": "2026-09-09T20:38:10.331Z"
+        },
+        "biz": {
+          "by": "admin@example.com",
+          "at": "2026-09-10T08:55:51.833Z"
+        },
+        "qa": {
+          "by": "admin@example.com",
+          "at": "2026-09-10T08:55:56.149Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-09T15:20:29.294Z"
+    }
+  ]
+}

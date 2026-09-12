@@ -575,6 +575,21 @@ body {
   mix-blend-mode: overlay;
 }
 
+/*
+ * A table row opens in `components/devops/row-drawer.tsx`, not here.
+ *
+ * It was a CSS animation — `grid-template-rows: 0fr → 1fr`, the one way to
+ * interpolate to an unknown height without JavaScript. Two things made that
+ * the wrong choice, and both fail silently rather than visibly: it needs
+ * Chrome 107 / Firefox 127 / Safari 17.4, and the reduced-motion rule at the
+ * foot of this file zeroes `animation-duration` on `*` with `!important`, so
+ * on any machine with that setting the drawer simply did not animate.
+ *
+ * framer-motion measures the height instead. Already a dependency, already
+ * used by this board, and it honours the same reduced-motion preference
+ * explicitly rather than by having its duration taken away.
+ */
+
 /* Slow autonomous drift, so the backdrop is alive even when nothing is happening. */
 @keyframes drift {
   0%,
@@ -1130,16 +1145,56 @@ body {
   background: transparent;
 }
 
-input,
-select,
-textarea {
-  background: var(--wash);
-  border: 1px solid var(--hairline);
-  border-radius: 10px;
-  padding: 8px 12px;
-  color: var(--ink);
-  font-size: 14px;
-  width: 100%;
+/*
+ * In `@layer base`, and the reason is cascade **layers**, not specificity.
+ *
+ * Unlayered CSS beats every layer, so while this sat outside one it overrode
+ * Tailwind utilities on any input or select — a `pl-9` meant to clear a search
+ * icon did nothing, and a `w-auto` on a filter select was forced back to full
+ * width, which is why three controls each took a row of their own.
+ *
+ * The base layer comes before `utilities`, so these are defaults a utility can
+ * still override. Same trap as the `.glass` rules above.
+ */
+@layer base {
+  input,
+  select,
+  textarea {
+    background: var(--wash);
+    border: 1px solid var(--hairline);
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: var(--ink);
+    font-size: 14px;
+    width: 100%;
+  }
+}
+
+/*
+ * The pointer, on everything that answers to a click.
+ *
+ * Tailwind v4's preflight sets `cursor: default` on buttons — deliberate on
+ * their part, and wrong for this app: nothing on a board of tables, toggles and
+ * expandable rows looks pressable, so people do not press it. Set once here
+ * rather than as a utility on each of a hundred controls, because the one that
+ * gets forgotten is the one somebody fails to find.
+ *
+ * `:not(:disabled)` because a control that refuses is not a control you can
+ * press, and saying so with the cursor saves a click that does nothing.
+ */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  label[for],
+  a[href] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 input::placeholder,
 textarea::placeholder {

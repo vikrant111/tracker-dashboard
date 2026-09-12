@@ -90,6 +90,41 @@ The nested option form is required:
 Go through the helpers in `controllers/dashboard.shape.ts`, which narrow the
 union-typed response once, rather than casting at the call site.
 
+**`Invariant: Expected clientReferenceManifest to be defined. This is a bug in
+Next.js.`** It is not a bug in Next.js. The dev server is running against a
+`.next` that is missing or half-written — the manifest it needs to map a
+`"use client"` module to its bundle is simply not there.
+
+Three ways to get into that state, all the same shape: `.next` was deleted
+while the server was running (`pnpm clear` now refuses for this reason — use
+`--force` only with the server stopped), a `next build` overwrote it mid-flight,
+or two dev servers shared one `.next` because the second found port 3000 taken
+and moved to 3001 without taking a build directory of its own.
+
+Stop the dev server, `rm -rf .next`, start it again. Nothing is wrong with the
+code, and there is nothing to fix in it.
+
+**`ChunkLoadError: Loading chunk app/… failed`, on a page that worked a minute
+ago.** Something ran `next build` while `pnpm dev` was running. Both write
+`.next`, so the build replaced the chunks the live server had already told the
+browser to fetch. Nothing is wrong with the code.
+
+Stop the dev server, `rm -rf .next`, start it again, and hard-refresh. To stop
+causing it: builds take a directory of their own —
+
+```sh
+NEXT_DIST_DIR=.next-check pnpm build
+```
+
+`pnpm test` already does this, so the suite is safe to run while you are
+developing. The same collision also shows up as a `500` on a page that renders
+fine after a restart, or `__webpack_modules__[moduleId] is not a function`.
+
+**A stale `next-server` holding port 3000.**
+`next dev` forks a worker, and killing only the parent leaves the worker on the
+port. The next run then reuses a server running *last* run's code. Find it with
+`lsof -nP -iTCP:3000 -sTCP:LISTEN` and kill that pid.
+
 **401 on every API call after changing auth.**
 `AUTH_SECRET` changed, invalidating existing cookies. Sign in again.
 
@@ -124,6 +159,10 @@ Each one is covered by a case in `pnpm check`, so it stays fixed.
 
 | Bug | Cause | Fix |
 |---|---|---|
+| `Cannot access 'x' before initialization` on a panel | a `const` used above where it is declared — TypeScript allows it and only the render throws | `pnpm check:render` mounts every panel; leaf components alone will not catch it |
+| `Cannot read properties of undefined` on a field added to a schema later | the store applied schema defaults on write but not on read, so a row written before the field came back without it — on both drivers, since Mongo's `.lean()` skips defaults too | `fromStored` now fills missing paths from the schema. Add a field and old rows read it as its default |
+| An expandable row opens but will not close | a plain (non-motion) child inside `AnimatePresence`; presence tracking waits for an exit it can never finish and holds the old children | do not wrap a table body in `AnimatePresence` when a conditional plain row lives in it. `pnpm check:render` clicks it twice and catches this |
+| `Module not found: Can't resolve 'net'` on a page | a `"use client"` component imported a **value** from a module that reaches the store; mongoose came with it | keep the shared rule in a client-safe module and re-export it from the server one. `pnpm test` now runs `next build`, and check-ui names the offending file directly |
 | Ageing drill-downs returned one item too many | `lte` upper bound against lower-inclusive/upper-exclusive `date_range` buckets | `lt` for the upper bound |
 | Search 500'd on `c++`, and again on `%00` | regex metacharacters, then a null byte BSON cannot carry inside a regex | `escapeRegex` escapes the first and strips the second |
 | Resolved items counted as closed | `ResolvedDate` used as a fallback for `ClosedDate` | only `ClosedDate` closes; `isActive` also requires no close date |

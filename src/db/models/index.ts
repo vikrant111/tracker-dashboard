@@ -12,6 +12,11 @@ import mongoose, { type Model } from "mongoose";
 import { MODELS } from "../constants/collections.ts";
 import { itemSchema } from "../schemas/item.schema.ts";
 import { syncStateSchema } from "../schemas/sync-state.schema.ts";
+import { announcementSchema } from "../schemas/announcement.schema.ts";
+import { cycleSchema } from "../schemas/cycle.schema.ts";
+import { pullSchema } from "../schemas/pull.schema.ts";
+import { deploymentSchema } from "../schemas/deployment.schema.ts";
+import { repoSchema } from "../schemas/repo.schema.ts";
 import { teamSchema } from "../schemas/team.schema.ts";
 import { userSchema } from "../schemas/user.schema.ts";
 
@@ -54,6 +59,11 @@ export const ItemModel = compile<ItemDoc>(MODELS.item, itemSchema);
 export const TeamModel = compile<Record<string, any>>(MODELS.team, teamSchema);
 export const UserModel = compile<Record<string, any>>(MODELS.user, userSchema);
 export const SyncStateModel = compile<Record<string, any>>(MODELS.sync, syncStateSchema);
+export const RepoModel = compile<Record<string, any>>(MODELS.repo, repoSchema);
+export const AnnouncementModel = compile<Record<string, any>>(MODELS.announcement, announcementSchema);
+export const DeploymentModel = compile<Record<string, any>>(MODELS.deployment, deploymentSchema);
+export const CycleModel = compile<Record<string, any>>(MODELS.cycle, cycleSchema);
+export const PullModel = compile<Record<string, any>>(MODELS.pull, pullSchema);
 
 /** Every model, for the one-shot index build in `ensureIndexes`. */
 export const models = {
@@ -61,4 +71,9 @@ export const models = {
   team: TeamModel,
   user: UserModel,
   sync: SyncStateModel,
+  repo: RepoModel,
+  announcement: AnnouncementModel,
+  deployment: DeploymentModel,
+  cycle: CycleModel,
+  pull: PullModel,
 };

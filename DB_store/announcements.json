@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "collection": "announcements",
+  "updatedAt": "2026-09-09T20:16:14.458Z",
+  "rows": [
+    {
+      "_id": "conzumex-3in1cms-01788963643195",
+      "id": "conzumex-3in1cms-01788963643195",
+      "repoId": "conzumex-3in1cms",
+      "branch": "release",
+      "kind": "freeze",
+      "title": "develop is frozen for 2026.09",
+      "body": "Hotfixes go via release. Lifts after the deploy window.",
+      "author": "admin@example.com",
+      "pinned": true,
+      "createdAt": "2026-09-09T14:20:43.195Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-01788963982444",
+      "id": "conzumex-3in1cms-01788963982444",
+      "repoId": "conzumex-3in1cms",
+      "branch": "release",
+      "kind": "hotfix",
+      "title": "release/09-09-2026-hotfix",
+      "body": "kindly use this branch for all your releases.",
+      "author": "admin@example.com",
+      "pinned": false,
+      "createdAt": "2026-09-09T14:26:22.444Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-01788964030330",
+      "id": "conzumex-3in1cms-01788964030330",
+      "repoId": "conzumex-3in1cms",
+      "branch": "release",
+      "kind": "note",
+      "title": "release/09-09-2026-hotfix",
+      "body": "do not merge unwanted code",
+      "author": "admin@example.com",
+      "pinned": false,
+      "createdAt": "2026-09-09T14:27:10.330Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-01788964060214",
+      "id": "conzumex-3in1cms-01788964060214",
+      "repoId": "conzumex-3in1cms",
+      "branch": "release",
+      "kind": "release",
+      "title": "release/09-09-2026-hotfix",
+      "body": "pls remove all the unwanted and non signed-off code",
+      "author": "admin@example.com",
+      "pinned": true,
+      "createdAt": "2026-09-09T14:27:40.214Z"
+    }
+  ]
+}

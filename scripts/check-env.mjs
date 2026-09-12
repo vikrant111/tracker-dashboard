@@ -42,8 +42,8 @@ const section = (title) => console.log(`\n${C.b}${title}${C.off}`);
  * which makes Node exit if the file is missing — unhelpful in a script whose
  * whole job is telling you what is missing.
  */
-function readEnvFile() {
-  const path = join(ROOT, ".env.local");
+function readNamedEnv(name) {
+  const path = join(ROOT, name);
   if (!existsSync(path)) return null;
   const out = {};
   for (const line of readFileSync(path, "utf8").split("\n")) {
@@ -54,7 +54,7 @@ function readEnvFile() {
   return out;
 }
 
-const fileEnv = readEnvFile();
+const fileEnv = readNamedEnv(".env.local");
 const env = { ...(fileEnv ?? {}), ...process.env };
 
 /* --------------------------------------------------------------- probes -- */
@@ -297,6 +297,44 @@ section("Configuration");
     "Azure credentials",
     azure ? "set" : "not set — spreadsheet upload and `pnpm seed` still work",
   );
+}
+
+section("DevOps board");
+{
+  /*
+   * Its own file, loaded by `src/lib/devops/config.ts` rather than by Next,
+   * which reads only `.env` and `.env.local`. Reported separately so "the
+   * DevOps board is misconfigured" points at one file.
+   */
+  const devops = readNamedEnv(".env.devopsdashboard");
+  const local = readNamedEnv(".env.devopsdashboard.local");
+  const set = { ...(devops ?? {}), ...(local ?? {}), ...process.env };
+
+  report(
+    devops ? "ok" : "warn",
+    ".env.devopsdashboard present",
+    devops ? `${Object.keys(devops).length} values` : "missing — every setting falls back to its default",
+    "It is committed; restore it with `git checkout .env.devopsdashboard`.",
+  );
+
+  const mode = (set.GITHUB_MODE ?? "").trim().toLowerCase() === "live" ? "live" : "dry-run";
+  report("ok", `GITHUB_MODE = ${mode}`, mode === "live" ? "freezes really lock branches" : "nothing is sent to GitHub");
+
+  /*
+   * Not having a token is normal — a repository can carry its own — so this is
+   * a note, not a failure. Only ever whether one is set, never its value.
+   */
+  const token = (set.GITHUB_TOKEN ?? "").trim();
+  report(
+    "ok",
+    "GITHUB_TOKEN",
+    token ? "set" : "not set — each repository needs its own, or syncing and freezing will refuse",
+  );
+
+  report("ok", `DEVOPS_ACCESS = ${(set.DEVOPS_ACCESS ?? "").trim().toLowerCase() || "members"}`, "");
+  report("ok", `DB_DRIVER = ${(set.DB_DRIVER ?? "").trim().toLowerCase() || "json"}`, "shared with the POD board");
+
+  if (local?.GITHUB_TOKEN) report("ok", "Local token override", "from .env.devopsdashboard.local");
 }
 
 /* --------------------------------------------------------------- verdict -- */

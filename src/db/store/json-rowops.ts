@@ -6,8 +6,13 @@
  * the same filter-and-push three times.
  */
 import { mutate } from "./json-files.ts";
+import type { CollectionName } from "./json-paths.ts";
 
-type Named = "teams" | "users" | "sync";
+/*
+ * Any keyed collection. It used to list the three that existed; the DevOps
+ * board adds more, and a hardcoded list is one more place to remember.
+ */
+type Named = Exclude<CollectionName, "items">;
 
 /** Replace the row with this id, or append it. */
 export function upsertRow(name: Named, id: string, value: unknown): Promise<void> {

@@ -38,6 +38,10 @@ export const LIMITS = {
   search: 200,
   /** Work item title. */
   itemTitle: 500,
+  /** A GitHub token. Fine-grained tokens are long; classic ones are not. */
+  githubToken: 255,
+  /** A repository URL, generously — some enterprise hosts are verbose. */
+  repoUrl: 300,
 } as const;
 
 // --------------------------------------------------------------------- lists

@@ -255,6 +255,10 @@ async function input(session) {
   const post = (p, body) =>
     call(session, p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const del = (p) => call(session, p, { method: "DELETE" });
+  /* DELETE with a body: a paragraph explaining a decision has no place in a
+     query string, so the remark travels the same way a POST's would. */
+  const delBody = (p, body) =>
+    call(session, p, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const sane = (r) => r.status < 500 && r.json !== null;
 
   section("search finds the POD that holds the answer");
@@ -403,7 +407,18 @@ section("one person on several PODs, with work on only one");
      * board's health is checkable by hand: 1 of 2 closed is 50.
      */
     const day = 86_400_000;
-    const iso = (t) => new Date(t).toISOString().slice(0, 10);
+    /*
+     * The *local* day, not the UTC one. `toISOString` reads the calendar in
+     * London, and east of it the two disagree for the first hours of every
+     * morning — which made "created a day ago" mean two days ago and aged a
+     * fixture that was meant to be fresh. The suite failed only between
+     * midnight and 05:30 IST, which is exactly the kind of failure nobody
+     * reproduces.
+     */
+    const iso = (t) => {
+      const d = new Date(t);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
     const csv = [
       "Work Item ID,Title,Assignee,Severity,Status,Created Date,Closed Date",
       `Zx-1,Multi-pod fixture one,${WHO},Critical,Open,${iso(Date.now() - 20 * day)},`,
@@ -544,6 +559,538 @@ section("input — every filter param survives hostile values");
     after?.name === before?.name && after?.members.length === before?.members.length,
     `${before?.name}/${before?.members.length} -> ${after?.name}/${after?.members.length}`,
   );
+
+  section("devops — onboarding a repository");
+  {
+    /*
+     * The URL is the only field that matters; owner, repo and the id come from
+     * it. Re-onboarding the same repository must update one row rather than
+     * leave two, each claiming its own freeze state.
+     */
+    const onboard = await post("/api/repos", {
+      url: "https://github.com/chk-acme/chk-cms.git",
+      name: "Chk CMS",
+      releaseBranch: "release",
+      developBranch: "develop",
+      token: "ghp_checkonly_notreal",
+    });
+    const repo = onboard.json?.repo;
+    check("a pasted clone URL onboards", onboard.status === 200 && repo?.owner === "chk-acme", `${onboard.status} ${JSON.stringify(repo?.owner)}`);
+    check("...with the .git stripped", repo?.repo === "chk-cms", `${repo?.repo}`);
+    check("...and a deterministic id", repo?.id === "chk-acme-chk-cms", `${repo?.id}`);
+    check("...starting open, not frozen", repo?.freeze?.state === "open", `${repo?.freeze?.state}`);
+
+    /* The token is stored and never handed back. */
+    check("the token comes back masked", repo?.token === "••••••••", JSON.stringify(repo?.token));
+    check("...and not in the clear anywhere in the body", !JSON.stringify(onboard.json).includes("ghp_checkonly"), "the raw token was serialised");
+
+    /* Sending the mask back must not overwrite the stored secret with bullets. */
+    const again = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, name: "Chk CMS renamed", token: "••••••••" });
+    check("re-saving with the mask keeps the token", again.json?.repo?.token === "••••••••", JSON.stringify(again.json?.repo?.token));
+    check("...and updates the same row", again.json?.repo?.id === "chk-acme-chk-cms");
+
+    const listed = (await get("/api/repos")).json?.repos ?? [];
+    check("there is one row, not two", listed.filter((r) => r.id === "chk-acme-chk-cms").length === 1, `${listed.length} rows`);
+    check("...carrying the new name", listed.find((r) => r.id === "chk-acme-chk-cms")?.name === "Chk CMS renamed");
+
+    /* Rubbish is refused with a sentence, not a 500. */
+    const rubbish = await post("/api/repos", { url: "please add the cms repo" });
+    check("a non-URL is refused", rubbish.status === 400, `${rubbish.status}`);
+    check("...in prose that says what to paste", /github\.com/i.test(rubbish.json?.error ?? ""), rubbish.json?.error ?? "");
+    check("a JSON array body does not crash", (await post("/api/repos", [1, 2])).status < 500);
+
+    // -- several PODs on one repository -----------------------------------
+    /*
+     * One repository is routinely worked on by several teams. A single owner
+     * made somebody pick one and be wrong about the rest.
+     */
+    const multi = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod", "payments-pod"] });
+    check("a repo takes several PODs", (multi.json?.repo?.teamIds ?? []).join() === "amc-pod,payments-pod", JSON.stringify(multi.json?.repo?.teamIds));
+    const dedup = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod", "amc-pod", "", "  "] });
+    check("...deduplicated and without blanks", (dedup.json?.repo?.teamIds ?? []).join() === "amc-pod", JSON.stringify(dedup.json?.repo?.teamIds));
+
+    /* A repo saved the old way must not lose the POD it already had. */
+    const legacy = await post("/api/repos", { url: "https://github.com/chk-acme/chk-legacy", teamId: "amc-pod" });
+    check("a single teamId is migrated to the list", (legacy.json?.repo?.teamIds ?? []).join() === "amc-pod", JSON.stringify(legacy.json?.repo?.teamIds));
+    await del("/api/repos?id=chk-acme-chk-legacy");
+
+    // -- freezing, which in a dry run touches nothing ---------------------
+    /*
+     * The suite runs against whatever GITHUB_MODE is set, and it is a dry run
+     * unless somebody deliberately made it live. These checks assert the shape
+     * of what happened rather than the mode, so they hold either way — but they
+     * never assert that a real branch changed, because in a dry run it did not.
+     */
+    const noReason = await post("/api/repos/chk-acme-chk-cms/freeze", { frozen: true });
+    check("freezing without a reason is refused", noReason.status === 400, `${noReason.status}`);
+    check("...and says why a reason is needed", /read it/i.test(noReason.json?.error ?? ""), noReason.json?.error ?? "");
+
+    const froze = await post("/api/repos/chk-acme-chk-cms/freeze", { frozen: true, reason: "Release cut for the checks" });
+    check("freezing answers 200", froze.status === 200, `${froze.status}`);
+    check("...and reports which mode it ran in", ["dry-run", "live"].includes(froze.json?.mode), `${froze.json?.mode}`);
+    check("...and hands back the plan it used", Array.isArray(froze.json?.calls) && froze.json.calls.length === 1, JSON.stringify(froze.json?.calls?.length));
+    check("...a POST to the rulesets endpoint", froze.json?.calls?.[0]?.path === "/repos/chk-acme/chk-cms/rulesets", froze.json?.calls?.[0]?.path);
+
+    const frozen = ((await get("/api/repos")).json?.repos ?? []).find((r) => r.id === "chk-acme-chk-cms");
+    check("the repo reads as frozen", frozen?.freeze?.state === "frozen", `${frozen?.freeze?.state}`);
+    check("...with the reason kept", frozen?.freeze?.reason === "Release cut for the checks", `${frozen?.freeze?.reason}`);
+    check("...and who did it", /@/.test(frozen?.freeze?.changedBy ?? ""), `${frozen?.freeze?.changedBy}`);
+    check("...and when", Number.isFinite(Date.parse(frozen?.freeze?.changedAt ?? "")), `${frozen?.freeze?.changedAt}`);
+
+    /* No token may appear anywhere in what a freeze hands back. */
+    check("the freeze response carries no token", !/ghp_|github_pat_/.test(JSON.stringify(froze.json)));
+    check("...and the stored detail carries none either", !/ghp_|github_pat_/.test(frozen?.freeze?.detail ?? ""));
+
+    const thawed = await post("/api/repos/chk-acme-chk-cms/freeze", { frozen: false });
+    check("unfreezing needs no reason", thawed.status === 200, `${thawed.status}`);
+    const open = ((await get("/api/repos")).json?.repos ?? []).find((r) => r.id === "chk-acme-chk-cms");
+    check("...and the repo reads as open again", open?.freeze?.state === "open", `${open?.freeze?.state}`);
+    check("...with the reason cleared", (open?.freeze?.reason ?? "") === "", `${open?.freeze?.reason}`);
+
+    check("freezing an unknown repo is a 404", (await post("/api/repos/no-such-repo/freeze", { frozen: false })).status === 404);
+
+    // -- announcements ----------------------------------------------------
+    const posted = await post("/api/announcements", {
+      repoId: "chk-acme-chk-cms",
+      kind: "release",
+      title: "Chk release cut",
+      body: "Checks only.",
+      pinned: true,
+    });
+    check("an announcement posts", posted.status === 200, `${posted.status}`);
+    check("...defaulting to the repo's release branch", posted.json?.announcement?.branch === "release", `${posted.json?.announcement?.branch}`);
+    check("...with the poster's byline", /@/.test(posted.json?.announcement?.author ?? ""), `${posted.json?.announcement?.author}`);
+
+    const untitled = await post("/api/announcements", { repoId: "chk-acme-chk-cms", title: "  " });
+    check("an announcement needs a title", untitled.status === 400, `${untitled.status}`);
+    const orphan = await post("/api/announcements", { repoId: "no-such-repo", title: "Orphan" });
+    check("...and a repository that exists", orphan.status === 400, `${orphan.status}`);
+
+    const posts = (await get("/api/announcements?repoId=chk-acme-chk-cms")).json?.announcements ?? [];
+    check("announcements come back for that repo", posts.length === 1, `${posts.length}`);
+    check("...and the pin survived", posts[0]?.pinned === true);
+
+    await del(`/api/announcements?id=${encodeURIComponent(posted.json.announcement.id)}`);
+    check("an announcement can be deleted", ((await get("/api/announcements?repoId=chk-acme-chk-cms")).json?.announcements ?? []).length === 0);
+
+    // -- cycles and the scope sheet ---------------------------------------
+    const cyc = await post("/api/cycles", { repoId: "chk-acme-chk-cms", name: "2026.09", plannedFor: "2026-09-30" });
+    check("a cycle is created", cyc.status === 200 && cyc.json?.cycle?.id === "chk-acme-chk-cms-2026-09", `${cyc.status} ${cyc.json?.cycle?.id}`);
+    check("...taking the repo's release branch", cyc.json?.cycle?.releaseBranch === "release", `${cyc.json?.cycle?.releaseBranch}`);
+    check("...starting open", cyc.json?.cycle?.scope?.frozen === false);
+    check("a cycle needs a name", (await post("/api/cycles", { repoId: "chk-acme-chk-cms", name: "  " })).status === 400);
+    check("...and a real repository", (await post("/api/cycles", { repoId: "nope", name: "x" })).status === 400);
+
+    const cycleId = cyc.json.cycle.id;
+    const added = await post("/api/deployments", {
+      repoId: "chk-acme-chk-cms", cycleId,
+      kind: "bug", ticket: "4242", title: "Chk fixture bug",
+      branch: "release", environment: "Production", state: "deployed", deployedOn: "2026-09-04",
+    });
+    check("a row is added to the sheet", added.status === 200, `${added.status}`);
+
+    /*
+     * A row belongs to one POD, and only one the repo actually has. A row filed
+     * against a team that does not work on the repository reads as an answer
+     * and is wrong.
+     */
+    await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod", "payments-pod"] });
+    const chosen = await post("/api/deployments", {
+      repoId: "chk-acme-chk-cms", cycleId, title: "Chosen POD", teamId: "payments-pod",
+    });
+    check("a row keeps the POD that was chosen", chosen.json?.deployment?.teamId === "payments-pod", `${chosen.json?.deployment?.teamId}`);
+
+    const wrong = await post("/api/deployments", {
+      repoId: "chk-acme-chk-cms", cycleId, title: "Wrong POD", teamId: "some-other-pod",
+    });
+    check("...and refuses one the repo does not have", (wrong.json?.deployment?.teamId ?? "") === "", `${wrong.json?.deployment?.teamId}`);
+
+    /* One POD is not a choice, so it is filled in rather than asked for. */
+    await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod"] });
+    const only = await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId, title: "Only POD" });
+    check("a repo with one POD fills it in", only.json?.deployment?.teamId === "amc-pod", `${only.json?.deployment?.teamId}`);
+
+    for (const r of [chosen, wrong, only]) {
+      if (r.json?.deployment) await del(`/api/deployments?id=${encodeURIComponent(r.json.deployment.id)}`);
+    }
+    check("...carrying its cycle", added.json?.deployment?.cycleId === cycleId);
+    check("...and the filler's byline", /@/.test(added.json?.deployment?.author ?? ""));
+
+    check("a row needs a title", (await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId, title: " " })).status === 400);
+    check("...and a cycle", (await post("/api/deployments", { repoId: "chk-acme-chk-cms", title: "x" })).status === 400);
+    const badDay = await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId, title: "Bad day", deployedOn: "2026-02-31" });
+    check("an impossible date is dropped, not stored", badDay.json?.deployment?.deployedOn === "", `${badDay.json?.deployment?.deployedOn}`);
+
+    /* Freezing the scope closes the sheet for everyone, admins included. */
+    const froze2 = await post(`/api/cycles/${cycleId}/scope`, { frozen: true, reason: "Signed off by biz" });
+    check("scope can be frozen", froze2.status === 200 && froze2.json?.cycle?.scope?.frozen === true, `${froze2.status}`);
+
+    const blocked = await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId, title: "Sneaking in" });
+    check("a frozen sheet refuses new rows", blocked.status === 409, `${blocked.status}`);
+    check("...even for the admin who froze it", blocked.status === 409);
+    check("...quoting the reason", /Signed off by biz/.test(blocked.json?.error ?? ""), blocked.json?.error ?? "");
+    const noDelete = await del(`/api/deployments?id=${encodeURIComponent(added.json.deployment.id)}`);
+    check("...and refuses deletes, so it cannot be emptied instead", noDelete.status === 409, `${noDelete.status}`);
+
+    /* Renaming the cycle must not quietly reopen it. */
+    const renamed = await post("/api/cycles", { id: cycleId, repoId: "chk-acme-chk-cms", name: "2026.09", plannedFor: "2026-10-01" });
+    check("renaming a cycle leaves the scope frozen", renamed.json?.cycle?.scope?.frozen === true);
+
+    await post(`/api/cycles/${cycleId}/scope`, { frozen: false });
+    const reopened = (await get("/api/cycles?repoId=chk-acme-chk-cms")).json?.cycles?.[0];
+    check("scope can be reopened", reopened?.scope?.frozen === false);
+    check("...and the stale reason is dropped", (reopened?.scope?.reason ?? "") === "");
+
+    // -- the download ------------------------------------------------------
+    const csvRes = await fetch(`${BASE}/api/deployments/export?cycleId=${encodeURIComponent(cycleId)}&format=csv`, { headers: { cookie: session.header() } });
+    const csvText = await csvRes.text();
+    check("the sheet downloads as CSV", csvRes.status === 200, `${csvRes.status}`);
+
+    /*
+     * The file has to carry what the board shows. Both sheets had drifted —
+     * the scope sheet gained a POD column and the download did not.
+     */
+    const header = csvText.split("\r\n")[0] ?? "";
+    for (const column of ["Repository", "Cycle", "POD", "Ticket", "Title", "Branch", "Environment", "State", "Deployed on", "Bug severity now"]) {
+      check(`the downloaded sheet has a ${column} column`, header.includes(column), header.slice(0, 160));
+    }
+    check("...and a row under it", csvText.split("\r\n").length > 1, `${csvText.split("\r\n").length} lines`);
+
+    const xlsx = await fetch(`${BASE}/api/deployments/export?cycleId=${encodeURIComponent(cycleId)}`, { headers: { cookie: session.header() } });
+    check("...and as xlsx", xlsx.status === 200, `${xlsx.status}`);
+    check("...named as a spreadsheet", /filename="scope-sheet-\d{4}-\d{2}-\d{2}\.xlsx"/.test(xlsx.headers.get("content-disposition") ?? ""), xlsx.headers.get("content-disposition") ?? "");
+    const bytes = new Uint8Array(await xlsx.arrayBuffer());
+    check("...and is a real zip, not an error page", bytes[0] === 0x50 && bytes[1] === 0x4b, `${bytes[0]},${bytes[1]}`);
+
+    await del(`/api/deployments?id=${encodeURIComponent(added.json.deployment.id)}`);
+    await del(`/api/cycles?id=${encodeURIComponent(cycleId)}`);
+
+    // -- the sign-off report ----------------------------------------------
+    /*
+     * Rows are planted through the store rather than synced, because syncing
+     * needs a GitHub token and a real repository. What is checked here is what
+     * this app does with a PR once it has one — which is all of the logic.
+     */
+    const prId = "chk-acme-chk-cms-901";
+    await post("/api/repos", { id: "chk-acme-chk-cms", url: "https://github.com/chk-acme/chk-cms" });
+
+    const listed0 = await get("/api/pulls");
+    check("the report is readable", listed0.status === 200, `${listed0.status}`);
+
+    const sync = await post("/api/pulls/sync", { repoId: "chk-acme-chk-cms" });
+    check("syncing answers rather than crashing", sync.status === 200, `${sync.status}`);
+    check("...and says a token is needed when there is none", sync.json?.ok === true || /token/i.test(sync.json?.detail ?? ""), sync.json?.detail ?? "");
+    check("syncing an unknown repo is a 404", (await post("/api/pulls/sync", { repoId: "nope" })).status === 404);
+    check("syncing accepts a branch to read", (await post("/api/pulls/sync", { repoId: "chk-acme-chk-cms", branch: "hotfix/2026-09" })).status === 200);
+    check("...and a malformed one does not crash it", (await post("/api/pulls/sync", { repoId: "chk-acme-chk-cms", branch: "a b..c" })).status === 200);
+
+    // -- moving a PR onto the scope sheet ----------------------------------
+    /*
+     * The refusal is one shared function, so the button and the API give the
+     * same answer. These check the API half; the render suite checks the button.
+     */
+    const noPull = await post("/api/pulls/to-scope", { id: "no-such-pr", cycleId });
+    check("moving a PR that does not exist is a 404", noPull.status === 404, `${noPull.status}`);
+    check("a malformed move body is refused", (await post("/api/pulls/to-scope", [1, 2])).status === 400);
+
+    const anyPr = (await get("/api/pulls")).json?.pulls?.[0];
+    if (anyPr) {
+      const unsigned = await post("/api/pulls/to-scope", { id: anyPr.id, cycleId });
+      /* Either it lacks sign-offs, or it is already there — both are refusals
+         with a sentence, never a 500. */
+      check("moving without every sign-off is refused", unsigned.status === 409 || unsigned.status === 200, `${unsigned.status}`);
+      if (unsigned.status === 409) {
+        check("...and says what it is waiting on", /sign-off|already|frozen|cycle/i.test(unsigned.json?.error ?? ""), unsigned.json?.error ?? "");
+      }
+    }
+
+
+    /*
+     * Sign-offs arriving after the merge are the normal case: a PR goes in, and
+     * business signs it off the next morning. Nothing may gate that on order.
+     */
+    // -- where a change landed ---------------------------------------------
+    const envBad = await post("/api/pulls", { id: prId, environment: "Mars" });
+    check("an unknown environment does not 500", envBad.status < 500, `${envBad.status}`);
+    check("syncing with no repo named is a 400", (await post("/api/pulls/sync", {})).status === 400);
+    check("a bad sign-off level is refused", (await post("/api/pulls", { id: prId, level: "vibes", on: true })).status === 400);
+
+    /*
+     * A pull request belongs to one POD, the same as a scope row, and only one
+     * the repository actually has. Planted through the store because syncing
+     * needs a real GitHub token.
+     */
+    const anyPull = (await get("/api/pulls")).json?.pulls?.[0];
+    if (anyPull) {
+      const repoOfPull = ((await get("/api/repos")).json?.repos ?? []).find((r) => r.id === anyPull.repoId);
+      const theirs = repoOfPull?.teamIds ?? [];
+
+      if (theirs.length > 0) {
+        const set = await post("/api/pulls", { id: anyPull.id, teamId: theirs[0] });
+        check("a PR takes the POD it is given", set.json?.pull?.teamId === theirs[0], `${set.json?.pull?.teamId}`);
+      }
+
+      const bogus = await post("/api/pulls", { id: anyPull.id, teamId: "not-a-pod-of-this-repo" });
+      check("...and refuses one the repo does not have", bogus.json?.pull?.teamId !== "not-a-pod-of-this-repo", `${bogus.json?.pull?.teamId}`);
+    }
+    check("signing off an unknown PR is a 404", (await post("/api/pulls", { id: "no-such-pr", level: "qa", on: true })).status === 404);
+
+    // -- the round trip: onto the sheet, and back off it --------------------
+    /*
+     * The whole point of the feature: a change is moved onto the scope sheet,
+     * an admin finds something wrong with it and takes it back off, and it has
+     * to reappear on the sign-off report *carrying the reason* — so the person
+     * who moved it knows whether to fix it and move it again or take the code
+     * out of the release branch. A removal that just deleted the row left them
+     * with a change on the release branch and no record of it anywhere.
+     */
+    /*
+     * Planted through the store, the same way the rows above are: syncing one
+     * for real needs a token and a GitHub repository, and what is being checked
+     * here is what this app does with a pull request once it has one.
+     */
+    const roundStore = getStore();
+    await roundStore.init();
+    await roundStore.pulls.save({
+      id: prId, repoId: "chk-acme-chk-cms", cycleId: "", number: 813,
+      title: "Refactor settlement retry loop", url: "https://github.com/chk-acme/chk-cms/pull/813",
+      author: "dev", baseBranch: "release", mergedAt: "2026-09-04T10:00:00.000Z", mergedOn: "2026-09-04",
+      deployedOn: "", environment: "", ticket: "", teamId: "", signoffs: {}, syncedAt: "",
+      movedToScope: false,
+    });
+
+    const roundPr = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === prId);
+    check("the planted PR is on the report", Boolean(roundPr), "the round trip below checked nothing");
+    if (roundPr) {
+      const cyc = await post("/api/cycles", { repoId: "chk-acme-chk-cms", name: "round-trip" });
+      const roundCycle = cyc.json?.cycle?.id;
+      for (const level of ["biz", "qa", "pod"]) await post("/api/pulls", { id: roundPr.id, level, on: true });
+
+      /*
+       * A pull request goes onto the sheet of the cycle it is **assigned to**,
+       * so assigning one is the first step rather than something the move
+       * guesses. Before this, a move landed on "the first cycle whose scope is
+       * still open" and correcting the field changed nothing.
+       */
+      const unassigned = await post("/api/pulls/to-scope", { id: roundPr.id, cycleId: roundCycle });
+      check("a PR with no cycle cannot be moved", unassigned.status === 409, `${unassigned.status}`);
+      check("...and is told to set one", /cycle/i.test(unassigned.json?.error ?? ""), unassigned.json?.error ?? "");
+
+      await post("/api/pulls", { id: roundPr.id, cycleId: roundCycle });
+
+      /* The body does not get to name a different sheet. */
+      const elsewhere = await post("/api/cycles", { repoId: "chk-acme-chk-cms", name: "somewhere-else" });
+      const wrongSheet = await post("/api/pulls/to-scope", { id: roundPr.id, cycleId: elsewhere.json?.cycle?.id });
+      check("...and a body naming another sheet is refused", wrongSheet.status === 409, `${wrongSheet.status}`);
+      check("...rather than obeyed", !((await get(`/api/deployments?cycleId=${encodeURIComponent(elsewhere.json?.cycle?.id ?? "x")}`)).json?.deployments ?? []).length, "filed against the wrong release");
+
+      const moved = await post("/api/pulls/to-scope", { id: roundPr.id, cycleId: roundCycle });
+      check("a fully signed-off PR moves onto the sheet", moved.status === 200, `${moved.status} ${moved.json?.error ?? ""}`);
+      check("...onto the cycle it was assigned to", moved.json?.deployment?.cycleId === roundCycle, `${moved.json?.deployment?.cycleId}`);
+      const movedRow = moved.json?.deployment?.id;
+      check("...and the row remembers which PR it came from", moved.json?.deployment?.pullId === roundPr.id, `${moved.json?.deployment?.pullId}`);
+
+      const afterMove = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === roundPr.id);
+      check("...and the report marks it as gone to the sheet", afterMove?.movedToScope === true);
+
+      /* No reason, no removal. */
+      const bare = await delBody(`/api/deployments?id=${encodeURIComponent(movedRow)}`, {});
+      check("taking it back off without a reason is refused", bare.status === 400, `${bare.status}`);
+      check("...saying who will read it", /sign-off report/i.test(bare.json?.error ?? ""), bare.json?.error ?? "");
+      check("...and one word is not a reason", (await delBody(`/api/deployments?id=${encodeURIComponent(movedRow)}`, { remarks: "no" })).status === 400);
+
+      const stillThere = ((await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []);
+      check("...leaving the row where it was", stillThere.some((r) => r.id === movedRow), "a refused removal removed it anyway");
+
+      const why = "QA signed off the wrong build";
+      const off = await delBody(`/api/deployments?id=${encodeURIComponent(movedRow)}`, { remarks: why });
+      check("with a reason it comes off", off.status === 200, `${off.status} ${off.json?.error ?? ""}`);
+      check("...and says the pull request went back", off.json?.returned === true, JSON.stringify(off.json));
+      check("...and the row is gone from the sheet", !((await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []).some((r) => r.id === movedRow));
+
+      const back = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === roundPr.id);
+      check("the PR is back on the sign-off report", back?.movedToScope !== true, `${back?.movedToScope}`);
+      check("...carrying the reason", back?.returned?.remarks === why, `${back?.returned?.remarks}`);
+      check("...and who took it off", /@/.test(back?.returned?.by ?? ""), `${back?.returned?.by}`);
+      check("...and when", /^\d{4}-\d{2}-\d{2}/.test(back?.returned?.at ?? ""), `${back?.returned?.at}`);
+
+      /* Fixed, and moved again — the old complaint must not follow it. */
+      const again = await post("/api/pulls/to-scope", { id: roundPr.id, cycleId: roundCycle });
+      check("...and it can be moved again once it is fixed", again.status === 200, `${again.status} ${again.json?.error ?? ""}`);
+      const fixed = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === roundPr.id);
+      check("...which clears the old reason", (fixed?.returned?.remarks ?? "") === "", `${fixed?.returned?.remarks}`);
+
+      /* A row nobody moved owes nobody an explanation. */
+      const typed = await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId: roundCycle, title: "Typed in by hand" });
+      const typedGone = await delBody(`/api/deployments?id=${encodeURIComponent(typed.json?.deployment?.id)}`, {});
+      check("a hand-typed row still goes without one", typedGone.status === 200, `${typedGone.status} ${typedGone.json?.error ?? ""}`);
+      check("...and reports that nothing went back", typedGone.json?.returned === false, JSON.stringify(typedGone.json));
+
+      /*
+       * The reported symptom, exactly: a pull request whose stored flag says
+       * it is on a sheet while no row for it exists anywhere.
+       *
+       * The report showed it as movable — it derives that from the sheets —
+       * and pressing the button was refused with "already on the sheet",
+       * because the API read the record rather than the report. One shared
+       * rule reading two different copies of the same fact.
+       *
+       * Planted by writing the drifted flag straight into the store, which is
+       * the state an older build left behind.
+       */
+      for (const r of (await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []) {
+        await delBody(`/api/deployments?id=${encodeURIComponent(r.id)}`, { remarks: "clearing before the drifted-flag case" });
+      }
+      await roundStore.pulls.save({ ...(await roundStore.pulls.byId(prId)), movedToScope: true });
+
+      const drifted = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === prId);
+      check("a flag with no row behind it reads as movable", drifted?.movedToScope === false, `${drifted?.movedToScope}`);
+
+      const storedNow = await roundStore.pulls.byId(prId);
+      check("...and the record itself is corrected, not just the view", storedNow?.movedToScope === false, `${storedNow?.movedToScope}`);
+
+      const afterDrift = await post("/api/pulls/to-scope", { id: prId, cycleId: roundCycle });
+      check("...so the move the report offered is allowed", afterDrift.status === 200, `${afterDrift.status} ${afterDrift.json?.error ?? ""}`);
+      check("...rather than refused as already there", !/already on the sheet/i.test(afterDrift.json?.error ?? ""), afterDrift.json?.error ?? "");
+
+      /* And the flag still stops a genuine second move. */
+      const twice = await post("/api/pulls/to-scope", { id: prId, cycleId: roundCycle });
+      check("a PR that really is on the sheet is still refused", /already on the sheet/i.test(twice.json?.error ?? ""), `${twice.status} ${twice.json?.error ?? ""}`);
+
+      /*
+       * The id wins over the URL, and it has to be shown on a row where the
+       * two disagree — on every ordinary row they point at the same pull
+       * request, so either rule would look correct.
+       *
+       * A URL is a field a person can edit. If editing it could redirect where
+       * the row goes back to, somebody would hand back the wrong change.
+       */
+      await roundStore.pulls.save({
+        id: "chk-acme-chk-cms-902", repoId: "chk-acme-chk-cms", cycleId: "", number: 902,
+        title: "A different change entirely", url: "https://github.com/chk-acme/chk-cms/pull/902",
+        author: "dev", baseBranch: "release", mergedAt: "2026-09-04T10:00:00.000Z", mergedOn: "2026-09-04",
+        deployedOn: "", environment: "", ticket: "", teamId: "", signoffs: {}, syncedAt: "",
+        movedToScope: false,
+      });
+
+      /* The sheet is cleared first: the move above left a row, and a PR that is
+         already on the sheet cannot be moved onto it again. */
+      for (const r of (await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []) {
+        await delBody(`/api/deployments?id=${encodeURIComponent(r.id)}`, { remarks: "clearing before the crossed-URL case" });
+      }
+
+      const crossed = await post("/api/pulls/to-scope", { id: roundPr.id, cycleId: roundCycle });
+      check("the crossed-URL case has a row to work with", crossed.status === 200, `${crossed.status} ${crossed.json?.error ?? ""}`);
+      const crossedId = crossed.json?.deployment?.id;
+      const crossEdit = await post("/api/deployments", {
+        id: crossedId, repoId: "chk-acme-chk-cms", cycleId: roundCycle,
+        title: crossed.json?.deployment?.title, prUrl: "https://github.com/chk-acme/chk-cms/pull/902",
+      });
+      /* Asserted, not assumed: if the edit quietly failed the row would still
+         point at its own pull request, and everything below would pass while
+         measuring nothing. */
+      check("the row's URL can be pointed at another PR", crossEdit.json?.deployment?.prUrl?.endsWith("/902") === true, `${crossEdit.status} ${crossEdit.json?.deployment?.prUrl ?? crossEdit.json?.error}`);
+      check("...while its link is untouched", crossEdit.json?.deployment?.pullId === roundPr.id, `${crossEdit.json?.deployment?.pullId}`);
+
+      const crossedOff = await delBody(`/api/deployments?id=${encodeURIComponent(crossedId)}`, { remarks: "the URL on this row points somewhere else" });
+      check("a row whose URL was edited still goes back by its id", crossedOff.json?.returned === true, JSON.stringify(crossedOff.json));
+      const wrongOne = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === "chk-acme-chk-cms-902");
+      check("...and the PR its URL pointed at is left alone", (wrongOne?.returned?.remarks ?? "") === "", `${wrongOne?.returned?.remarks}`);
+      const rightOne = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === roundPr.id);
+      check("...while the one it really came from got the reason", /points somewhere else/.test(rightOne?.returned?.remarks ?? ""), `${rightOne?.returned?.remarks}`);
+
+      /*
+       * The case that was actually reported: a row moved onto the sheet by a
+       * build that did not yet write the link back. Removing one deleted it and
+       * the pull request never returned — it was left marked as moved with no
+       * row anywhere, so it showed on no screen at all.
+       *
+       * Planted exactly as that build left it: the URL, and no id.
+       *
+       * The row from the move above is cleared first, so this pull request is
+       * on the sheet exactly once and the derived answer below has one cause.
+       */
+      for (const r of (await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []) {
+        await delBody(`/api/deployments?id=${encodeURIComponent(r.id)}`, { remarks: "clearing before the legacy case" });
+      }
+
+      const legacyRow = await post("/api/deployments", {
+        repoId: "chk-acme-chk-cms", cycleId: roundCycle,
+        title: "Moved by an older build", prUrl: roundPr.url,
+      });
+      const legacyId = legacyRow.json?.deployment?.id;
+      check("a row can be planted with a URL and no link", legacyRow.status === 200 && !legacyRow.json?.deployment?.pullId, JSON.stringify(legacyRow.json?.deployment?.pullId));
+
+      /* Reading the sheet is enough to repair it. */
+      const healed = ((await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []).find((r) => r.id === legacyId);
+      check("reading the sheet fills the link in", healed?.pullId === roundPr.id, `${healed?.pullId}`);
+
+      const legacyBare = await delBody(`/api/deployments?id=${encodeURIComponent(legacyId)}`, {});
+      check("...so removing it asks for a reason like any other", legacyBare.status === 400, `${legacyBare.status}`);
+
+      const legacyOff = await delBody(`/api/deployments?id=${encodeURIComponent(legacyId)}`, { remarks: "moved by mistake" });
+      check("...and it hands the PR back", legacyOff.json?.returned === true, JSON.stringify(legacyOff.json));
+
+      /*
+       * And the flag is no longer believed on its own: a PR marked as moved
+       * whose row is gone reads as not moved, because that is what a person
+       * looking at the sheet would see.
+       */
+      const afterLegacy = ((await get("/api/pulls")).json?.pulls ?? []).find((p) => p.id === roundPr.id);
+      check("a PR whose row is gone is back on the report", afterLegacy?.movedToScope === false, `${afterLegacy?.movedToScope}`);
+      check("...carrying that reason", afterLegacy?.returned?.remarks === "moved by mistake", `${afterLegacy?.returned?.remarks}`);
+
+      for (const r of (await get(`/api/deployments?cycleId=${encodeURIComponent(roundCycle)}`)).json?.deployments ?? []) {
+        await delBody(`/api/deployments?id=${encodeURIComponent(r.id)}`, { remarks: "clearing the check's own rows" });
+      }
+      await del(`/api/cycles?id=${encodeURIComponent(roundCycle)}`);
+    }
+
+    // -- clearing a period --------------------------------------------------
+    /*
+     * Count and delete are separate handlers on purpose: asking how much there
+     * is must never be the thing that removes it.
+     */
+    const counted = await get("/api/devops/purge?period=2026-09");
+    check("a period can be counted", counted.status === 200, `${counted.status}`);
+    check("...naming every collection it would touch", (counted.json?.counts ?? []).length === 3, JSON.stringify(counted.json?.counts));
+    check("...and reading as prose", counted.json?.describes === "September 2026", `${counted.json?.describes}`);
+
+    for (const bad of ["", "2026-9", "2026-13", "all", "2026-02-31"]) {
+      const r = await get(`/api/devops/purge?period=${encodeURIComponent(bad)}`);
+      check(`counting "${bad}" is refused`, r.status === 400, `${r.status}`);
+    }
+
+    /* Naming no targets must clear nothing, not everything. */
+    const nothing = await post("/api/devops/purge", { period: "2026-09" });
+    check("a purge with no targets is refused", nothing.status === 400, `${nothing.status}`);
+    check("...saying nothing was selected", /Nothing was selected/i.test(nothing.json?.error ?? ""), nothing.json?.error ?? "");
+    const junkTargets = await post("/api/devops/purge", { period: "2026-09", targets: ["everything", "users"] });
+    check("unknown targets are dropped, leaving none", junkTargets.status === 400, `${junkTargets.status}`);
+    check("a purge with a bad period is refused", (await post("/api/devops/purge", { period: "nope", targets: ["pulls"] })).status === 400);
+
+    /* And it really does remove only what it said it would. */
+    const cyc2 = await post("/api/cycles", { repoId: "chk-acme-chk-cms", name: "purge-test" });
+    await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId: cyc2.json.cycle.id, title: "Purge me", deployedOn: "2031-07-15" });
+    await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId: cyc2.json.cycle.id, title: "Keep me", deployedOn: "2031-08-15" });
+
+    const before = await get("/api/devops/purge?period=2031-07");
+    check("the count sees the planted row", before.json?.counts?.find((c) => c.target === "deployments")?.rows === 1, JSON.stringify(before.json?.counts));
+
+    const purged = await post("/api/devops/purge", { period: "2031-07", targets: ["deployments"] });
+    check("the purge removes it", purged.json?.removed?.find((r) => r.target === "deployments")?.rows === 1, JSON.stringify(purged.json?.removed));
+
+    const left = (await get(`/api/deployments?cycleId=${encodeURIComponent(cyc2.json.cycle.id)}`)).json?.deployments ?? [];
+    check("...and only it", left.length === 1 && left[0].title === "Keep me", left.map((r) => r.title).join(","));
+    check("...leaving the neighbouring month alone", (await get("/api/devops/purge?period=2031-08")).json?.counts?.find((c) => c.target === "deployments")?.rows === 1);
+
+    for (const row of left) await del(`/api/deployments?id=${encodeURIComponent(row.id)}`);
+    await del(`/api/cycles?id=${encodeURIComponent(cyc2.json.cycle.id)}`);
+
+    const gone = await del("/api/repos?id=chk-acme-chk-cms");
+    check("a repository can be removed", gone.status === 200, `${gone.status}`);
+    check("...and is gone", ((await get("/api/repos")).json?.repos ?? []).every((r) => r.id !== "chk-acme-chk-cms"));
+  }
 
   section("input — ageing threshold is clamped to 1..365");
   /*
@@ -758,7 +1305,18 @@ section("input — every filter param survives hostile values");
      * would pass no matter which one the code applied.
      */
     const day = 86_400_000;
-    const iso = (t) => new Date(t).toISOString().slice(0, 10);
+    /*
+     * The *local* day, not the UTC one. `toISOString` reads the calendar in
+     * London, and east of it the two disagree for the first hours of every
+     * morning — which made "created a day ago" mean two days ago and aged a
+     * fixture that was meant to be fresh. The suite failed only between
+     * midnight and 05:30 IST, which is exactly the kind of failure nobody
+     * reproduces.
+     */
+    const iso = (t) => {
+      const d = new Date(t);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
     const made0 = await post("/api/teams", {
       name: "Chk Severity POD",
       ageingThresholdDays: 30,
@@ -919,6 +1477,120 @@ async function auth(admin) {
 
   /* Reading is still theirs: the gate is on writing, not on the data. */
   check("downloading their own POD still works", (await call(member, "/api/export?teamId=amc-pod")).status === 200);
+
+  /*
+   * The DevOps board splits the same way. A member has to see whether develop
+   * is frozen before they push to it, so reading is theirs; onboarding a repo
+   * stores a token and decides what a freeze does to a real branch, so writing
+   * is not.
+   */
+  check("a member can read the repositories", (await call(member, "/api/repos")).status === 200);
+  const memberOnboard = await call(member, "/api/repos", json('{"url":"https://github.com/acme/sneaky"}'));
+  check("...but cannot onboard one", memberOnboard.status === 403, `${memberOnboard.status}`);
+  check("...and cannot remove one", (await call(member, "/api/repos?id=anything", { method: "DELETE" })).status === 403);
+  check("...or freeze a branch", (await call(member, "/api/repos/anything/freeze", json('{"frozen":true,"reason":"x"}'))).status === 403);
+  check("a member can read announcements", (await call(member, "/api/announcements")).status === 200);
+  check("...but cannot post one", (await call(member, "/api/announcements", json('{"repoId":"amc","title":"x"}'))).status === 403);
+  check("...and cannot delete one", (await call(member, "/api/announcements?id=x", { method: "DELETE" })).status === 403);
+
+  /*
+   * The scope sheet is the one thing on the DevOps board a member writes. They
+   * are the people who know what their change is and which branch it is on, and
+   * a sheet only an admin can fill is a sheet nobody fills.
+   */
+  check("a member can read the scope sheet", (await call(member, "/api/deployments")).status === 200);
+  check("...and download it", (await call(member, "/api/deployments/export?format=csv")).status === 200);
+  check("...and read the cycles", (await call(member, "/api/cycles")).status === 200);
+  check("a member cannot create a cycle", (await call(member, "/api/cycles", json('{"repoId":"x","name":"y"}'))).status === 403);
+  check("...or freeze scope", (await call(member, "/api/cycles/x/scope", json('{"frozen":true}'))).status === 403);
+  check("...or delete a row", (await call(member, "/api/deployments?id=x", { method: "DELETE" })).status === 403);
+
+  /*
+   * Adding a row is open to a member; changing one that exists is not. The
+   * person who shipped a change is the one who knows what it was, so the sheet
+   * has to be fillable by anyone — but once written it is evidence.
+   */
+  /*
+   * Its own repository and its own open cycle, planted as the admin.
+   *
+   * It used to reach for whatever open cycle happened to be lying around from
+   * an earlier group — but the input group deletes its repository on the way
+   * out and leaves the cycles behind, so what this found was an orphan. That
+   * tested "a row needs a real repository", which is a different rule, checked
+   * in the input group, and it left this one silently checking nothing.
+   */
+  await call(admin, "/api/repos", json('{"url":"https://github.com/chk-auth/chk-scope","name":"Chk auth scope","teamIds":["amc-pod"]}'));
+  const authCycle = await call(admin, "/api/cycles", json('{"repoId":"chk-auth-chk-scope","name":"member-writes"}'));
+  const theirCycle = authCycle.json?.cycle;
+  check("there is an open cycle to add to", Boolean(theirCycle?.id), `${authCycle.status} ${authCycle.json?.error ?? ""}`);
+  if (theirCycle) {
+    const added = await call(member, "/api/deployments", json(JSON.stringify({
+      repoId: theirCycle.repoId, cycleId: theirCycle.id, title: "Member added this",
+    })));
+    check("a member can add a scope row", added.status === 200, `${added.status} ${added.json?.error ?? ""}`);
+
+    if (added.json?.deployment) {
+      const edit = await call(member, "/api/deployments", json(JSON.stringify({
+        ...added.json.deployment, title: "Member edited this",
+      })));
+      check("...but cannot change one afterwards", edit.status === 403, `${edit.status}`);
+      check("...and is told who can add them", /Ask an admin/i.test(edit.json?.error ?? ""), edit.json?.error ?? "");
+
+      /* An admin may, without being granted anything. */
+      const asAdmin = await call(admin, "/api/deployments", json(JSON.stringify({ ...added.json.deployment, title: "Admin edited this" })));
+      check("an admin can change a saved row", asAdmin.status === 200, `${asAdmin.status}`);
+
+      /* And so can somebody the admin has chosen. */
+      await call(admin, "/api/users", json('{"email":"chk-member@x.com","devopsEditor":true}'));
+      const asEditor = await call(member, "/api/deployments", json(JSON.stringify({
+        ...added.json.deployment, title: "Editor edited this",
+      })));
+      check("a chosen editor can too", asEditor.status === 200, `${asEditor.status}`);
+
+      /* Taking it away takes effect at once, without a fresh sign-in. */
+      await call(admin, "/api/users", json('{"email":"chk-member@x.com","devopsEditor":false}'));
+      const revoked = await call(member, "/api/deployments", json(JSON.stringify({
+        ...added.json.deployment, title: "Should be refused",
+      })));
+      check("...and losing it takes effect on the next request", revoked.status === 403, `${revoked.status}`);
+
+      /* An unrelated edit must not quietly revoke the capability. */
+      await call(admin, "/api/users", json('{"email":"chk-member@x.com","devopsEditor":true}'));
+      await call(admin, "/api/users", json('{"email":"chk-member@x.com","name":"Checker Renamed"}'));
+      const stillEditor = (await call(admin, "/api/users")).json?.users?.find((u) => u.email === "chk-member@x.com");
+      check("renaming somebody keeps their editor rights", stillEditor?.devopsEditor === true, JSON.stringify(stillEditor?.devopsEditor));
+      await call(admin, "/api/users", json('{"email":"chk-member@x.com","devopsEditor":false}'));
+
+      await call(admin, `/api/deployments?id=${encodeURIComponent(added.json.deployment.id)}`, { method: "DELETE" });
+    }
+  }
+
+  /*
+   * The report is readable by everyone — knowing what reached the release
+   * branch without agreement is the point, not privileged information.
+   * Clearing a period is the most destructive thing here and is admin-only,
+   * and so is spending the repo's rate limit on a sync.
+   */
+  check("a member can read the sign-off report", (await call(member, "/api/pulls")).status === 200);
+  check("...and download it", (await call(member, "/api/pulls/export?format=csv")).status === 200);
+
+  /* And what they download is readable without opening every link. */
+  const reportRes = await fetch(`${BASE}/api/pulls/export?format=csv`, { headers: { cookie: member.header() } });
+  const reportHeader = (await reportRes.text()).split("\r\n")[0] ?? "";
+  for (const column of ["Project", "Title", "Opened by", "Ticket", "Business sign-off", "QA sign-off", "Deployed to", "Risk"]) {
+    check(`the sign-off report has a ${column} column`, reportHeader.includes(column), reportHeader.slice(0, 200));
+  }
+  check("a member cannot sync pull requests", (await call(member, "/api/pulls/sync", json('{"repoId":"x"}'))).status === 403);
+
+  /*
+   * Permission is refused before anything else, so somebody who may not do
+   * this at all is not sent to chase a sign-off they cannot use.
+   */
+  const memberMove = await call(member, "/api/pulls/to-scope", json('{"id":"any","cycleId":"any"}'));
+  check("a member cannot move a PR to the sheet", memberMove.status === 403, `${memberMove.status}`);
+  check("...and is told who can", /Ask an admin/i.test(memberMove.json?.error ?? ""), memberMove.json?.error ?? "");
+  check("...cannot count a period", (await call(member, "/api/devops/purge?period=2026")).status === 403);
+  check("...and cannot clear one", (await call(member, "/api/devops/purge", json('{"period":"2026","targets":["pulls"]}'))).status === 403);
 
   section("auth — changing your own password");
   /*

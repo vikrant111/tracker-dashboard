@@ -13,6 +13,11 @@ export const COLLECTION_FILES = {
   teams: "teams.json",
   users: "users.json",
   sync: "sync-state.json",
+  repos: "repos.json",
+  announcements: "announcements.json",
+  deployments: "deployments.json",
+  cycles: "cycles.json",
+  pulls: "pull-requests.json",
 } as const;
 
 export type CollectionName = keyof typeof COLLECTION_FILES;

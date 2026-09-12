@@ -75,6 +75,70 @@ export function dateFields(model: AnyModel): string[] {
   return found;
 }
 
+/**
+ * The schema's default for every path, as a flat map of path → value.
+ *
+ * Written once per model. Mongoose stores the raw default on the SchemaType,
+ * and a function default (`[]`, `{}`) has to be called each time or every
+ * document would share one array.
+ */
+const defaultsCache = new WeakMap<AnyModel, [string, () => unknown][]>();
+
+function schemaDefaults(model: AnyModel): [string, () => unknown][] {
+  const cached = defaultsCache.get(model);
+  if (cached) return cached;
+
+  const paths = model.schema?.paths ?? {};
+  const out: [string, () => unknown][] = [];
+
+  for (const key of Object.keys(paths)) {
+    if (key === "_id" || key === "__v") continue;
+    const raw = (paths[key] as { defaultValue?: unknown }).defaultValue;
+    if (raw === undefined) continue;
+    out.push([key, typeof raw === "function" ? (raw as () => unknown) : () => raw]);
+  }
+
+  defaultsCache.set(model, out);
+  return out;
+}
+
+/**
+ * Fill in what a stored row does not have.
+ *
+ * A document written before a field existed comes back without it, and the
+ * type says it is there — which is how `repo.teamIds.length` crashed a page on
+ * a repository onboarded a week earlier.
+ *
+ * Neither driver does this for us: `toDocument` applies defaults on the way in,
+ * and Mongo's `.lean()` deliberately skips them on the way out. So both were
+ * wrong in the same way, which is the worst kind — the parity check compared
+ * them and found them identical.
+ *
+ * Only genuinely absent keys are filled. A stored `""`, `0` or `null` is a
+ * value somebody wrote and is left alone.
+ */
+function fillDefaults(model: AnyModel, row: Record<string, unknown>): Record<string, unknown> {
+  for (const [path, make] of schemaDefaults(model)) {
+    const parts = path.split(".");
+
+    // Nested paths — `freeze.state`, `scope.frozen` — walk down, making the
+    // parent object if a row predates the whole group.
+    let target = row;
+    let missing = false;
+    for (const part of parts.slice(0, -1)) {
+      if (target[part] === undefined || target[part] === null || typeof target[part] !== "object") {
+        target[part] = {};
+        missing = true;
+      }
+      target = target[part] as Record<string, unknown>;
+    }
+
+    const leaf = parts[parts.length - 1];
+    if (missing || target[leaf] === undefined) target[leaf] = make();
+  }
+  return row;
+}
+
 /** A `Date`, or null when the value is missing or unusable. */
 function asDate(value: unknown): Date | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -94,7 +158,7 @@ function asDate(value: unknown): Date | null {
 export function fromStoredDoc<T>(model: AnyModel, row: Record<string, unknown> | undefined): T | null {
   if (!row || typeof row !== "object") return null;
 
-  const out: Record<string, unknown> = { ...row };
+  const out = fillDefaults(model, { ...row });
   for (const field of dateFields(model)) {
     if (field === "_id" || !(field in out)) continue;
     out[field] = asDate(out[field]);
