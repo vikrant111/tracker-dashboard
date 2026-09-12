@@ -12,7 +12,7 @@ next-env.d.ts
 # Real secrets for the DevOps board. `.env.devopsdashboard` IS committed — it
 # carries the shape and the safe defaults, so a clone runs. The `.local` beside
 # it is where a real GITHUB_TOKEN goes, and it never leaves the machine.
-.env.devopsdashboard.local
+# .env.devopsdashboard.local
 
 # Scratch left by `pnpm clear` and the render check.
 .render-check
