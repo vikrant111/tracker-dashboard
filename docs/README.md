@@ -395,7 +395,7 @@ src/components/   client components, dashboard-client.tsx orchestrates
 scripts/
   seed.mjs        indices + admin + demo data
   check.mjs       641 end-to-end checks against a running server
-  check-theme.mjs 1294 static checks: theme tokens, contrast, source rules,
+  check-theme.mjs 1330 static checks: theme tokens, contrast, source rules,
                   and the font switch
   check-ui.mjs    2687 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite

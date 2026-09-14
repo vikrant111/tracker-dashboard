@@ -1,683 +1,445 @@
+<div align="center">
+
 # 🚀 POD Tracker
 
-> **You just cloned this. Now what?**
-> Twelve minutes from here to a dashboard full of data. No Azure account needed.
-> Grab a coffee ☕ — you probably won't finish it before the seed does.
+**Two boards, one shell.**
+How bad is the bug pile — and can I push to `develop` right now?
 
-Ageing bugs, tickets and CRs across every team — live from Azure Boards, or from
-a spreadsheet when you just need something on screen.
+`Next.js 15` · `React 19` · `TypeScript strict` · `Tailwind v4` · `JSON or MongoDB`
 
----
+**Zero configuration to first run.** Clone, `pnpm install`, `pnpm dev`. No database, no account, no keys.
 
-## 🎯 What even is this?
-
-Imagine four teams. Each has a pile of bugs. Nobody agrees how big the pile is.
-
-```
-        😰  "we have like… 40 open?"
-        😬  "no, 106 — I counted Tuesday"
-        🙃  "counted what, exactly?"
-        😵  "…bugs?"
-```
-
-**POD Tracker is the answer to "how bad is it, actually".** It pulls every bug,
-ticket and CR out of Azure DevOps Boards (or a spreadsheet you drag in), and puts
-one honest number on a screen.
-
-A **POD** is just a team. Yours might call them squads, pods, or "the payments
-lot". Here they're PODs. 🫛
-
-### The one rule this whole project is built on
-
-> **Every number is clickable, and every number agrees with every other number.**
-
-See a bar that says 31? Click it. You get exactly 31 items. Not 30, not 33. The
-tile, the bar, the chart and the list all come from **one query**, because the
-moment you run two queries the data changes between them and two tiles start
-arguing on screen. 🥊
-
-### The four things it refuses to do
-
-| | Rule | Why |
-|---|---|---|
-| 🚫 | **Never invent data** | No weather configured? No weather drawn. Unknown severity stays `Unknown` — it never guesses which real one you meant. |
-| 🚫 | **Never trust a filename** | An upload is read by sniffing its **bytes**. Whoever exported that file wasn't thinking about our parser. |
-| 🚫 | **Never mislead** | Can't parse your file? You get a message naming the exact menu path out. A wrong value imported silently is worse than a file politely refused. |
-| 🚫 | **Never let a member peek** | POD scoping is enforced server-side, on every route. Not in the UI. Not "mostly". |
+</div>
 
 ---
 
-## 🧰 Tech stack (the whole cast)
+## 🎯 What this is
+
+Two dashboards that answer two questions nobody could answer with a straight face before.
+
+<table>
+<tr>
+<th width="50%">📊 The POD board &nbsp;<code>/</code></th>
+<th width="50%">🔀 The DevOps board &nbsp;<code>/devops</code></th>
+</tr>
+<tr valign="top">
+<td>
+
+> 😰 "we have like… 40 open?"
+> 😬 "no, 106 — I counted Tuesday"
+> 🙃 "counted *what*, exactly?"
+
+Every bug, ticket and CR across every team, pulled from **Azure Boards** or a
+spreadsheet you drag in. One honest number, and every number clicks through to
+the rows behind it.
+
+**Ageing is the point.** Not "how many bugs" — *how long has this been sitting
+there*.
+
+</td>
+<td>
+
+> 😵 "is develop frozen?"
+> 😐 "…ask Raj?"
+> 🫠 "Raj is on leave"
+
+Which branch is locked, what went out in this release, and **which changes
+reached the release branch without anybody signing them off**.
+
+**The sign-off report is the point.** Everything else on it is context for
+finding those rows.
+
+</td>
+</tr>
+</table>
+
+A **POD** is just a team. Yours might call them squads or "the payments lot".
+Here they're PODs. 🫛
+
+---
+
+## 🏛️ Architecture at a glance
+
+One Next.js app is the frontend *and* the backend. Everything reaches storage
+through a single `Store` interface, so the same code serves files or a database.
 
 ```mermaid
-graph LR
-    A["🌐 Azure Boards"] -->|REST| N
-    B["📗 Your spreadsheet"] -->|drag & drop| N
-    N["⚡ Next.js 15<br/>front AND back"] <-->|one big query| O["🍃 MongoDB"]
-    N --> U["🎨 The dashboard"]
-    U -->|click any number| D["📋 Drill-down drawer"]
+graph TB
+    subgraph sources["📥 Where data comes from"]
+        AZ["🔷 Azure Boards<br/><i>work items</i>"]
+        GH["🐙 GitHub<br/><i>pull requests · branch rules</i>"]
+        XL["📗 Spreadsheet<br/><i>xlsx · csv · Numbers</i>"]
+    end
+
+    subgraph app["⚡ Next.js 15 — one process"]
+        RSC["🖥️ Server Components<br/><i>pages, auth gates</i>"]
+        API["🔌 Route handlers<br/><i>/api/*</i>"]
+        CTRL["🧠 Controllers<br/><i>aggregate · shape</i>"]
+        LIB["📐 lib/ — pure rules<br/><i>no React, no I/O</i>"]
+    end
+
+    subgraph store["💾 One interface, two drivers"]
+        IFACE["Store"]
+        JSON["📄 DB_store/*.json<br/><b>default — nothing to install</b>"]
+        MONGO["🍃 MongoDB<br/><i>DB_DRIVER=mongodb</i>"]
+    end
+
+    UI["🎨 Client components<br/><i>SWR · framer-motion</i>"]
+
+    AZ --> API
+    GH --> API
+    XL --> API
+    RSC --> UI
+    UI <-->|JSON over fetch| API
+    API --> CTRL --> IFACE
+    RSC --> CTRL
+    CTRL -.->|asks| LIB
+    API -.->|asks| LIB
+    IFACE --> JSON
+    IFACE --> MONGO
 ```
 
-| Layer | What we used | Why not something else |
-|---|---|---|
-| 🖼️ **Framework** | Next.js 15 (App Router) + React 19 | Frontend *and* backend in one repo. One deploy, one language. |
-| 🔤 **Language** | TypeScript, strict mode | The compiler catches what tired humans don't. |
-| 🎨 **Styling** | Tailwind v4 | Tokens live in `globals.css`. Two themes, both hand-picked. |
-| 🗄️ **Store** | MongoDB | Aggregations are the whole product. A SQL `GROUP BY` per tile would be eight queries that disagree. |
-| 🔐 **Auth** | NextAuth v5 | Password, Microsoft SSO, or both. Or off, for local poking. |
-| ✨ **Motion** | framer-motion | Springs, not linear fades. |
-| 🖇️ **Icons** | lucide-react | |
-| 🔄 **Fetching** | SWR | Revalidates on focus, so a board left open stays honest. |
-| 📊 **Spreadsheets** | exceljs + a hand-written Apple Numbers reader | Yes, really. More on that below. 👀 |
-| 📦 **Packages** | **pnpm** | Pinned in `package.json`. |
+### The rule the whole project is built on
 
-> ⚠️ **JavaScript only.** There is no Python anywhere, not even in tooling. The
-> test suites are `.mjs` files that import the real `.ts` modules directly.
+> **One number, computed once.**
+>
+> Every tile, chart and drill-down on a board comes from **one** aggregation over
+> **one** set of rows. Not eight queries that each round differently — a bar
+> saying 45 above a drawer listing 42 is the one bug this project exists not to
+> have.
+>
+> The driver *fetches*. It never aggregates. That is why files and MongoDB
+> cannot disagree.
+
+### What it refuses to do
+
+| ❌ | Why |
+|---|---|
+| Invent weather it doesn't know | No coordinates → no weather. Never a guess drawn as fact. |
+| Freeze a branch by accident | GitHub writes are **dry-run by default**. `live` is opt-in, per deployment. |
+| Delete on a malformed request | An empty period matches **nothing**, not everything. |
+| Trust the browser | Every gate is re-checked server-side. Hiding a button is not a permission. |
 
 ---
 
-## ⚡ Setup — clone to dashboard
-
-### Step 0 · Do you have the goods? 🎒
-
-```bash
-node --version    # need 22.18+ (the checks import .ts files directly)
-pnpm --version    # if this fails: corepack enable pnpm
-```
-
-<details>
-<summary>😱 <b>"pnpm: command not found"</b></summary>
-
-```bash
-corepack enable pnpm      # ships with Node, easiest
-# or
-brew install pnpm
-```
-
-Please don't reach for the other package manager. There's a check that fails the
-build if any doc tells you to. 😄
-</details>
-
----
-
-### Step 1 · Start a database 🍃
-
-Pick your fighter:
-
-```bash
-# 🐳 Containers (easiest — a compose file is right there)
-docker compose up -d
-
-# 🍺 Or Homebrew, if you like your databases native
-pnpm mongo:local     # a real MongoDB — no install, no Docker
-```
-
-> ⏳ **It takes 20–40 seconds to accept connections.** This is normal. It is not
-> broken. Go stretch. The seeder will tell you plainly if it can't reach it.
-
-Check it's up:
-
-```bash
-curl localhost:9200
-```
-
----
-
-### Step 2 · Install 📦
+## ⚡ Quick start
 
 ```bash
 pnpm install
+pnpm dev          # → http://localhost:3000
 ```
+
+That is genuinely all. No database, no `.env`, no account — the JSON driver
+writes files under `DB_store/`, and the first sign-in creates the admin from
+built-in defaults (`admin@example.com` / `changeme`).
+
+```bash
+pnpm seed             # demo PODs + work items for the POD board
+pnpm seed:devops      # 4 of each kind, per repo, per branch, for the DevOps board
+```
+
+> 🔑 **Change the admin password** before anyone else can reach the instance.
+> 🧭 **One dev server at a time.** `pnpm predev` refuses a second one — two share
+> a `.next` and the browser starts failing with `ChunkLoadError`.
 
 ---
 
-### Step 3 · Configure 🔧
+## 🗺️ How a request actually flows
 
-```bash
-cp .env.example .env.local
+Reading the POD board, end to end. The interesting part is that **the aggregation
+happens once, above the driver**.
+
+```mermaid
+sequenceDiagram
+    participant B as 🌐 Browser
+    participant P as 🖥️ page.tsx
+    participant A as 🔌 /api/metrics
+    participant S as 🛡️ lib/api.ts
+    participant C as 🧠 controllers
+    participant D as 💾 Store
+
+    B->>P: GET /
+    P->>P: currentUser() — redirect if not signed in
+    P-->>B: shell + the panels
+    B->>A: fetch(?teamId=…&kind=…)
+    A->>S: accessibleTeams(user)
+    Note over S: 🛡️ the security boundary —<br/>a member's filters are narrowed<br/>to the PODs they are assigned
+    S-->>A: scoped filters
+    A->>C: dashboard(filters)
+    C->>D: items.find(filters)
+    D-->>C: rows
+    Note over C: ONE aggregation →<br/>tiles, chart, leaderboard,<br/>breakdowns, drill-downs
+    C-->>A: one payload
+    A-->>B: JSON
+    B->>B: SWR caches · revalidates on focus
 ```
 
-Now open `.env.local`. **Here is the good news: you can change nothing and it
-still works.** 🎉
+`lib/api.ts` is the boundary that matters. A member cannot widen their own scope
+by editing a query string, because the scope is **recomputed from the session**,
+never read from the request.
 
-| Variable | Default | Do I care? |
+---
+
+## 💾 Storage — one interface, two drivers
+
+Switching is **one environment variable**. Nothing else changes, because nothing
+else knows.
+
+```mermaid
+graph LR
+    CODE["📐 Every controller<br/><i>writes through one interface</i>"] --> IF{{"Store"}}
+    IF -->|"DB_DRIVER=json<br/><b>default</b>"| J["📄 DB_store/*.json<br/>atomic writes · file lock<br/>mode 0600"]
+    IF -->|"DB_DRIVER=mongodb"| M["🍃 MongoDB<br/>indexes · $facet-ready"]
+    IF -->|"tests"| MEM["🧪 in-memory"]
+
+    J -.->|"pnpm parity"| CHK{{"same document?"}}
+    M -.->|"pnpm parity"| CHK
+```
+
+| | `json` | `mongodb` |
 |---|---|---|
-| `MONGODB_URI` | `mongodb://127.0.0.1:27017` | 🌟 Yes, in production |
-| `MONGODB_COLLECTION_PREFIX` | `tracker` | 😴 No — until two environments share a cluster |
-| `AUTH_MODE` | `password` | 😴 No |
-| `AUTH_SECRET` | — | 🚨 **Yes, really.** `openssl rand -base64 32`. Production **refuses to start** without it |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@example.com` / `changeme` | 🤔 Change the password before anyone else can reach it |
-| `AZDO_ORG_URL` / `AZDO_PROJECT` / `AZDO_PAT` | — | 🌟 Only for real Azure data |
-| `WEATHER_LAT` / `WEATHER_LON` | blank | 🎨 Pure joy. See below. |
-| `SYNC_POLL_SECONDS` | `120` | 😴 No. `0` turns the poller off |
-| `AZDO_WEBHOOK_TOKEN` | — | 🪝 Only for instant Azure updates |
+| Needs installing | **nothing** | a cluster or `pnpm mongo:local` |
+| Where it lives | `DB_store/` (or `DB_STORE_DIR`) | `MONGODB_URI` |
+| Good for | a laptop, a locked-down machine, a demo | production, more than one server process |
+| Writes | temp file + atomic rename, `0600` | replace-by-id, upsert |
 
-> 🔑 **The Azure block is the only thing you ever *have* to fill in.** Set those
-> three and a POD is created for you automatically on first run — no visit to the
-> admin screen required. Everything else has a working default.
+Both go through the **same schemas** (`db/document.ts`), so what a file stores is
+what MongoDB would store. `pnpm parity` writes a fixture through each driver and
+diffs the result — run it before migrating anything real.
 
-<details>
-<summary>🌦️ <b>The weather thing (optional, delightful)</b></summary>
-
-Set `WEATHER_LAT` and `WEATHER_LON` and the greeting card shows your **actual
-local weather** — free, no API key, no account, one request every 15 minutes.
-
-```bash
-WEATHER_LAT=18.5204     # Pune
-WEATHER_LON=73.8567
-```
-
-Leave them blank and **nothing is fetched**. That's deliberate and it's the whole
-"never invent data" rule in miniature: a dashboard drawing rain it made up is the
-one thing this project must never do. ☔❌
-</details>
+> 🔒 The JSON files hold password hashes, and access tokens once you onboard
+> anything. They are written `0600`, and `pnpm check:env` tells you if git is
+> tracking them. See [Data at rest](docs/operations.md).
 
 ---
 
-### Step 4 · Seed 🌱
+## 🧬 The data model
 
-```bash
-pnpm seed
+```mermaid
+erDiagram
+    TEAM ||--o{ ITEM : "owns"
+    TEAM ||--o{ USER : "assigned to"
+    REPO }o--o{ TEAM : "worked on by"
+    REPO ||--o{ CYCLE : "ships"
+    REPO ||--o{ PULL : "merges"
+    REPO ||--o{ ANNOUNCEMENT : "posts"
+    CYCLE ||--o{ DEPLOYMENT : "scopes"
+    PULL |o--o| DEPLOYMENT : "moves onto"
+
+    TEAM {
+        string id PK "slug of the name"
+        string azure "org · project · PAT"
+        int    ageingThresholdDays
+    }
+    ITEM {
+        string workItemId
+        date   createdDate "ageing is computed, never stored"
+        string severity
+        string status
+        bool   isActive
+    }
+    REPO {
+        string id PK "owner-repo"
+        string releaseBranch
+        string developBranch
+        string freezeMethod "ruleset | protection | record"
+        object freeze "state · reason · who · when"
+    }
+    CYCLE {
+        string id PK "repo + name"
+        object scope "frozen? · reason"
+    }
+    DEPLOYMENT {
+        string ticket "joins back to the tracker"
+        string branch
+        string state "planned→deployed→verified | rolled-back"
+    }
+    PULL {
+        int    number
+        string baseBranch
+        object signoffs "biz · qa · pod"
+        bool   movedToScope "derived, not believed"
+    }
 ```
 
-This creates the indices, your admin login, and **three PODs of realistic demo
-data** — enough history that every chart has a shape and every drill-down has
-something in it.
+**Two details worth knowing:**
 
-```bash
-pnpm seed --no-demo    # 🧹 indices + admin only, no demo data
-pnpm seed --reset      # 💥 nuke the indices and start over
-```
-
-> 🎲 The demo data uses a **fixed random seed**, so every run gives identical
-> data. Your screenshots will match your colleague's.
+- 🕰️ **Age is never stored.** It is computed from `createdDate` at query time.
+  A stored age is wrong by tomorrow.
+- 🔗 **`movedToScope` is a join, not a flag.** Whether a PR is on a sheet is
+  *recomputed* from the sheets themselves, so a board in a broken state repairs
+  itself the moment somebody opens it.
 
 ---
 
-### Step 5 · GO 🏁
+## 🔀 The DevOps flow
 
-```bash
-pnpm dev
+The whole point of the second board: a change reaches the release branch, and
+somebody has to agree it should have.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Merged: 🐙 Sync PRs
+
+    Merged --> Risk: missing business or QA
+    Merged --> Waiting: missing POD verification
+    Risk --> Waiting: sign-off recorded
+    Waiting --> Cleared: all three signed
+
+    Cleared --> OnSheet: ➡️ To sheet
+    OnSheet --> Returned: admin removes it<br/><i>(a reason is required)</i>
+    Returned --> Cleared: fixed, move it again
+
+    OnSheet --> [*]: shipped
+
+    note right of Risk
+        🚨 merged without agreement
+        sorted to the top, tinted,
+        and labelled in words
+    end note
+    note right of OnSheet
+        goes onto the sheet of
+        the cycle the PR is
+        assigned to — and no other
+    end note
 ```
 
-Open **http://localhost:3000**, log in with your `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
+**A move is refused for exactly one reason at a time,** and the tooltip says
+which:
 
-```
-        🎉 You should now be looking at a dashboard
-           with a glowing ring, five tiles, some bars,
-           and a tiny animated sky with a squirrel in it.
-```
-
-Yes, a squirrel. 🐿️ We'll get to that.
-
----
-
-## 📊 What's on the dashboard
-
-| Panel | Shows |
+| Refusal | Because |
 |---|---|
-| 💚 **Board health** | one number: the share of tracked items that are **closed**. Drag the ring to find where each band begins — it springs back on release |
-| 🔢 **Headline tiles** | Total · Active · Average ageing · Critical aged · Environments |
-| 🏆 **Top assignees** | who holds what, sortable by volume, ageing or criticals. The bar splits their open items by severity |
-| 🚨 **Severity** | Critical / Major / Minor / Unknown |
-| 🔄 **Bug status** | Open / Commented / For QA Validation / Not a Bug / Closed / Unknown |
-| 🌍 **Environment** | IT-UAT / BIZ-UAT / CUG / Production |
-| ⏳ **Ageing** | open items bucketed 0–3, 4–7, 8–14, 15–30, 30+ days |
-| 📈 **Closure trend** | raised vs closed, daily over 30 days or weekly over 12 |
-| 👥 **Leadership roll-up** | every POD side by side (admins only) |
+| Not a DevOps editor | checked **first**, before the PR is even looked up — so a refusal leaks nothing |
+| No cycle set | there is no sheet to move it onto until somebody says which |
+| Scope frozen | *"This pull request can't be moved — the scope sheet for 2026.09 is frozen: …"* |
+| Missing a sign-off | **all three**, not just two. The sheet is the record of what shipped |
+| Already moved | it says "On the sheet" rather than offering a button that would refuse |
 
-**Everything expands.** 👆 Every tile, row and bar opens a drawer with the matching
-work items — title, id, severity, status, environment, assignee, days open — each
-linking straight into Azure DevOps.
+The rule is **one shared function**, so the disabled button and the API can never
+disagree.
 
-**Every expanded list filters.** Inside the drawer, narrow by severity, status,
-environment, assignee, free text or open/closed, and sort by oldest, newest or
-most severe. Whatever the panel already pinned shows as a **locked chip**, so a
-filtered list can never contradict the number you clicked. 🔒
-
-Filtering runs against the whole slice, not just the loaded page, and the header
-shows the true count. The board re-reads itself every 30 seconds. 🔄
-
----
-
-## 🗺️ How it actually works
+### Freezing a branch
 
 ```mermaid
 flowchart TD
-    A["🌐 Azure Boards"] -->|"WIQL + batch"| N["🔀 normalize.ts"]
-    B["📗 Excel / CSV / Numbers"] -->|"upload"| N
-    N -->|"one flat Item doc"| O[("🍃 MongoDB")]
-    O -->|"ONE size:0 query<br/>with every aggregation"| M["📊 metrics.ts"]
-    M --> API["/api/metrics"]
-    API --> UI["🎨 Dashboard"]
-    UI -->|"click any number"| I["/api/items"]
-    I --> DR["📋 Drawer"]
-    P["⏱️ Poller"] -.->|"every 120s"| A
-    W["🪝 Webhook"] -.->|"instant"| A
+    F["🔒 Freeze develop"] --> M{"GITHUB_MODE"}
+    M -->|"dry-run<br/><b>default</b>"| DR["📝 Records it · shows the exact<br/>requests it would send<br/><b>nothing reaches GitHub</b>"]
+    M -->|live| K{"freezeMethod"}
+    K -->|ruleset| R["POST /rulesets<br/><i>update + deletion + creation</i><br/><b>no bypass actors</b>"]
+    K -->|protection| P["PUT /branches/:b/protection<br/><i>lock_branch: true</i>"]
+    K -->|record| N["📋 Board-only.<br/>Nothing is enforced."]
+    R --> V{"GitHub agreed?"}
+    P --> V
+    V -->|yes| OK["✅ frozen"]
+    V -->|no| BAD["⚠️ failed — with GitHub's own reason.<br/>The board never claims a lock it does not have."]
 ```
 
-Everything upstream — Azure, a spreadsheet, whatever — gets flattened into **one
-document shape**. That's why the aggregations are simple and fast.
-
-### 📄 One item, flattened
-
-```ts
-{
-  id: "amc-pod:52000",        // POD + work item = collides on re-import 🎯
-  teamId: "amc-pod",
-  source: "azure",            // or "excel"
-  kind: "bug",                // derived: bug | ticket | cr
-  title: "Folio search times out beyond 500 results",
-  assignee: "Arjun Pillai",
-  severity: "Critical",       // Critical | Major | Minor | Unknown
-  environment: "Production",  // IT-UAT | BIZ-UAT | CUG | Production | Unknown
-  status: "Closed",
-  createdDate: "2026-05-25T…",
-  closedDate:  "2026-08-08T…",
-  isActive: false             // computed, never trusted 🧠
-}
-```
-
-> 🧠 **`isActive` is computed, not believed.** An item is closed when it has a
-> close date **or** its status is terminal. A close date beats whatever the status
-> text says — because boards lie, and "In Progress" with a close date is closed.
-
-> 🎯 **The id is the whole re-import story.** Upload the same file twice and you
-> get one set of items, not two, because the ids collide and the second upload
-> updates the first. That's what makes a weekly export workable.
-
-> ⏱️ **Age is computed at query time**, never stored, so it cannot go stale
-> between syncs. And deleting a POD deletes its items too — orphans would skew
-> every global count.
+> 🔑 **What the token can do.** Reading PRs needs `Pull requests: Read`. Only
+> freezing needs `Administration: write` — and it never pushes, merges, or
+> changes a single file. Full breakdown in [devops.md](docs/devops.md).
 
 ---
 
-## 💚 The health score (it's just division!)
+## 🔐 Who can do what
 
-Big glowing ring. One number. Here's the entire formula:
-
-```
-                    closed
-    health  =  ──────────────  ×  100        (then round it)
-                    total
-```
-
-That's it. That's the whole thing. 🎉
-
-**Worked example** — AMC POD has 244 items, 106 still open:
-
-```
-closed  = 244 − 106  = 138
-health  = 138 / 244  = 0.5656…
-        × 100        = 56.56…
-        → round      = 57%   ✅
-```
-
-You can check it yourself off the card. **That's the entire point.** 👀
-
-<details>
-<summary>🕰️ <b>It used to be much cleverer. That was the problem.</b></summary>
-
-The old score docked points for aged criticals, a stale average age, and an open
-backlog — three capped penalties, weighted. On that same board it read **32%**
-instead of 57%.
-
-It was more *diagnostic*, and completely unverifiable. Nobody looking at `32`
-beside `106 of 244` could connect the two without reading the source.
-
-> **A score that has to be explained before it can be trusted isn't doing its job
-> on a dashboard.**
-
-So the diagnosis moved to the tiles *next to* the ring, where the numbers are
-named, and the score became the one thing you can check by dividing.
-</details>
-
-**What the score deliberately can't see:** age and severity. Three criticals
-rotting for a quarter score the same as three trivial items opened this morning.
-That's the trade — and it's why *Critical aged* and *Average age* sit right next
-to the ring. The score says **how much is left**; those two say **how bad it is**. ⚖️
-
-### 🎨 What the colour means
-
-| Score | Band | Vibe |
-|---|---|---|
-| 85–100 | 🟢 Holding steady | Someone is doing their job |
-| 65–84 | 🟡 Some drag | Keep an eye on it |
-| 40–64 | 🟠 Falling behind | Uh oh |
-| 0–39 | 🔴 Needs a triage day | Cancel the meeting, clear the board |
-
-> 🎡 **Drag the ring.** It scrubs a hypothetical score so you can find where each
-> band starts — "how much would we have to close to be green?". It never changes
-> data and springs back when you let go.
-
----
-
-## ⏳ Ageing — the actual point of the product
-
-Everything here exists to answer **"how long has this been sitting there?"**
-
-| Bucket | Meaning |
-|---|---|
-| `0-3 days` | 🟦 Fresh |
-| `4-7 days` | 🟩 Fine |
-| `8-14 days` | 🟨 Hmm |
-| `15-30 days` | 🟧 Awkward |
-| `30+ days` | 🟥 Someone should say something |
-
-An item counts as **aged** past your POD's threshold (7 days by default).
-
-> 🪤 **The trap that already bit us once:** buckets are lower-inclusive,
-> upper-exclusive. Use `lte` for the upper bound and you get one extra item, and
-> the drawer disagrees with the bar you clicked. Very hard to spot. Very
-> embarrassing. Now guarded by a check.
-
----
-
-## 🌐 Getting data in — Azure Boards
-
-Fill in the three `AZDO_*` variables and you're done. For per-POD control:
-**Admin → pick a POD → Azure Boards**.
-
-| Field | Notes |
-|---|---|
-| Organisation URL | `https://dev.azure.com/your-org`. Blank falls back to `AZDO_ORG_URL` |
-| Project | Blank falls back to `AZDO_PROJECT` |
-| Personal access token | Needs **Work Items (Read)**. Blank falls back to `AZDO_PAT`. 🔒 Never sent back to the browser |
-| Area path | Scopes this POD's items, and routes incoming webhooks to it |
-| Work item types | Defaults to Bug, Issue, Task, User Story |
-
-**Test** checks the connection · **Sync** pulls changes since the last run ·
-**Full resync** re-imports the last year.
-
-### 🗺️ Field mapping (boards differ, and that's fine)
-
-Severity, environment and status are mapped **per POD**. Defaults:
-`Microsoft.VSTS.Common.Severity`, `Custom.Environment`, `System.State`.
-
-Values resolve in three passes: your POD's own overrides → the shipped table →
-a **longest-match substring** pass. So:
-
-```
-"1 - Critical"      → Critical      "Resolved"     → For QA Validation
-"3 - Medium (UI)"   → Minor         "Deployed to Prod" → Production
-"Not a Bug"         → Not a Bug     (beats "Bug" — longest match wins 🧙)
-```
-
-> 🏷️ **Environment falls back to tags, then to the area path** when the field is
-> missing — which is where most teams actually record it.
-
-### 🔴 Keeping it live
+Four rights, kept deliberately apart. Folding any two together would mean handing
+out the dangerous one to grant the harmless one.
 
 ```mermaid
-flowchart LR
-    P["⏱️ Poller<br/>every 120s"] --> S["sync.ts"]
-    W["🪝 Webhook<br/>instant"] --> S
-    M["👆 Manual button"] --> S
-    S -->|"watermark −60s overlap"| A["🌐 Azure"]
-    A --> O[("🍃 MongoDB")]
+graph TD
+    A["👤 Signed in"] --> R["👀 Read both boards<br/><i>and add a scope row</i>"]
+    A --> S["✍️ Record your own sign-off<br/><i>your name, your accountability</i>"]
+    E["🛠️ DevOps editor<br/><i>granted per account</i>"] --> C["Correct a saved record"]
+    D["🗑️ Can clear data<br/><i>granted per account</i>"] --> X["Clear a period<br/><b>irreversible</b>"]
+    AD["👑 Admin"] --> C
+    AD --> X
+    AD --> AL["Onboard repos · freeze<br/>· sync · manage accounts"]
+
+    style X fill:#7f1d1d,color:#fff
+    style AD fill:#1e3a5f,color:#fff
 ```
 
-**1. Polling** — every `SYNC_POLL_SECONDS`, a WIQL query on `System.ChangedDate`
-with a stored watermark, so each run fetches only what moved. Set `0` to disable.
+- **Adding** a scope row is open to everyone — the person who shipped a change
+  knows what it was, and a sheet only some people can fill is a sheet nobody fills.
+- **Correcting** one is not. Once written, a record is evidence.
+- **Clearing data** is its own right because it is the only irreversible act on
+  either board. A DevOps editor does not get it for free.
 
-**2. Webhooks** — instant. In Azure DevOps: *Project settings → Service hooks →
-Web Hooks*. One subscription each for **work item created / updated / deleted**,
-pointing at:
+---
 
+## 🧪 The checks
+
+This project's favourite thing. Seven suites, one command.
+
+```mermaid
+graph LR
+    T["pnpm test"] --> TS["✅ typecheck"]
+    T --> DOC["📚 543 doc checks<br/><i>links · counts · every module mentioned</i>"]
+    T --> TH["🎨 1330 theme checks<br/><i>contrast · tokens · source rules</i>"]
+    T --> UI["🧠 2884 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
+    T --> RN["🖱️ 127 render checks<br/><i>mounted in jsdom, then clicked</i>"]
+    T --> BLD["📦 production build"]
+    T --> E2E["🌐 641 end-to-end checks<br/><i>own server · own store · own build dir</i>"]
 ```
-https://your-host/api/webhooks/azure?token=<AZDO_WEBHOOK_TOKEN>
-```
-
-The token is compared in **constant time**; requests without it are rejected. 🔐
-Locally, expose port 3000 with a tunnel first. The webhook only reads the id and
-area path, then re-fetches the canonical work item — payloads are never trusted.
-
-> 💡 **Run both.** The webhook gives instant updates; the poller catches anything
-> that happened while the app was down. Sync is watermarked with a minute of
-> overlap so nothing slips through the gap, and a **failed sync leaves the
-> watermark alone** rather than silently skipping a window. 🛟
-
----
-
-## 📗 Getting data in — spreadsheets
-
-Hit **Upload**, pick your POD, drop the file. Accepted:
-
-| Format | Status |
-|---|---|
-| `.xlsx` / `.xlsm` | ✅ |
-| `.csv` / `.txt` / `.tsv` | ✅ (or no extension at all — we read the bytes) |
-| `.numbers` | ✅ **Yes, Apple Numbers.** See below 👇 |
-| `.ods` | ❌ but tells you exactly how to export |
-| old binary `.xls` | ❌ but tells you exactly how to export |
-
-**Only one column is mandatory: `Title`.** Everything else has a sensible
-fallback. Columns are matched **by name, not position** — reorder them freely,
-leave out what you don't have, and unknown columns are ignored rather than
-rejected. So exporting straight out of Azure or Jira and uploading it unedited
-just… works. 🙌
-
-```
-| Work Item ID | Title                    | Severity     | Created Date |
-|--------------|--------------------------|--------------|--------------|
-| 10432        | PDF download fails       | 1 - Critical | 2026-08-01   |
-| 10433        | Nominee name truncated   | 3 - Medium   | 2026-08-14   |
-```
-
-Full column list, aliases and fallbacks: [`docs/excel-upload.md`](docs/excel-upload.md).
-
-<details>
-<summary>🍎 <b>The Apple Numbers story (a genuinely silly rabbit hole)</b></summary>
-
-`.numbers` is a zip, like `.xlsx`. Nothing else about it is the same. Inside are
-IWA files — Apple's own container — each a stream of **Snappy-compressed
-Protobuf** against schemas Apple doesn't publish. exceljs can't open one. Nothing
-on npmjs.com can either.
-
-So we wrote one. Zip reader → Snappy decompressor → IWA framing → protobuf
-walker → cell decoder. About 500 lines.
-
-**Why bother?** On a Mac with no Excel installed, Numbers *is* the spreadsheet
-app. Telling someone to export CSV every single time is a tax on the one platform
-most likely to be running this.
-
-**How it stays honest:** Apple renumbers those fields between releases, so nothing
-trusts a field number it can check instead. A reference is the tile list because
-it *resolves to tile archives*. A layout it doesn't recognise yields **no rows
-rather than wrong ones**, and you get the "export as CSV" message — so it can only
-ever do better than refusing, never worse. 🛡️
-</details>
-
-### 📥 And back out again
-
-**Report** in the *For you* menu downloads the current view as `.xlsx` — in
-**exactly the format the uploader expects**. Download → edit → upload works with
-nothing lost.
-
-That's not a happy accident, it's enforced: export and import share one column
-definition, and a check asserts every exported header maps back to the field it
-came from. Add a column the importer doesn't know and the suite fails. 🔒
-
----
-
-## 🔐 Access & roles
-
-`AUTH_MODE` in `.env.local`:
-
-| Mode | Behaviour |
-|---|---|
-| `off` | 🏠 no login, everyone is a local admin — **local development only** |
-| `password` | 🔑 email + password, bcrypt hashed, stored in MongoDB |
-| `entra` | 🏢 Microsoft Entra ID (Azure AD) SSO |
-| `both` | 🤝 both offered on the sign-in screen |
-
-**Admins** onboard PODs and see every one of them.
-**Members** see only the PODs ticked against their name in *Admin → Dashboard
-access*.
-
-> 🛡️ The scoping is applied **server-side**, in the one function that turns a
-> request into a filter. A route that builds its own filters has bypassed tenancy
-> — which is why that is the single most guarded line in the codebase.
-
-With SSO, the first person to sign in becomes admin; everyone after joins as a
-member with no PODs until an admin grants them one.
-
-### 🔑 Changing a password
-
-**Yourself:** *For you* menu → **Change password**. Your current password is
-required — being signed in is not proof it is you at the keyboard. ✋
-
-**Somebody else forgot theirs:** Admin → the 🔑 beside their row → type a new
-one. There is no email reset in this product, so this is the recovery path; it
-keeps their role and their PODs, unlike deleting and recreating the account.
-
-> ⚠️ Nobody is notified. Tell them what you set it to yourself.
-
-> 🔒 **A password change signs you out everywhere**, including the session that
-> made it. That is the point — if you are changing it because it leaked, the
-> intruder goes too.
-
-### ⏱️ Sessions expire
-
-| | How long | Renewed by using it? |
-|---|---|---|
-| **Idle** | 12 hours | ✅ yes |
-| **Absolute** | 7 days | ❌ **no** |
-
-Two clocks, because one is not enough: the idle clock is renewed by activity, so
-a *stolen* token that gets used regularly would never expire under it. Tune both
-in `SESSION` in `src/lib/constants.ts`.
-
-A deleted account loses its session immediately, and eight wrong passwords locks
-an account for 15 minutes. 🔐
-
-> 🏢 SSO accounts have no password here — theirs lives with the identity
-> provider, and both routes refuse rather than quietly creating a second way in.
-
----
-
-## 👥 Onboarding a POD
-
-**Admin → New POD.** Name it (e.g. `AMC POD`), set the ageing threshold, add each
-member with their designation, then connect Azure.
-
-> ⚠️ Member **names must match the Azure Boards display name** — that is what work
-> items are attributed by, and what the leaderboard groups on.
-
-People on the roster with nothing assigned still appear, as a real zero rather
-than vanishing from the board. 🫥→0️⃣
-
----
-
-## 🌤️ The sky card (the fun one)
-
-The greeting card is a **little window**. It reads your local clock and draws
-what's actually outside:
-
-| Hour | Sky | Who's out |
-|---|---|---|
-| 🌅 Morning | Blue, warm horizon | 🕊️ A crane, flying |
-| ☀️ Afternoon | Bright blue | 🕊️ Gulls, soaring · 🐿️ a squirrel |
-| 🌆 Evening | Dusk, peach horizon | 🐈 A cat · 🦇 bats |
-| 🌙 Night | Near-black, stars | 🐈 A cat · 🦇 bats |
-
-The sun and moon are placed from the **real clock** — a half-sine from rise to
-set — so a 7pm sun sits low on the western horizon instead of blazing overhead.
-The moon wears **tonight's actual phase**. 🌒
-
-> 🪟 **The card does not follow your app theme.** Dark mode at 2pm still looks out
-> on an afternoon. This was a real bug: the scene colours used to be redefined per
-> theme and dimmed for dark, so the sun blazed in a **navy night sky at 2pm** while
-> the card said "Good afternoon". A window shows the weather, not your wallpaper.
-
-Scroll down and the card's sky **grows to fill the whole page**. 🖼️ Try it.
-
----
-
-## 🎨 Themes
-
-**Light and dark, in Bajaj Finserv blue** — inspired by the brand's
-blue-and-white identity, anchored on `#0071BB`. White-leaning in light mode, deep
-**navy** in dark, so it stays in the brand family rather than reading as a generic
-dark theme.
-
-The toggle offers light, dark, or match-your-system. The choice is remembered and
-applied **before first paint**, so there's no flash of the wrong theme. ⚡
-
-Both palettes were validated **independently** against their own chart surface
-(light `#f6f9fc`, dark `#172533`) — lightness band, chroma floor, colourblind
-separation and contrast all pass. The light theme is not a washed-out dark theme.
-
-> 🧪 **Every token must exist in all three theme blocks.** One missing from dark
-> silently falls back to its light value, and nobody notices until they open that
-> component at night. `pnpm check:theme` fails on exactly that.
-
----
-
-## ✅ The checks (this project's favourite thing)
 
 ```bash
-pnpm test              # 🎁 everything — starts a dev server if none is running
+pnpm test                 # everything
+pnpm test --no-server     # skip the end-to-end suite
+pnpm check:ui             # static, fast, no server
+pnpm check:env            # what's broken on this machine, and the fix
 ```
 
-Or one at a time:
+**Every case corresponds to a bug that was real at some point.** The render suite
+exists because a regex proved an expandable row's markup was *written*, not that
+it *worked* — it shipped broken twice. The suite now mounts it and clicks.
+
+The end-to-end suite gives itself its own store, its own port **and its own build
+directory**, so it cannot touch the `.next` your dev server is reading.
+
+---
+
+## ⚙️ Configuration — env files only
+
+Everything is an environment variable or a reviewed constant. Nothing else to do.
+
+| File | Board | Holds |
+|---|---|---|
+| `.env.local` | 📊 POD | `DB_DRIVER` · `MONGODB_*` · `AUTH_*` · `AZDO_*` · `SYNC_POLL_SECONDS` · weather |
+| `.env.devopsdashboard` | 🔀 DevOps | `DEVOPS_ACCESS` · `GITHUB_MODE` · `GITHUB_TOKEN` · `GITHUB_API_URL` · page size |
+| `.env.devopsdashboard.local` | 🔀 DevOps | your **real** token — git-ignored, and it overrides the file above |
+
+> **Where a value belongs.** Anything that differs between deployments, or must
+> never be committed, is an env var. Anything that is a *product decision* —
+> field caps, page sizes, how long a toast stays up — is a constant in
+> `src/lib/constants/`, so changing it is reviewed.
+
+---
+
+## 📜 Scripts
 
 ```bash
-pnpm exec tsc --noEmit   # must be clean
-pnpm check:ui            # pure logic — imports the REAL modules
-pnpm check:theme         # tokens, contrast, source rules
-pnpm check:docs          # these docs still match the code
-pnpm check               # end-to-end, needs a running server
+# run
+pnpm dev · pnpm build · pnpm start
+
+# data
+pnpm seed               # POD board: admin + demo PODs + work items
+pnpm seed:devops        # DevOps board: 4 of each, per repo, per branch
+pnpm delete pod-seed    # clear work items, PODs, sync watermarks
+pnpm delete devops-seed # clear repos, cycles, scope rows, PRs, announcements
+pnpm parity             # do both drivers store the same document?
+
+# housekeeping
+pnpm clear              # node_modules, .next, caches — refuses while dev is running
+pnpm mongo:local        # a real MongoDB, nothing installed
+pnpm azure:probe        # what Azure actually returns, read-only
+
+# checks
+pnpm test · pnpm check · pnpm check:ui · pnpm check:theme · pnpm check:docs · pnpm check:env
 ```
 
-**Nearly 1,900 checks.** Every one of them exists because something was broken
-once.
-
-### 🧬 The rule that matters most
-
-> **A check that reimplements what it checks tests only its own copy.**
-
-This project learned that the hard way: the UI suite used to *mirror* the logic
-it was checking, so three knowingly-broken builds sailed straight through. 🫠
-
-Now the suites **import the real modules**, and every new check gets
-**mutation-tested** — deliberately break the code and confirm the check screams.
-If it doesn't scream, it isn't a check, it's decoration. 🎭
-
----
-
-## 🆘 Something's broken
-
-| 😵 Symptom | 💡 Likely cause |
-|---|---|
-| Seed fails instantly | No database. Run `pnpm check:env` — it names the problem |
-| `Cannot find module './chunks/…'` | You ran `pnpm build` while `pnpm dev` was running. Stop dev, delete `.next`, restart |
-| Upload says "no Title column" | Your header row isn't row 1. The error lists every tab and what it found |
-| Login rejects you | `AUTH_SECRET` unset, or you never ran `pnpm seed` |
-| Dark mode looks wrong somewhere | A token missing from a dark block. `pnpm check:theme` will name it |
-| Webhook does nothing | `AZDO_WEBHOOK_TOKEN` unset — every request is rejected until it is set |
-| A number disagrees with its drawer | 🚨 Genuinely a bug. `pnpm check invariants` catches this class |
-
-Full symptom → cause table, including every bug already fixed here:
-[`docs/troubleshooting.md`](docs/troubleshooting.md).
-
----
-
-## 📚 Where to go next
-
-| I want to… | Read |
-|---|---|
-| 🏗️ **Rebuild this from scratch** (or brief an LLM) | [`docs/rebuilding.md`](docs/rebuilding.md) |
-| 🔧 **Change what is fetched, mapped or shown** | [`docs/changing-the-data.md`](docs/changing-the-data.md) |
-| 🧭 Understand the architecture | [`docs/architecture.md`](docs/architecture.md) |
-| 🗄️ Know the data model | [`docs/data-model.md`](docs/data-model.md) |
-| 📊 See every chart's aggregation | [`docs/metrics.md`](docs/metrics.md) |
-| 🌐 Wire up Azure properly | [`docs/azure-integration.md`](docs/azure-integration.md) |
-| 🔐 Understand auth & tenancy | [`docs/auth-and-tenancy.md`](docs/auth-and-tenancy.md) |
-| 🎨 Touch anything visual | [`docs/design-system.md`](docs/design-system.md) |
-| ⚙️ Deploy or operate it | [`docs/operations.md`](docs/operations.md) |
-| 📗 Get the spreadsheet format exactly right | [`docs/excel-upload.md`](docs/excel-upload.md) |
-| 🤔 Ask "why on earth is it like that" | [`docs/decisions.md`](docs/decisions.md) |
+Destructive scripts **count first, print what they found, and ask.** `--dry-run`
+counts only; `--yes` skips the question; without a terminal to ask they refuse
+rather than assume.
 
 ---
 
@@ -685,37 +447,62 @@ Full symptom → cause table, including every bug already fixed here:
 
 ```
 src/
-  lib/              domain and data — no React, server-only
-    db/            connection, schemas, models, query builders
-    mappings.json   index mappings — shared with scripts/seed.mjs
-    metrics.ts      every tile and chart, in ONE aggregation query
-    health.ts       the board score: closed ÷ total
-    azure.ts        WIQL + workitemsbatch REST calls
-    normalize.ts    Azure work item / spreadsheet row → our shape
-    sync.ts         watermarked incremental sync, webhook routing
-    poller.ts       background poll timer
-    numbers.ts      the Apple Numbers reader 🍎
-    api.ts          request → scoped filters  ← the security boundary 🛡️
+  lib/
+    api.ts                 request → scoped filters   🛡️ the security boundary
+    metrics/               every tile and chart, in ONE aggregation
+    health.ts              the board score: closed ÷ total
+    azure.ts               WIQL + workitemsbatch REST
+    normalize/             Azure item · spreadsheet row → our shape
+    numbers/               a hand-written Apple Numbers reader 🍎
+    constants/             product decisions, reviewed in the repo
+    devops/                ← the second board's brain, all pure
+      signoff.ts             who agreed, and what that means
+      to-scope.ts            may this PR move? one shared rule
+      period.ts              a year, a month, a day or a from..to range
+      purge.ts               count first, then delete
+      github-plan.ts         every request it could send, as data
+      editors.ts             the four rights
+  db/
+    store/                 the Store interface + json · mongo · memory
+    schemas/               one shape, both drivers
   app/
-    page.tsx        dashboard    admin/    login/
-    api/            metrics · items · teams · sync · upload · export ·
-                    users · webhooks/azure
-  components/       dashboard-client, health-ring, stat-rail, leaderboard,
-                    breakdown-card, trend-chart, team-rollup, drill-drawer,
-                    greeting (+ scene + cast 🐿️), sky-backdrop, change-password,
-                    parallax-backdrop (the drifting orbs behind the glass),
-                    search-box, theme-toggle, footer, topbar, ui
-scripts/            seed + four check suites
-Dockerfile          multi-stage, non-root, standalone output
+    page.tsx               📊 POD board          devops/page.tsx  🔀 DevOps board
+    admin/                 PODs · accounts       admin/devops/    repos · cycles
+    api/                   metrics · items · teams · sync · upload · export ·
+                           repos · cycles · deployments · pulls · announcements
+  components/
+    devops/                the DevOps board's panels
+    ui/                    Panel · Button · Tooltip · Menu · surfaces
+    greeting*              the time-of-day scene, and its cast 🐿️
+    sky-backdrop           real weather, when you give it coordinates
+    parallax-backdrop      the drifting orbs behind the glass
+scripts/                   seed · seed-devops · delete-seed · clear · 6 check suites
+docs/                      the knowledgebase — start at docs/README.md
 ```
+
+---
+
+## 📚 Where to go next
+
+| | |
+|---|---|
+| 🏛️ [architecture.md](docs/architecture.md) | how the layers fit together |
+| 🔀 [devops.md](docs/devops.md) | the second board, in full |
+| 📐 [data-model.md](docs/data-model.md) | every collection and field |
+| 📊 [metrics.md](docs/metrics.md) | how each number is computed |
+| 🎨 [design-system.md](docs/design-system.md) | tokens, motion, the rules components obey |
+| 🔧 [operations.md](docs/operations.md) | env, deploying, backups, data at rest |
+| 🔐 [auth-and-tenancy.md](docs/auth-and-tenancy.md) | roles, scoping, sessions |
+| 🆘 [troubleshooting.md](docs/troubleshooting.md) | the errors that look like framework bugs and aren't |
+| 🧭 [decisions.md](docs/decisions.md) | why things are the way they are |
 
 ---
 
 <div align="center">
 
-### 🎉 That's the tour!
+### 🎉 That's the tour
 
-**Now go click a number.** Any number. They all go somewhere.
+**Now go click a number.** They all go somewhere.
 
 *Built with an unreasonable number of checks, and one squirrel.* 🐿️
 
