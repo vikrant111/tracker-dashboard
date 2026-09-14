@@ -22,6 +22,7 @@ import { MoveToScope } from "./move-to-scope";
 import { ReturnedNote, RiskNote } from "./row-notes";
 import { expandableRow } from "./expandable-row";
 import { RowDrawer, chevronStyle } from "./row-drawer";
+import { PodCell } from "./pod-cell";
 
 /** Columns, named once so the header and the detail's `colSpan` cannot drift. */
 const COLUMNS = ["", "PR", "Repo", "POD", "Cycle", "Merged", "Branch", "Deployed", "Where", "Sign-offs", ""] as const;
@@ -142,12 +143,12 @@ export function ReportTable({
                   {state.risk && <RiskNote missing={state.missing} />}
                 </td>
                 <td className="py-2.5 pr-3 text-xs">{repoName(pr.repoId)}</td>
+                {/* A name; a count only for a row that predates the field. */}
                 <td className="py-2.5 pr-3 text-xs">
-                  {podName(pr) || <span className="text-[var(--ink-muted)]">Not linked</span>}
+                  <PodCell teamId={pr.teamId} pods={podsFor(pr)} repoName={repoName(pr.repoId)} />
                 </td>
 
-                {/* The cycle decides which sheet a move lands on, so "where
-                    would this go" is answerable without opening anything. */}
+                {/* The cycle decides which sheet a move lands on. */}
                 <td className="py-2.5 pr-3 text-xs">
                   {cycleFor(pr)?.name ?? <span className="text-[var(--ink-muted)]">Not assigned</span>}
                 </td>

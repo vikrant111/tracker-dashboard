@@ -38,6 +38,19 @@ more than one team, and a single owner made somebody pick one and be wrong about
 the rest. Every POD picked sees the repo as theirs on the report. A repository
 onboarded before this was a list keeps the POD it already had.
 
+On the board's **Branch status** table the POD column is a **count**, and
+pressing it opens the names as chips. Five chips in a column somebody is
+scanning for branch state pushed the freeze — the thing the board exists for —
+off to the right; "how many" is what a scan wants, and "which ones" is one press
+away. It is the same `pods-modal` the scope sheet uses, in its compact form.
+
+`podsOfRepo` guards what reaches it, because this renders a keyed list straight
+from a file anybody with the repository can edit: blanks, nulls, non-strings and
+**duplicates** are dropped. The duplicate is the one that bites — two children
+with the same key is a warning today and a wrong row tomorrow. A repo linked to
+nothing reads "Not linked" as words rather than a disabled button, which would
+invite a press that can never do anything.
+
 The id is `owner-repo`, slugged. Onboarding the same repository twice updates one
 row rather than leaving two, each with its own freeze state and no way to tell
 which is telling the truth.
@@ -149,6 +162,20 @@ half-filled row that exists beats a complete row nobody bothered to add.
 | column | why |
 |---|---|
 | POD | which team the row is for. Offered only when the repo is linked to more than one; with a single POD it is filled in, and a POD the repo does not have is refused |
+
+The POD column shows **a name**, because a row belongs to one team and a count
+of one would be worse in every way. Only a row written *before* rows carried
+their own POD falls back — and it falls back to a **count**, not to every name
+joined with commas, which on a repo with five teams was a paragraph sitting in a
+column somebody is scanning. Pressing it opens the names as chips.
+
+A repo with exactly one POD is named rather than counted: there was never a
+choice, so a dialog holding a single chip is friction for no decision. A repo
+linked to nothing reads "Not linked". One rule, `podCell`, rendered by one
+component (`pod-cell`), so the scope sheet
+and the sign-off report cannot answer the same question differently — and the
+drawer still spells the names out, because there is room there and it is where
+somebody goes to read the whole row.
 | Ticket | the work item id, when there is one — this is what links the row to the bug |
 | Branch, Environment | which bug is residing where, the question the board exists for |
 | State | planned → deployed → verified, or rolled-back |

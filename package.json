@@ -9,6 +9,7 @@
     "build": "next build",
     "start": "next start",
     "seed": "node --env-file=.env.local scripts/seed.mjs",
+    "seed:devops": "node scripts/seed-devops.mjs",
     "clear": "node scripts/clear.mjs",
     "delete": "node scripts/delete-seed.mjs",
     "delete:pod-seed": "node scripts/delete-seed.mjs pod-seed",

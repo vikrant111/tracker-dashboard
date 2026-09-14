@@ -1,24 +1,8 @@
 {
   "version": 1,
   "collection": "cycles",
-  "updatedAt": "2026-09-12T15:58:16.418Z",
+  "updatedAt": "2026-09-14T09:53:24.797Z",
   "rows": [
-    {
-      "_id": "conzumex-3in1cms-2026-09-17",
-      "id": "conzumex-3in1cms-2026-09-17",
-      "repoId": "conzumex-3in1cms",
-      "name": "2026.09.17",
-      "releaseBranch": "release/17-09-2026-hotfix-branch",
-      "plannedFor": "2026-09-17",
-      "scope": {
-        "frozen": false,
-        "changedAt": "2026-09-09T17:31:04.243Z",
-        "changedBy": "admin@example.com",
-        "reason": ""
-      },
-      "createdAt": "2026-09-09T14:53:01.991Z",
-      "updatedAt": "2026-09-09T17:31:04.243Z"
-    },
     {
       "_id": "conzumex-3in1cms-2026-09",
       "id": "conzumex-3in1cms-2026-09",
@@ -34,6 +18,134 @@
       },
       "createdAt": "2026-09-09T14:43:49.927Z",
       "updatedAt": "2026-09-12T15:58:16.417Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-2026-15",
+      "id": "vikrant111-tracker-dashboard-2026-15",
+      "repoId": "vikrant111-tracker-dashboard",
+      "name": "2026.15",
+      "releaseBranch": "release/123456-test",
+      "plannedFor": "2026-09-15",
+      "scope": {
+        "frozen": false,
+        "changedAt": "",
+        "changedBy": "",
+        "reason": ""
+      },
+      "createdAt": "2026-09-13T19:07:27.128Z",
+      "updatedAt": "2026-09-13T19:07:27.128Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-2026-06",
+      "id": "conzumex-bfl-web-app-2026-06",
+      "repoId": "conzumex-bfl-web-app",
+      "name": "2026.06",
+      "releaseBranch": "release",
+      "plannedFor": "2026-06-21",
+      "scope": {
+        "frozen": false,
+        "changedAt": "",
+        "changedBy": "",
+        "reason": ""
+      },
+      "createdAt": "2026-06-02T00:00:00.000Z",
+      "updatedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-2026-07",
+      "id": "conzumex-bfl-web-app-2026-07",
+      "repoId": "conzumex-bfl-web-app",
+      "name": "2026.07",
+      "releaseBranch": "release",
+      "plannedFor": "2026-07-21",
+      "scope": {
+        "frozen": true,
+        "changedAt": "2026-07-22T00:00:00.000Z",
+        "changedBy": "seed@example.com",
+        "reason": "Scope agreed — seeded frozen so the refusals can be tested."
+      },
+      "createdAt": "2026-06-02T00:00:00.000Z",
+      "updatedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-2026-06",
+      "id": "conzumex-3in1cms-2026-06",
+      "repoId": "conzumex-3in1cms",
+      "name": "2026.06",
+      "releaseBranch": "release",
+      "plannedFor": "2026-06-21",
+      "scope": {
+        "frozen": false,
+        "changedAt": "",
+        "changedBy": "",
+        "reason": ""
+      },
+      "createdAt": "2026-06-02T00:00:00.000Z",
+      "updatedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-2026-07",
+      "id": "conzumex-3in1cms-2026-07",
+      "repoId": "conzumex-3in1cms",
+      "name": "2026.07",
+      "releaseBranch": "release",
+      "plannedFor": "2026-07-21",
+      "scope": {
+        "frozen": true,
+        "changedAt": "2026-07-22T00:00:00.000Z",
+        "changedBy": "seed@example.com",
+        "reason": "Scope agreed — seeded frozen so the refusals can be tested."
+      },
+      "createdAt": "2026-06-02T00:00:00.000Z",
+      "updatedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-2026-06",
+      "id": "vikrant111-tracker-dashboard-2026-06",
+      "repoId": "vikrant111-tracker-dashboard",
+      "name": "2026.06",
+      "releaseBranch": "release/123456-test",
+      "plannedFor": "2026-06-21",
+      "scope": {
+        "frozen": false,
+        "changedAt": "",
+        "changedBy": "",
+        "reason": ""
+      },
+      "createdAt": "2026-06-02T00:00:00.000Z",
+      "updatedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-2026-07",
+      "id": "vikrant111-tracker-dashboard-2026-07",
+      "repoId": "vikrant111-tracker-dashboard",
+      "name": "2026.07",
+      "releaseBranch": "release/123456-test",
+      "plannedFor": "2026-07-21",
+      "scope": {
+        "frozen": true,
+        "changedAt": "2026-07-22T00:00:00.000Z",
+        "changedBy": "seed@example.com",
+        "reason": "Scope agreed — seeded frozen so the refusals can be tested."
+      },
+      "createdAt": "2026-06-02T00:00:00.000Z",
+      "updatedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-2026-09-17",
+      "id": "conzumex-3in1cms-2026-09-17",
+      "repoId": "conzumex-3in1cms",
+      "name": "2026.09.17",
+      "releaseBranch": "release/17-09-2026-hotfix-branch",
+      "plannedFor": "2026-09-17",
+      "scope": {
+        "frozen": false,
+        "changedAt": "2026-09-09T17:31:04.243Z",
+        "changedBy": "admin@example.com",
+        "reason": ""
+      },
+      "createdAt": "2026-09-09T14:53:01.991Z",
+      "updatedAt": "2026-09-14T09:53:24.795Z"
     }
   ]
 }

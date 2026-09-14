@@ -13,6 +13,8 @@ import { useState } from "react";
 import type { Repo } from "@/lib/devops/types";
 import { Empty, Panel, PanelHeader, Tooltip } from "@/components/ui";
 import { FreezeBadge } from "./freeze-badge";
+import { PodsModal } from "./pods-modal";
+import { podsOfRepo } from "@/lib/devops/pods";
 
 export function RepoTable({
   repos,
@@ -115,24 +117,22 @@ export function RepoTable({
                         <div className="text-xs text-[var(--ink-muted)]">{repo.owner}</div>
                       </td>
 
+                      {/*
+                        * The count, not the names.
+                        *
+                        * A repository worked on by five teams put five chips in
+                        * a column somebody is scanning for branch state, and
+                        * pushed the row that matters — the freeze — off to the
+                        * right. "How many" is what a scan wants; "which ones"
+                        * is the follow-up, and it is one press away.
+                        *
+                        * `podsOfRepo` does the guarding: a blank, a duplicate
+                        * or a non-string id in a hand-edited store is dropped
+                        * rather than rendered, because a duplicate key is a
+                        * wrong row tomorrow.
+                        */}
                       <td className="py-3 pr-3 text-[var(--ink-muted)]">
-                        {/*
-                          * `?? []` because one odd row must not take the board
-                          * with it. The store fills schema defaults on read, so
-                          * this should never be missing — but a page that throws
-                          * on a single row loses every other row too.
-                          */}
-                        {(repo.teamIds ?? []).length === 0 ? (
-                          <span className="text-xs">Not linked</span>
-                        ) : (
-                          <span className="flex flex-wrap gap-1">
-                            {(repo.teamIds ?? []).map((id) => (
-                              <span key={id} className="rounded-md bg-[var(--wash)] px-1.5 py-0.5 text-xs">
-                                {teamNames[id] ?? id}
-                              </span>
-                            ))}
-                          </span>
-                        )}
+                        <PodsModal repoName={repo.name} pods={podsOfRepo(repo, teamNames).pods} compact />
                       </td>
 
                       <td className="py-3 pr-3">

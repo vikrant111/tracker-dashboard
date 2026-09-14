@@ -80,6 +80,40 @@ Seed variants: `-- --no-demo` (indexes and admin only), `-- --reset` (drop the
 collections first). The seeder uses a fixed PRNG seed, so demo data is identical
 every run.
 
+`pnpm seed` covers the **POD board only**. The DevOps board has its own,
+`scripts/seed-devops.mjs`:
+
+```bash
+pnpm seed:devops              # four of each kind, per repo, per branch
+pnpm seed:devops --reset      # clear the DevOps collections first
+pnpm seed:devops --dry-run    # print what it would write
+```
+
+It fills the repositories **you have onboarded** rather than inventing its own,
+so what you test is the flow against your real repos — and it refuses with an
+explanation when there are none.
+
+The four of each kind are not four copies. Each set walks the vocabulary that
+decides what a screen does with the row, so every branch of the flow has
+something to exercise it:
+
+| | the four |
+|---|---|
+| scope rows | `planned`, `deployed`, `verified`, `rolled-back` |
+| pull requests | all three sign-offs, missing POD, missing QA, none — the last two are the "risk" rows |
+| announcements | `release`, `freeze`, `hotfix`, `note` |
+
+Plus **two cycles per repo, one of them frozen**, so every refusal has something
+to refuse; one pull request per branch left with **no cycle**, so "set a cycle
+first" has a subject; and a planned row with no deploy date, because that is
+what planned means. Dates spread across months, so the period picker, the
+from/to range and the purge all have something to select.
+
+Ids are derived rather than random, so running it twice updates the same rows
+instead of leaving two of everything. It writes **through the store, not the
+API** — deliberately, because the API refuses a row on a frozen cycle and a
+frozen cycle is one of the things this exists to give you.
+
 **Only ever run one dev server.** `pnpm predev` (`scripts/dev-guard.mjs`) runs
 automatically and refuses to start a second one, because two `next dev`
 processes share a build directory and neither notices. The second finds port

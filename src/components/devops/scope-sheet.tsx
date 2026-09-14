@@ -176,6 +176,7 @@ export function ScopeSheet({
             rows={rows}
             podOf={podOf}
             repoPods={repoPods}
+            repoName={repo?.name ?? ""}
             pods={pods}
             isAdmin={isAdmin}
             canEdit={canEdit}

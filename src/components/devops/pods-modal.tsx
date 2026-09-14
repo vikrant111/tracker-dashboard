@@ -15,21 +15,36 @@
  */
 import { Users, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useScrollLock } from "@/components/use-scroll-lock";
 import { Button } from "@/components/ui";
 
 export function PodsModal({
   repoName,
   pods,
+  compact = false,
 }: {
   /** The repository the PODs belong to, for the title. */
   repoName: string;
   /** The PODs registered on it. */
   pods: { id: string; name: string }[];
+  /** In a table cell the trigger is a count, not a button-sized control. */
+  compact?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
 
-  const list = Array.isArray(pods) ? pods : [];
+  /* A modal dialog takes the top layer but does not stop the page scrolling
+     behind it. See `use-scroll-lock`. */
+  useScrollLock(open);
+
+  /*
+   * Guarded, because this renders a keyed list from stored data. `podsOfRepo`
+   * already cleans what it hands over, but this component is public and a
+   * caller can reach it with anything.
+   */
+  const list = (Array.isArray(pods) ? pods : []).filter(
+    (p): p is { id: string; name: string } => Boolean(p) && typeof p.id === "string" && p.id.trim() !== "",
+  );
   const count = list.length;
 
   /*
@@ -41,25 +56,53 @@ export function PodsModal({
     const el = dialog.current;
     if (!el) return;
 
-    if (open && !el.open) el.showModal();
-    if (!open && el.open) el.close();
+    /*
+     * Both calls can throw, and a throw here is an unhandled error inside an
+     * effect — which takes the whole board down, not just the dialog.
+     * `showModal()` throws if the element is already open or not in the
+     * document, and it is simply absent on a browser without `<dialog>`. A POD
+     * list that will not open is a disappointment; a blank page is a bug.
+     */
+    try {
+      if (open && !el.open) el.showModal?.();
+      if (!open && el.open) el.close?.();
+    } catch {
+      /* Leave it shut. The count, which is the answer most people want, still
+         reads correctly on the row. */
+    }
   }, [open]);
 
   return (
     <>
-      <Button
-        onClick={() => setOpen(true)}
-        disabled={count === 0}
-        title={
-          count === 0
-            ? "No POD is linked to this repository yet. An admin links them in DevOps admin."
-            : `Show the ${count} ${count === 1 ? "POD" : "PODs"} registered on ${repoName}`
-        }
-        aria-haspopup="dialog"
-      >
-        <Users size={14} />
-        {count} {count === 1 ? "POD" : "PODs"}
-      </Button>
+      {/*
+        * Nothing linked is a fact, not a control. A disabled button invites a
+        * press that can never do anything; the words say it instead.
+        */}
+      {count === 0 ? (
+        <span className="text-xs text-[var(--ink-muted)]" title={`No POD is linked to ${repoName} yet. An admin links them in DevOps admin.`}>
+          Not linked
+        </span>
+      ) : compact ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-haspopup="dialog"
+          title={`Show the ${count} ${count === 1 ? "POD" : "PODs"} registered on ${repoName}`}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--hairline)] bg-[var(--wash)] px-2 py-1 text-xs font-medium tabular-nums text-[var(--ink)] transition-colors hover:border-[var(--accent-line)] hover:text-[var(--accent-ink)]"
+        >
+          <Users size={12} aria-hidden />
+          {count}
+        </button>
+      ) : (
+        <Button
+          onClick={() => setOpen(true)}
+          title={`Show the ${count} ${count === 1 ? "POD" : "PODs"} registered on ${repoName}`}
+          aria-haspopup="dialog"
+        >
+          <Users size={14} />
+          {count} {count === 1 ? "POD" : "PODs"}
+        </Button>
+      )}
 
       <dialog
         ref={dialog}
@@ -70,7 +113,19 @@ export function PodsModal({
         aria-label={`PODs registered on ${repoName}`}
         /* `--scrim` rather than a black at some opacity: the drawer behind the
            POD board already uses it, and it is themed for both palettes. */
-        className="glass m-auto w-[min(30rem,calc(100vw-2rem))] rounded-2xl p-0 text-[var(--ink)] backdrop:bg-[var(--scrim)] backdrop:backdrop-blur-[3px]"
+        /*
+         * `fixed inset-0 m-auto h-fit` centres it without depending on the UA
+         * stylesheet surviving. A modal dialog is centred by the browser's own
+         * `margin: auto`, and the CSS reset sets `margin: 0` on *everything* —
+         * so the default is gone and the dialog opens against the top-left
+         * corner. Stating all four insets and letting `margin: auto` share the
+         * leftover space is the part that does not depend on anybody's defaults.
+         *
+         * `h-fit` matters with `inset-0`: without it a box with both top and
+         * bottom pinned stretches to the full height, and there is no free
+         * space left for `auto` to centre with.
+         */
+        className="glass fixed inset-0 m-auto h-fit max-h-[calc(100dvh-2rem)] w-[min(30rem,calc(100vw-2rem))] overflow-hidden rounded-2xl p-0 text-[var(--ink)] backdrop:bg-[var(--scrim)] backdrop:backdrop-blur-[3px]"
       >
         <div className="flex items-start gap-3 border-b border-[var(--hairline)] px-4 py-3">
           <span>
@@ -90,7 +145,9 @@ export function PodsModal({
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-2 px-4 py-4">
+        {/* Scrolls rather than growing past the window: a repo with forty PODs
+            must not push the close button off the screen. */}
+        <div className="flex max-h-[60vh] flex-wrap gap-2 overflow-y-auto px-4 py-4">
           {list.map((pod) => (
             <span
               key={pod.id}

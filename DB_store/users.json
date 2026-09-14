@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "users",
-  "updatedAt": "2026-09-12T17:15:56.544Z",
+  "updatedAt": "2026-09-14T09:43:28.660Z",
   "rows": [
     {
       "id": "admin@example.com",
@@ -12,20 +12,6 @@
       "teamIds": [],
       "createdAt": "2026-09-04T09:12:24.275Z",
       "_id": "admin@example.com"
-    },
-    {
-      "_id": "vikrant@gmail.com",
-      "id": "vikrant@gmail.com",
-      "email": "vikrant@gmail.com",
-      "name": "Vikrant",
-      "passwordHash": "$2b$10$T1CRc1ixIp3dCOhKp5lw3uniDRh./svKT5FBUlRbl/bN4hQ8EAreW",
-      "role": "member",
-      "teamIds": [
-        "amc-pod",
-        "payments-pod"
-      ],
-      "devopsEditor": true,
-      "createdAt": "2026-09-04T09:18:59.240Z"
     },
     {
       "_id": "test@gmail.com",
@@ -40,6 +26,21 @@
       ],
       "devopsEditor": false,
       "createdAt": "2026-09-04T09:19:38.575Z"
+    },
+    {
+      "_id": "vikrant@gmail.com",
+      "id": "vikrant@gmail.com",
+      "email": "vikrant@gmail.com",
+      "name": "Vikrant",
+      "passwordHash": "$2b$10$T1CRc1ixIp3dCOhKp5lw3uniDRh./svKT5FBUlRbl/bN4hQ8EAreW",
+      "role": "member",
+      "teamIds": [
+        "amc-pod",
+        "payments-pod"
+      ],
+      "devopsEditor": false,
+      "canClearData": false,
+      "createdAt": "2026-09-04T09:18:59.240Z"
     }
   ]
 }

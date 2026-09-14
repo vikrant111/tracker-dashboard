@@ -18,6 +18,7 @@ import { ScopeRemove } from "./scope-remove";
 import { expandableRow } from "./expandable-row";
 import { RowDrawer, chevronStyle } from "./row-drawer";
 import { ScopeRowDetail } from "./scope-row-detail";
+import { PodCell } from "./pod-cell";
 
 const STATE_INK: Record<string, string> = {
   planned: "var(--ink-muted)",
@@ -30,6 +31,7 @@ export function ScopeTable({
   rows,
   podOf,
   repoPods,
+  repoName,
   pods,
   isAdmin,
   canEdit,
@@ -47,6 +49,8 @@ export function ScopeTable({
   podOf: (row: Deployment) => string;
   /** Every POD on the repo — what a row from before the field falls back to. */
   repoPods: string;
+  /** The repository these rows belong to, for the POD dialog's title. */
+  repoName: string;
   /** The PODs a row may belong to, for the editor's picker. */
   pods: { id: string; name: string }[];
   isAdmin: boolean;
@@ -118,15 +122,12 @@ export function ScopeTable({
                 <div className="text-xs text-[var(--ink-muted)]">{row.kind}</div>
               </td>
 
-              {/* The POD, because "which team is this row about" was the first
-                  thing anyone asked when they saw this table. */}
+              {/* "Which team is this row about" was the first thing anyone
+                  asked of this table. The row's own POD as a name; a count only
+                  for a row that predates the field, where the honest answer is
+                  "one of the repository's". */}
               <td className="py-2.5 pr-3 text-xs">
-                {podOf(row) || (
-                  // A row filled in before rows had their own POD shows the
-                  // repo's, greyed, rather than an empty cell that reads as a
-                  // mistake.
-                  <span className="text-[var(--ink-muted)]">{repoPods || "Not linked"}</span>
-                )}
+                <PodCell teamId={row.teamId} pods={pods} repoName={repoName} />
               </td>
 
               <td className="py-2.5 pr-3 font-mono text-xs">{row.branch}</td>

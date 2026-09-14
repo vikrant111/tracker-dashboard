@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "repos",
-  "updatedAt": "2026-09-09T20:16:16.364Z",
+  "updatedAt": "2026-09-13T19:06:32.847Z",
   "rows": [
     {
       "_id": "conzumex-bfl-web-app",
@@ -48,6 +48,33 @@
         "rulesetId": ""
       },
       "createdAt": "2026-09-09T14:00:14.876Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard",
+      "id": "vikrant111-tracker-dashboard",
+      "name": "tracker-dashboard",
+      "owner": "vikrant111",
+      "repo": "tracker-dashboard",
+      "url": "https://github.com/vikrant111/tracker-dashboard",
+      "releaseBranch": "release/123456-test",
+      "developBranch": "master",
+      "teamIds": [
+        "amc-pod",
+        "payments-pod",
+        "tes",
+        "tm"
+      ],
+      "token": "",
+      "freezeMethod": "ruleset",
+      "freeze": {
+        "state": "open",
+        "changedAt": "",
+        "changedBy": "",
+        "reason": "",
+        "detail": "",
+        "rulesetId": ""
+      },
+      "createdAt": "2026-09-13T19:06:32.840Z"
     }
   ]
 }

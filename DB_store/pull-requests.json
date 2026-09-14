@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "pulls",
-  "updatedAt": "2026-09-12T15:59:16.948Z",
+  "updatedAt": "2026-09-14T09:51:51.766Z",
   "rows": [
     {
       "_id": "conzumex-3in1cms-812",
@@ -116,6 +116,796 @@
         "remarks": "testing complete"
       },
       "syncedAt": "2026-09-09T15:20:29.294Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9000",
+      "id": "conzumex-bfl-web-app-9000",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "conzumex-bfl-web-app-2026-06",
+      "number": 9000,
+      "title": "[41000] release — all three",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9000",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-06-02T00:00:00.000Z",
+      "mergedOn": "2026-06-02",
+      "deployedOn": "2026-06-05",
+      "environment": "IT-UAT",
+      "ticket": "41000",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-06-03T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-06-03T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-06-03T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-02T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9001",
+      "id": "conzumex-bfl-web-app-9001",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "conzumex-bfl-web-app-2026-06",
+      "number": 9001,
+      "title": "[41001] release — missing POD verification",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9001",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-06-03T00:00:00.000Z",
+      "mergedOn": "2026-06-03",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41001",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-06-04T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-06-04T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-03T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9002",
+      "id": "conzumex-bfl-web-app-9002",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "conzumex-bfl-web-app-2026-06",
+      "number": 9002,
+      "title": "[41002] release — missing QA — a risk",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9002",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-06-04T00:00:00.000Z",
+      "mergedOn": "2026-06-04",
+      "deployedOn": "2026-06-07",
+      "environment": "CUG",
+      "ticket": "41002",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-06-05T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-06-05T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-04T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9003",
+      "id": "conzumex-bfl-web-app-9003",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "",
+      "number": 9003,
+      "title": "[41003] release — none — a risk",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9003",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-06-05T00:00:00.000Z",
+      "mergedOn": "2026-06-05",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41003",
+      "signoffs": {},
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-05T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9010",
+      "id": "conzumex-bfl-web-app-9010",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "conzumex-bfl-web-app-2026-06",
+      "number": 9010,
+      "title": "[41010] develop — all three",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9010",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-06-12T00:00:00.000Z",
+      "mergedOn": "2026-06-12",
+      "deployedOn": "2026-06-15",
+      "environment": "IT-UAT",
+      "ticket": "41010",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-06-13T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-06-13T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-06-13T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-12T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9011",
+      "id": "conzumex-bfl-web-app-9011",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "conzumex-bfl-web-app-2026-06",
+      "number": 9011,
+      "title": "[41011] develop — missing POD verification",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9011",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-06-13T00:00:00.000Z",
+      "mergedOn": "2026-06-13",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41011",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-06-14T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-06-14T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-13T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9012",
+      "id": "conzumex-bfl-web-app-9012",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "conzumex-bfl-web-app-2026-06",
+      "number": 9012,
+      "title": "[41012] develop — missing QA — a risk",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9012",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-06-14T00:00:00.000Z",
+      "mergedOn": "2026-06-14",
+      "deployedOn": "2026-06-17",
+      "environment": "CUG",
+      "ticket": "41012",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-06-15T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-06-15T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-14T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-bfl-web-app-9013",
+      "id": "conzumex-bfl-web-app-9013",
+      "repoId": "conzumex-bfl-web-app",
+      "teamId": "",
+      "cycleId": "",
+      "number": 9013,
+      "title": "[41013] develop — none — a risk",
+      "url": "https://github.com/conzumex/bfl-web-app/pull/9013",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-06-15T00:00:00.000Z",
+      "mergedOn": "2026-06-15",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41013",
+      "signoffs": {},
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-06-15T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9100",
+      "id": "conzumex-3in1cms-9100",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "amc-pod",
+      "cycleId": "conzumex-3in1cms-2026-06",
+      "number": 9100,
+      "title": "[41100] release — all three",
+      "url": "https://github.com/conzumex/3in1cms/pull/9100",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-10T00:00:00.000Z",
+      "mergedOn": "2026-09-10",
+      "deployedOn": "2026-09-13",
+      "environment": "IT-UAT",
+      "ticket": "41100",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-09-11T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-09-11T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-09-11T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-10T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9101",
+      "id": "conzumex-3in1cms-9101",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "payments-pod",
+      "cycleId": "conzumex-3in1cms-2026-06",
+      "number": 9101,
+      "title": "[41101] release — missing POD verification",
+      "url": "https://github.com/conzumex/3in1cms/pull/9101",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-11T00:00:00.000Z",
+      "mergedOn": "2026-09-11",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41101",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-09-12T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-09-12T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-11T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9102",
+      "id": "conzumex-3in1cms-9102",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "amc-pod",
+      "cycleId": "conzumex-3in1cms-2026-06",
+      "number": 9102,
+      "title": "[41102] release — missing QA — a risk",
+      "url": "https://github.com/conzumex/3in1cms/pull/9102",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-12T00:00:00.000Z",
+      "mergedOn": "2026-09-12",
+      "deployedOn": "2026-09-15",
+      "environment": "CUG",
+      "ticket": "41102",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-09-13T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-09-13T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-12T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9103",
+      "id": "conzumex-3in1cms-9103",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "payments-pod",
+      "cycleId": "",
+      "number": 9103,
+      "title": "[41103] release — none — a risk",
+      "url": "https://github.com/conzumex/3in1cms/pull/9103",
+      "author": "seed-dev",
+      "baseBranch": "release",
+      "mergedAt": "2026-09-13T00:00:00.000Z",
+      "mergedOn": "2026-09-13",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41103",
+      "signoffs": {},
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-13T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9110",
+      "id": "conzumex-3in1cms-9110",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "amc-pod",
+      "cycleId": "conzumex-3in1cms-2026-06",
+      "number": 9110,
+      "title": "[41110] develop — all three",
+      "url": "https://github.com/conzumex/3in1cms/pull/9110",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-09-20T00:00:00.000Z",
+      "mergedOn": "2026-09-20",
+      "deployedOn": "2026-09-23",
+      "environment": "IT-UAT",
+      "ticket": "41110",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-09-21T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-09-21T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-09-21T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-20T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9111",
+      "id": "conzumex-3in1cms-9111",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "payments-pod",
+      "cycleId": "conzumex-3in1cms-2026-06",
+      "number": 9111,
+      "title": "[41111] develop — missing POD verification",
+      "url": "https://github.com/conzumex/3in1cms/pull/9111",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-09-21T00:00:00.000Z",
+      "mergedOn": "2026-09-21",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41111",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-09-22T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-09-22T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-21T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9112",
+      "id": "conzumex-3in1cms-9112",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "amc-pod",
+      "cycleId": "conzumex-3in1cms-2026-06",
+      "number": 9112,
+      "title": "[41112] develop — missing QA — a risk",
+      "url": "https://github.com/conzumex/3in1cms/pull/9112",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-09-22T00:00:00.000Z",
+      "mergedOn": "2026-09-22",
+      "deployedOn": "2026-09-25",
+      "environment": "CUG",
+      "ticket": "41112",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-09-23T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-09-23T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-22T00:00:00.000Z"
+    },
+    {
+      "_id": "conzumex-3in1cms-9113",
+      "id": "conzumex-3in1cms-9113",
+      "repoId": "conzumex-3in1cms",
+      "teamId": "payments-pod",
+      "cycleId": "",
+      "number": 9113,
+      "title": "[41113] develop — none — a risk",
+      "url": "https://github.com/conzumex/3in1cms/pull/9113",
+      "author": "seed-dev",
+      "baseBranch": "develop",
+      "mergedAt": "2026-09-23T00:00:00.000Z",
+      "mergedOn": "2026-09-23",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41113",
+      "signoffs": {},
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-09-23T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9200",
+      "id": "vikrant111-tracker-dashboard-9200",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "amc-pod",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9200,
+      "title": "[41200] release/123456-test — all three",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9200",
+      "author": "seed-dev",
+      "baseBranch": "release/123456-test",
+      "mergedAt": "2026-12-19T00:00:00.000Z",
+      "mergedOn": "2026-12-19",
+      "deployedOn": "2026-12-22",
+      "environment": "IT-UAT",
+      "ticket": "41200",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-12-20T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-12-20T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-12-20T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-19T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9201",
+      "id": "vikrant111-tracker-dashboard-9201",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "payments-pod",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9201,
+      "title": "[41201] release/123456-test — missing POD verification",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9201",
+      "author": "seed-dev",
+      "baseBranch": "release/123456-test",
+      "mergedAt": "2026-12-20T00:00:00.000Z",
+      "mergedOn": "2026-12-20",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41201",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-12-21T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-12-21T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-20T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9202",
+      "id": "vikrant111-tracker-dashboard-9202",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "tes",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9202,
+      "title": "[41202] release/123456-test — missing QA — a risk",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9202",
+      "author": "seed-dev",
+      "baseBranch": "release/123456-test",
+      "mergedAt": "2026-12-21T00:00:00.000Z",
+      "mergedOn": "2026-12-21",
+      "deployedOn": "2026-12-24",
+      "environment": "CUG",
+      "ticket": "41202",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-12-22T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-12-22T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-21T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9203",
+      "id": "vikrant111-tracker-dashboard-9203",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "tm",
+      "cycleId": "",
+      "number": 9203,
+      "title": "[41203] release/123456-test — none — a risk",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9203",
+      "author": "seed-dev",
+      "baseBranch": "release/123456-test",
+      "mergedAt": "2026-12-22T00:00:00.000Z",
+      "mergedOn": "2026-12-22",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41203",
+      "signoffs": {},
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-22T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9210",
+      "id": "vikrant111-tracker-dashboard-9210",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "amc-pod",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9210,
+      "title": "[41210] master — all three",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9210",
+      "author": "seed-dev",
+      "baseBranch": "master",
+      "mergedAt": "2026-12-29T00:00:00.000Z",
+      "mergedOn": "2026-12-29",
+      "deployedOn": "2027-01-01",
+      "environment": "IT-UAT",
+      "ticket": "41210",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-12-30T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-12-30T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-12-30T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-29T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9211",
+      "id": "vikrant111-tracker-dashboard-9211",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "payments-pod",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9211,
+      "title": "[41211] master — missing POD verification",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9211",
+      "author": "seed-dev",
+      "baseBranch": "master",
+      "mergedAt": "2026-12-30T00:00:00.000Z",
+      "mergedOn": "2026-12-30",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41211",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-12-31T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "seed@example.com",
+          "at": "2026-12-31T00:00:00.000Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-30T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9213",
+      "id": "vikrant111-tracker-dashboard-9213",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "tm",
+      "cycleId": "",
+      "number": 9213,
+      "title": "[41213] master — none — a risk",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9213",
+      "author": "seed-dev",
+      "baseBranch": "master",
+      "mergedAt": "2027-01-01T00:00:00.000Z",
+      "mergedOn": "2027-01-01",
+      "deployedOn": "",
+      "environment": "",
+      "ticket": "41213",
+      "signoffs": {},
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2027-01-01T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-9212",
+      "id": "vikrant111-tracker-dashboard-9212",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "tes",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9212,
+      "title": "[41212] master — missing QA — a risk",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9212",
+      "author": "seed-dev",
+      "baseBranch": "master",
+      "mergedAt": "2026-12-31T00:00:00.000Z",
+      "mergedOn": "2026-12-31",
+      "deployedOn": "2027-01-03",
+      "environment": "CUG",
+      "ticket": "41212",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2027-01-01T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2027-01-01T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "admin@example.com",
+          "at": "2026-09-14T09:51:51.763Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-31T00:00:00.000Z"
     }
   ]
 }

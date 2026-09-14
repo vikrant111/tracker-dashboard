@@ -5821,6 +5821,136 @@ section("aged means what each POD says it means");
   check("...newest first", present[0] === "2026-09");
 
   /* ---------------------------------------------------------------- */
+  /* The DevOps fixture covers every branch of the flow                 */
+  /* ---------------------------------------------------------------- */
+  /*
+   * Four of each kind is only useful if the four are different. Each set walks
+   * the vocabulary that decides what a screen does with the row, so a fixture
+   * of four identical rows — which is what "four of each" usually becomes —
+   * would leave most of the flow untested.
+   */
+  const fixture = readFileSync(new URL("../scripts/seed-devops.mjs", import.meta.url), "utf8");
+
+  check("scope rows cover every state", /of DEPLOY_STATES\.entries\(\)/.test(fixture), "four copies of one state");
+  check("announcements cover every kind", /of ANNOUNCEMENT_KINDS\.entries\(\)/.test(fixture));
+  check("pull requests cover every sign-off shape", /SIGNOFF_SHAPES/.test(fixture));
+  /* Two of the four must be risks, or the column the report exists for is
+     never exercised. */
+  check("...including two that are risks", (fixture.match(/a risk/g) ?? []).length >= 2, "nothing to show in the risk column");
+  check("both branches of every repo", /\[repo\.releaseBranch, repo\.developBranch\]/.test(fixture), "the branch filter has one side");
+  /* A frozen cycle is the only way to exercise every refusal on the board. */
+  check("one cycle per repo is frozen", /frozen: true/.test(fixture), "no refusal has anything to refuse");
+  /* And one PR with no cycle, so "set a cycle first" has a subject. */
+  check("one pull request has no cycle", /i === SIGNOFF_SHAPES\.length - 1 \? "" :/.test(fixture));
+  /* A planned row has not been deployed — that is what planned means. */
+  check("a planned row carries no deploy date", /state === "planned" \? "" :/.test(fixture));
+
+  /* Derived ids, so running it twice updates rather than duplicates. */
+  check("ids are derived, not random", /deploymentId\(repo\.id, at\)/.test(fixture) && !/Math\.random/.test(fixture), "a second run leaves two of everything");
+  /* Through the store, so it fills files or MongoDB and knows neither — and so
+     a frozen cycle can be seeded at all, which the API would refuse. */
+  check("it writes through the store", /store\.deployments\.save/.test(fixture) && !/fetch\(/.test(fixture), "it could not seed a frozen cycle");
+  /* It fills the repos you have rather than inventing its own. */
+  check("it refuses when there is nothing to seed", /No repositories to seed/.test(fixture));
+
+  /* ---------------------------------------------------------------- */
+  /* A dialog opens centred, and holds the page still                   */
+  /* ---------------------------------------------------------------- */
+  /*
+   * A modal `<dialog>` is centred by the browser's own `margin: auto` — and the
+   * CSS reset sets `margin: 0` on **everything**, so that default is gone and
+   * the dialog opens against the top-left corner. Stating all four insets and
+   * letting `margin: auto` share the leftover space does not depend on anybody
+   * else's defaults.
+   */
+  const dlg = readFileSync(new URL("../src/components/devops/pods-modal.tsx", import.meta.url), "utf8");
+  const reset = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+  check("the reset really does clear margins", /@import "tailwindcss"/.test(reset), "if preflight goes, revisit the centring");
+
+  check("the dialog states its own insets", /fixed inset-0 m-auto/.test(dlg), "it opens in the top-left corner");
+  /*
+   * `h-fit` is load-bearing with `inset-0`: a box with both top and bottom
+   * pinned stretches to the full height, leaving no free space for `auto` to
+   * centre with.
+   */
+  check("...and stays its own height", /h-fit/.test(dlg), "a full-height dialog cannot be centred");
+  check("...capped so a long list cannot outgrow the window", /max-h-\[calc\(100dvh-2rem\)\]/.test(dlg));
+
+  /*
+   * The top layer makes the page inert, not still. The browser leaves the
+   * scrolling to you, so the reader spins the wheel out of habit and the board
+   * slides around under a dialog that stays put.
+   */
+  check("the page is held still while it is open", /useScrollLock\(open\)/.test(dlg), "the board scrolls behind the dialog");
+
+  const scrollLock = readFileSync(new URL("../src/components/use-scroll-lock.ts", import.meta.url), "utf8");
+  /* Removing the scrollbar gives the page its width back, so everything jumps
+     sideways as the dialog appears. Padding of the same width means nothing moves. */
+  check("...without the page jumping sideways", /paddingRight = `\$\{width\}px`/.test(scrollLock), "the scrollbar's width vanishes and the layout shifts");
+  check("...measuring the scrollbar rather than assuming one", /window\.innerWidth - el\.clientWidth/.test(scrollLock), "overlay scrollbars are zero wide");
+  /* Two open at once must not have the first to close hand the page back. */
+  check("...counting locks rather than toggling", /locks = Math\.max\(0, locks - 1\)/.test(scrollLock));
+  /* A dialog whose row is filtered away while open would otherwise leave the
+     page locked with nothing on screen to explain it. */
+  check("...and always giving the page back on unmount", /return unlock;/.test(scrollLock));
+
+  /* ---------------------------------------------------------------- */
+  /* The POD column is a count; the names are one press away            */
+  /* ---------------------------------------------------------------- */
+  /*
+   * A repository worked on by five teams put five chips into a column somebody
+   * is scanning for branch state, pushing the freeze — the thing the board
+   * exists for — off to the right. "How many" is what a scan wants.
+   */
+  const podNames = { "amc-pod": "AMC POD", "pay-pod": "Payments POD" };
+  const podsIn = (teamIds, names = podNames) => podsOfRepo({ teamIds }, names).pods;
+
+  /* Nothing stored may throw: this renders a keyed list straight from a file
+     anybody with the repository can hand-edit. */
+  const stands = (label, fn) => {
+    let threw = "";
+    try { fn(); } catch (err) { threw = err instanceof Error ? err.message : String(err); }
+    check(label, threw === "", threw);
+  };
+  stands("no repo at all", () => podsOfRepo(undefined, podNames));
+  stands("a repo with no teamIds", () => podsOfRepo({}, podNames));
+  stands("teamIds that is not an array", () => podsOfRepo({ teamIds: "amc-pod" }, podNames));
+  stands("teamIds that is null", () => podsOfRepo({ teamIds: null }, podNames));
+  stands("no names map", () => podsOfRepo({ teamIds: ["amc-pod"] }, undefined));
+  stands("a names map that is not an object", () => podsOfRepo({ teamIds: ["amc-pod"] }, "nope"));
+
+  check("a clean list resolves to names", podsIn(["amc-pod", "pay-pod"]).map((p) => p.name).join(",") === "AMC POD,Payments POD");
+  /*
+   * The one that actually breaks React. `cleanTeamIds` dedupes on save, but a
+   * document written before that existed — or edited by hand — can carry two of
+   * the same id, and two children with the same key is a warning today and a
+   * wrong row rendered tomorrow.
+   */
+  check("duplicates are collapsed", podsIn(["amc-pod", "amc-pod", "amc-pod"]).length === 1, JSON.stringify(podsIn(["amc-pod", "amc-pod"])));
+  check("...so every key is unique", (() => { const p = podsIn(["a", "b", "a", "b", "c"]); return new Set(p.map((x) => x.id)).size === p.length; })());
+  check("blanks and nulls are dropped", podsIn(["", "  ", null, undefined, "amc-pod"]).length === 1);
+  check("...and every id is a string", podsIn([123, "amc-pod"]).every((p) => typeof p.id === "string"));
+  /* A POD that was deleted still says more as a slug than as an empty cell. */
+  check("an unknown id falls back to itself", podsIn(["gone-pod"])[0]?.name === "gone-pod");
+  check("a repo linked to none resolves to none", podsIn([]).length === 0);
+
+  const repoTable = readFileSync(new URL("../src/components/devops/repo-table.tsx", import.meta.url), "utf8");
+  check("the POD column shows a count", /<PodsModal repoName=\{repo\.name\} pods=\{podsOfRepo\(repo, teamNames\)\.pods\} compact \/>/.test(repoTable));
+  check("...not a row of chips", !/teamIds \?\? \[\]\)\.map/.test(repoTable), "five chips in a column somebody is scanning");
+
+  const modal = readFileSync(new URL("../src/components/devops/pods-modal.tsx", import.meta.url), "utf8");
+  /* A throw inside an effect takes the whole board down, not just the dialog.
+     `showModal()` throws when already open or detached, and is simply absent on
+     a browser without `<dialog>`. */
+  check("opening the dialog cannot take the board down", /try \{\n      if \(open && !el\.open\) el\.showModal\?\.\(\);/.test(modal), "an unhandled throw inside an effect");
+  check("...and works without <dialog> support", /el\.showModal\?\.\(\)/.test(modal) && /el\.close\?\.\(\)/.test(modal));
+  /* Nothing linked is a fact, not a control: a disabled button invites a press
+     that can never do anything. */
+  check("a repo with no PODs says so instead", /count === 0 \? \(/.test(modal) && /Not linked/.test(modal));
+  check("...and a long list scrolls rather than overflowing", /max-h-\[60vh\][\s\S]{0,40}overflow-y-auto/.test(modal), "forty PODs push the close button off screen");
+  check("the chips are keyed by id", /key=\{pod\.id\}/.test(modal));
+
+  /* ---------------------------------------------------------------- */
   /* A panel heading is never painted over by its own buttons           */
   /* ---------------------------------------------------------------- */
   /*
@@ -6174,9 +6304,14 @@ section("aged means what each POD says it means");
    */
   check("a repo saved before the change keeps its POD", /legacyTeamId\(input, existing\)/.test(repoSrc));
 
-  const repoTable = readFileSync(new URL("../src/components/devops/repo-table.tsx", import.meta.url), "utf8");
-  check("the table lists every POD, not one", /\(repo\.teamIds \?\? \[\]\)\.map/.test(repoTable));
-  check("...and says so in the header", /"PODs"/.test(repoTable));
+  /*
+   * The table shows every POD a repo has — as a count now, not a row of chips,
+   * but still all of them rather than the first. `podsOfRepo` is handed the
+   * whole repo, so a second POD can never be dropped on the way to the screen.
+   */
+  const repoTableSrc = readFileSync(new URL("../src/components/devops/repo-table.tsx", import.meta.url), "utf8");
+  check("the table counts every POD, not one", /podsOfRepo\(repo, teamNames\)\.pods/.test(repoTableSrc));
+  check("...and says so in the header", /"PODs"/.test(repoTableSrc));
 
   // -- the popover that was being clipped ---------------------------------
   /*
@@ -6508,11 +6643,20 @@ section("aged means what each POD says it means");
   const fields = readFileSync(new URL("../src/components/devops/pull-fields.tsx", import.meta.url), "utf8");
   check("the PR drawer offers a POD when there is a choice", /pods\.length > 1 && \(/.test(fields));
 
+  /*
+   * Both tables ask one shared rule. A row's own POD is a name; only a row that
+   * predates the field falls back, and that falls back to a **count** rather
+   * than every name joined with commas — which on a repo with five teams was a
+   * paragraph in a column somebody is scanning.
+   */
   const table = readFileSync(new URL("../src/components/devops/scope-table.tsx", import.meta.url), "utf8");
-  check("the table shows the row's own POD", /podOf\(row\) \|\|/.test(table));
-  /* A row from before this field shows the repo's PODs greyed, rather than an
-     empty cell that reads as a mistake. */
-  check("...falling back to the repo's for older rows", /\{repoPods \|\| "Not linked"\}/.test(table));
+  const report = readFileSync(new URL("../src/components/devops/report-table.tsx", import.meta.url), "utf8");
+  check("the scope sheet shows the row's own POD", /<PodCell teamId=\{row\.teamId\}/.test(table));
+  check("the report shows the row's own POD", /<PodCell teamId=\{pr\.teamId\}/.test(report));
+  check("...and neither joins the names with commas", !/repoPods \|\| "Not linked"/.test(table) && !/podName\(pr\) \|\| </.test(report), "a paragraph in a scanned column");
+  /* The drawer still spells it out — there is room there, and it is the place
+     somebody goes to read the whole row. */
+  check("...while the drawer still names them", /podName=\{podOf\(row\) \|\| repoPods\}/.test(table));
 }
 
 /* ------------------------------------------------------------------ */

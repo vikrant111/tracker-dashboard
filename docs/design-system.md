@@ -1038,6 +1038,38 @@ to hit directly than to fight a library's defaults, and the bundle stays small.
 - Empty buckets are rendered, not skipped — a line that jumps a gap
   misrepresents the shape.
 
+## Dialogs open centred, and hold the page still
+
+A modal `<dialog>` gets two things from the browser that are easy to assume and
+easy to lose.
+
+**Centring.** The UA stylesheet centres a modal dialog with `margin: auto`. The
+CSS reset sets `margin: 0` on *everything* — so that default is gone, and the
+dialog opens against the top-left corner. `pods-modal` states all four insets
+itself (`fixed inset-0 m-auto h-fit`) and lets `margin: auto` share the leftover
+space, which depends on nobody else's defaults.
+
+`h-fit` is load-bearing there: a box with both top and bottom pinned stretches
+to the full height, and a full-height box has no free space for `auto` to centre
+with. A `max-height` of `calc(100dvh - 2rem)` keeps a long list inside the
+window, and the list scrolls within it.
+
+**Stillness.** The top layer makes the page *inert*, not *still* — the browser
+leaves background scrolling to you. Without `use-scroll-lock` the reader opens a
+dialog, spins the wheel out of habit, and the board slides around underneath
+while the dialog stays put.
+
+The lock also replaces the scrollbar with padding of the same width. Removing
+the scrollbar gives the page its width back, so everything on it jumps sideways
+at the moment the dialog appears and jumps back when it closes. The width is
+**measured**, not assumed — it is zero on an overlay-scrollbar platform.
+
+Locks are counted rather than toggled, so two things open at once cannot have
+the first one to close hand the page back while the second is still up, and the
+cleanup runs on unmount as well as on close — a dialog whose row is filtered
+away while open would otherwise leave the page locked with nothing on screen to
+explain why.
+
 ## A panel heading is never covered by its own buttons
 
 `PanelHeader` stacks the title and the action **until there is room for a row**,

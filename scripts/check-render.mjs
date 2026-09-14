@@ -150,6 +150,53 @@ const render = (el) => {
 
 console.log("\n\x1b[1mRendered output\x1b[0m \x1b[2m— components at a given state\x1b[0m\n");
 
+/* ------------------------------------------------- the POD count column */
+{
+  const { RepoTable } = await load("components/devops/repo-table.js");
+
+  const repo = (over = {}) => ({
+    id: "acme-cms", name: "cms", owner: "acme", repo: "cms", url: "https://github.com/acme/cms",
+    releaseBranch: "release", developBranch: "develop", teamIds: ["amc-pod", "pay-pod"], token: "",
+    freezeMethod: "ruleset",
+    freeze: { state: "open", changedAt: "", changedBy: "", reason: "", detail: "", rulesetId: "" },
+    createdAt: "", ...over,
+  });
+  const names = { "amc-pod": "AMC POD", "pay-pod": "Payments POD" };
+
+  const two = render(h(RepoTable, { repos: [repo()], teamNames: names }));
+  check("the repo table renders", !two.startsWith("RENDER THREW"), two.slice(0, 200));
+  /*
+   * The count, not the names. Five chips in a column somebody is scanning for
+   * branch state pushed the freeze off to the right.
+   */
+  check("the POD column shows a count", /aria-haspopup="dialog"/.test(two), "no control to open the names");
+  check("...and not the names inline", !two.includes("Payments POD") || two.indexOf("Payments POD") > two.indexOf("<dialog"), "the names are still in the column");
+  /* The names are there, in the dialog, ready for the press. */
+  check("the names are in the dialog", two.includes("AMC POD") && two.includes("Payments POD"));
+  check("...labelled for a screen reader", /PODs registered on cms/.test(two));
+
+  /* Nothing linked is a fact, not a control. */
+  const none = render(h(RepoTable, { repos: [repo({ teamIds: [] })], teamNames: names }));
+  check("a repo with no PODs says so", none.includes("Not linked"));
+  check("...offering nothing to press", !/aria-haspopup="dialog"/.test(none), "a button that can never do anything");
+
+  /* The guards, through the real component rather than the helper. */
+  for (const [label, teamIds] of [
+    ["missing", undefined],
+    ["not an array", "amc-pod"],
+    ["null", null],
+    ["full of blanks", ["", "  ", null]],
+    ["duplicated", ["amc-pod", "amc-pod"]],
+  ]) {
+    const out = render(h(RepoTable, { repos: [repo({ teamIds })], teamNames: names }));
+    check(`teamIds ${label} does not break the table`, !out.startsWith("RENDER THREW"), out.slice(0, 140));
+  }
+
+  /* A duplicate is the one that actually bites: two children, one key. */
+  const dupes = render(h(RepoTable, { repos: [repo({ teamIds: ["amc-pod", "amc-pod", "amc-pod"] })], teamNames: names }));
+  check("duplicates collapse to one chip", (dupes.match(/AMC POD/g) ?? []).length === 1, `${(dupes.match(/AMC POD/g) ?? []).length} chips`);
+}
+
 /* ------------------------------------------------- the expandable row */
 {
   const { ReportTable } = await load("components/devops/report-table.js");
@@ -202,6 +249,25 @@ console.log("\n\x1b[1mRendered output\x1b[0m \x1b[2m— components at a given st
    */
   const owned = render(h(ReportTable, { ...props, pulls: [pr({ teamId: "payments-pod" })], openId: null }));
   check("a row shows the POD it is for", owned.includes("Payments POD") && !owned.includes("AMC POD, Payments POD"), "the row shows every POD on the repo");
+  /*
+   * A row that predates the field falls back to a **count**, not to every name
+   * joined with commas — which on a repo with five teams was a paragraph in a
+   * column somebody is scanning for risk.
+   */
+  const legacy = render(h(ReportTable, { ...props, pulls: [pr({ teamId: "" })], openId: null }));
+  check("...and an older row falls back to a count", /aria-haspopup="dialog"/.test(legacy), "no way to see which PODs");
+  check("...not a comma-joined list", !/AMC POD, Payments POD/.test(legacy.slice(0, legacy.indexOf("<dialog"))), "the joined list is still in the column");
+  /* One POD on the repo is a name, not a count: there was never a choice. */
+  const single = render(h(ReportTable, {
+    ...props,
+    podsFor: () => [{ id: "amc-pod", name: "AMC POD" }],
+    pulls: [pr({ teamId: "" })],
+    openId: null,
+  }));
+  check("...while a single-POD repo is just named", single.includes("AMC POD") && !/aria-haspopup="dialog"/.test(single), "a dialog holding one chip");
+  /* A repo linked to nothing says so rather than offering an empty dialog. */
+  const unlinked = render(h(ReportTable, { ...props, podsFor: () => [], pulls: [pr({ teamId: "" })], openId: null }));
+  check("...and an unlinked repo says Not linked", unlinked.includes("Not linked") && !/aria-haspopup="dialog"/.test(unlinked));
   const locked = render(h(ReportTable, { ...props, canEdit: false, openId: "acme-cms-1" }));
   check("...offering Edit only to an editor", open.includes("Edit") && !locked.includes(">Edit<"), "edit offered to a non-editor");
   check("...and telling everyone else why not", locked.includes("Read only"));

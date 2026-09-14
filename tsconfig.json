@@ -38,12 +38,13 @@
     "**/*.tsx",
     ".next-check/types/**/*.ts",
     ".next-css/types/**/*.ts",
+    ".next-e2e/types/**/*.ts",
     ".next-sec/types/**/*.ts",
     ".next-tip/types/**/*.ts",
     ".next-verify/types/**/*.ts",
     ".next/types/**/*.ts",
     "next-env.d.ts",
-    ".next-e2e/types/**/*.ts"
+    ".next-dlg/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
