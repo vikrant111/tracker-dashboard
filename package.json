@@ -24,6 +24,7 @@
     "mongo:local": "node scripts/mongo-local.mjs",
     "azure:probe": "node --env-file=.env.local scripts/azure-probe.mjs",
     "parity": "node --env-file=.env.local scripts/parity.mjs",
+    "migrate": "node scripts/migrate.mjs",
     "check:render": "node scripts/check-render.mjs"
   },
   "dependencies": {

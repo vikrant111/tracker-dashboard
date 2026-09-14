@@ -204,8 +204,19 @@ graph LR
 | Writes | temp file + atomic rename, `0600` | replace-by-id, upsert |
 
 Both go through the **same schemas** (`db/document.ts`), so what a file stores is
-what MongoDB would store. `pnpm parity` writes a fixture through each driver and
-diffs the result — run it before migrating anything real.
+what MongoDB would store.
+
+**Switching after you have deployed is two commands:**
+
+```bash
+pnpm migrate --to mongodb     # move the data (both directions; source untouched)
+# then set DB_DRIVER=mongodb and restart
+```
+
+The flag alone changes which store the app *uses* — it moves nothing, which is
+why `pnpm migrate` exists. It refuses a target that already holds rows, names any
+row that will not validate rather than dropping it, and builds MongoDB's indexes
+at the end. `pnpm parity` proves the two drivers agree before you trust either.
 
 > 🔒 The JSON files hold password hashes, and access tokens once you onboard
 > anything. They are written `0600`, and `pnpm check:env` tells you if git is
@@ -427,6 +438,7 @@ pnpm seed:devops        # DevOps board: 4 of each, per repo, per branch
 pnpm delete pod-seed    # clear work items, PODs, sync watermarks
 pnpm delete devops-seed # clear repos, cycles, scope rows, PRs, announcements
 pnpm parity             # do both drivers store the same document?
+pnpm migrate --to mongodb   # move every collection between drivers, either way
 
 # housekeeping
 pnpm clear              # node_modules, .next, caches — refuses while dev is running

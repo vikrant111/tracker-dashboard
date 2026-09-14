@@ -424,6 +424,78 @@ default), and `WEATHER_LAT`/`WEATHER_LON`.
 Everything else has a working default. [`.env.example`](../.env.example) marks
 which is which.
 
+### Deploying with the JSON driver
+
+**Yes, it works in production — on one machine, with a real disk.** It is not a
+toy mode: writes are atomic (temp file + rename), concurrent requests take turns
+on an in-process mutex, and a **lock file** coordinates separate *processes*, so
+`pnpm seed` or a second worker cannot clobber a write. Files are `0600`. Reads
+are deliberately uncached, so no request ever sees stale data.
+
+Four conditions, and all four are hard requirements:
+
+| | |
+|---|---|
+| **One machine** | The lock is a file. Two servers only coordinate if they share one filesystem, and `open(…, "wx")` is not reliably atomic over NFS. Two machines with separate disks are two separate databases. |
+| **A persistent, writable disk** | A container without a volume, or any serverless target, loses everything on restart. Mount a volume. |
+| **`DB_STORE_DIR` outside the checkout** | Otherwise a deploy overwrites your data with whatever the repository shipped. |
+| **Backups are yours** | Nothing takes them. `cp -a` the directory on a schedule — a plain file copy is a valid backup here, which is one of the driver's real advantages. |
+
+**The ceiling is read cost.** There is no read cache — correctness was chosen
+over speed, after a cached version was wrong in three separate ways — so every
+request parses the whole collection. Measured on this repo:
+
+| work items | `items.json` | one read |
+|---|---|---|
+| 1,000 | 0.7 MB | **2 ms** |
+| 10,000 | 6.7 MB | **20 ms** |
+| 50,000 | 33.7 MB | **115 ms** |
+| 100,000 | 67.5 MB | **249 ms** |
+
+Each board view polls every 30 seconds, so the load is *viewers ÷ 30* reads per
+second, on one thread. Rough guidance:
+
+- **under ~10,000 items** — comfortable, and the simplest thing you can operate.
+- **10,000–50,000** — works, but a busy board spends real CPU on parsing. Watch it.
+- **above ~50,000** — move to MongoDB. A quarter of a second of single-threaded
+  parse per poll is a queue waiting to happen, and writes rewrite the whole file.
+
+### Switching driver, after you have deployed
+
+Changing `DB_DRIVER` changes which store the **app** uses. It does not move
+anything — so on its own, the flag flip lands you on an empty database with the
+old data still sitting in the other one. `pnpm migrate` is the other half:
+
+```bash
+pnpm parity                      # do both drivers store the same document? (check first)
+pnpm migrate --to mongodb        # files → MongoDB
+pnpm migrate --to json           # MongoDB → files
+# then set DB_DRIVER and restart
+```
+
+`--from` defaults to whichever driver is *not* the target, so the common case is
+one flag. `--dry-run` counts without writing; `--yes` skips the question; without
+a terminal to ask it refuses rather than assuming.
+
+It goes both ways and it is **non-destructive** — the source is left exactly as
+it was, so switching back is the same command with the arguments swapped. Rows
+are written through the target store, so each one passes the same schema
+validation an ordinary save does; anything that will not validate is named
+rather than silently dropped. Indexes are built at the end, so a fresh MongoDB
+is not left scanning.
+
+A target that already holds rows is **refused** unless you pass `--overwrite`.
+Writing is an upsert by id, so it would *merge* the two — occasionally what
+somebody wants, never what they expect.
+
+Nothing else changes when you switch. The app builds MongoDB's indexes itself on
+the first readiness check (`/api/health?ready=1`), `pnpm check:env` reports only
+the driver you are actually on, and every controller already speaks to one
+interface.
+
+> `MONGODB_URI` is listed as required above because that table assumes the
+> `mongodb` driver. On `json` it is ignored entirely.
+
 ### With Docker
 
 ```bash

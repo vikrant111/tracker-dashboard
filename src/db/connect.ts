@@ -93,7 +93,8 @@ export async function connectToDatabase(): Promise<typeof mongoose> {
  * Separate from connecting, and deliberately **not** awaited on the read path:
  * `syncIndexes` on a large collection can take a while, and a dashboard that
  * blocks on it every cold start is worse than one whose first query is slow.
- * `pnpm seed` and the readiness probe call this; a plain request does not.
+ * `pnpm seed`, `pnpm migrate` and the readiness probe call this; a plain
+ * request does not.
  */
 export async function ensureIndexes(force = false): Promise<void> {
   if (cache.indexed && !force) return;

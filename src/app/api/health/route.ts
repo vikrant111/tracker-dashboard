@@ -60,6 +60,24 @@ export async function GET(req: Request) {
     const store = getStore();
     await store.init();
     await store.ping();
+
+    /*
+     * Build the indexes, once per process, on the first readiness check.
+     *
+     * `connect.ts` has always said the readiness probe does this — it did not,
+     * and nothing else did either outside `pnpm seed`. So flipping
+     * `DB_DRIVER=mongodb` on a deployment gave a working but **unindexed**
+     * database: correct answers, quietly getting slower as it filled up.
+     *
+     * Deliberately not awaited. `createIndexes` on a large collection can take
+     * a while, and readiness must answer now — the ping above is what proves
+     * the store is reachable. A failure is logged, not fatal: an index that
+     * cannot be built is a performance problem, not an outage.
+     */
+    void store.ensureIndexes().catch((err) => {
+      console.error(`[health] could not build indexes: ${err instanceof Error ? err.message : err}`);
+    });
+
     return Response.json({ status: "ok", store: "reachable" }, { headers: noStore });
   } catch {
     /*

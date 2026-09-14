@@ -190,6 +190,19 @@ section("Fonts");
 section("Database");
 {
   /*
+   * Only the driver that is actually configured.
+   *
+   * This used to probe MongoDB whatever `DB_DRIVER` said, so a perfectly
+   * healthy `json` deployment was greeted with a red FAIL about a database it
+   * does not use — which is exactly the kind of false alarm that teaches people
+   * to ignore the tool.
+   */
+  const driver = (env.DB_DRIVER ?? "").trim().toLowerCase() || "json";
+
+  if (driver !== "mongodb") {
+    report("ok", `DB_DRIVER = ${driver}`, "MongoDB is not used — nothing to reach");
+  } else {
+  /*
    * The URI is resolved by the app's own module, not re-implemented here — a
    * check that reimplements what it checks tests only its copy. This is the
    * same `resolveMongoUri` the server calls, so a rule added there is enforced
@@ -265,6 +278,7 @@ section("Database");
       );
     }
   }
+  } /* end: only when DB_DRIVER=mongodb */
 }
 
 section("Configuration");

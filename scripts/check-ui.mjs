@@ -6053,6 +6053,45 @@ section("aged means what each POD says it means");
   check("...and both paths use the same measurement", (tip.match(/measure\(\)/g) ?? []).length >= 2, "opening and repositioning could disagree");
 
   /* ---------------------------------------------------------------- */
+  /* Switching driver is one flag, and the data comes with it           */
+  /* ---------------------------------------------------------------- */
+  const mig = readFileSync(new URL("../scripts/migrate.mjs", import.meta.url), "utf8");
+
+  /* Both directions, from one command. */
+  check("migration goes both ways", /--to mongodb/.test(mig) && /--to json/.test(mig));
+  /* The source is left alone, so switching back is the same command reversed. */
+  check("...leaving the source untouched", !/source\.\w+\.remove|source\.\w+\.save/.test(mig), "a migration that also destroys the original");
+  /*
+   * Writing is an upsert by id, so a non-empty target would merge rather than
+   * replace — occasionally what somebody wants, never what they expect.
+   */
+  check("...refusing a target that already holds rows", /existingTotal > 0 && !overwrite/.test(mig));
+  check("...unless told to merge", /--overwrite/.test(mig));
+  /* Rows go through the target store, so each passes the same validation an
+     ordinary save does — and a rejected row is named, not dropped. */
+  check("...writing through the store, not the files", /target\.teams\.save/.test(mig) && !/writeFileSync/.test(mig));
+  check("...naming any row that will not migrate", /skipped/.test(mig) && /process\.exit\(1\)/.test(mig));
+  /* A fresh MongoDB left unindexed is correct and quietly slow. */
+  check("...and building indexes at the end", /target\.ensureIndexes\(true\)/.test(mig));
+  check("...refusing to migrate into memory", /memory` lives only as long/.test(mig));
+  check("...and refusing a no-op", /There is nothing to move/.test(mig));
+
+  /*
+   * Indexes on a running deployment. `connect.ts` claimed the readiness probe
+   * built them; it did not, and nothing else did outside `pnpm seed` — so
+   * flipping to MongoDB gave a working but unindexed database.
+   */
+  const health = readFileSync(new URL("../src/app/api/health/route.ts", import.meta.url), "utf8");
+  check("readiness builds the indexes", /store\.ensureIndexes\(\)/.test(health), "a deployment left scanning every collection");
+  /* Not awaited: readiness must answer now, and the ping is what proves
+     reachability. A failed index build is slow, not an outage. */
+  check("...without blocking the probe", /void store\.ensureIndexes\(\)\.catch/.test(health));
+
+  /* A json deployment must not be told its unused database is unreachable. */
+  const preflightDb = readFileSync(new URL("../scripts/check-env.mjs", import.meta.url), "utf8");
+  check("the preflight probes only the configured driver", /if \(driver !== "mongodb"\)/.test(preflightDb), "a red FAIL about a database that is not used");
+
+  /* ---------------------------------------------------------------- */
   /* Data at rest, on the JSON driver                                   */
   /* ---------------------------------------------------------------- */
   /*
