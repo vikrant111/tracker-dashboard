@@ -24,8 +24,8 @@ would cost a `nested` query for no gain.
 | `assignee` | String, indexed | display name — what the leaderboard groups on |
 | `assigneeEmail` | String | |
 | `severity` | String, enum | `Critical` `Major` `Minor` `Unknown` |
-| `environment` | String, enum | `IT-UAT` `BIZ-UAT` `CUG` `Production` `Unknown` |
-| `status` | String, enum | `Open` `Commented` `For QA Validation` `Not a Bug` `Closed` `Unknown` |
+| `environment` | String, enum | `IT-UAT` `BIZ-UAT` `CUG` `Production` `DR` `N2P` `PTPaaS` `Regression` `Unknown` |
+| `status` | String, enum | `Open` `Commented` `For QA Validation` `Not a Bug` `Closed` `CR` `Unknown` |
 | `state` | String | raw board state, kept for debugging a mapping |
 | `priority` | Number \| null | |
 | `tags` | String[] | |

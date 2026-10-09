@@ -970,9 +970,24 @@ an identity: `Critical #d03b3b`, `Major #ec835a`, `Minor #fab219`,
 `Unknown` muted. Status colours are never reused as a series colour, and always
 ship with a text label — never colour alone.
 
-**Environment** takes slots 1–4 in release-pipeline order (IT-UAT, BIZ-UAT, CUG,
-Production). **Status** takes slots 1–5. **Trend** uses slot 1 for raised and
-slot 3 for closed.
+**Environment** takes slots 1–8 in release-pipeline order (IT-UAT, BIZ-UAT, CUG,
+Production, DR, N2P, PTPaaS, Regression). **Status** takes slots 1–6. **Trend**
+uses slot 1 for raised and slot 3 for closed.
+
+Neither is written out by hand. Both are assigned in the order
+[`src/lib/contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts)
+lists them, so a category added there cannot arrive without a colour — which is
+what three environments did while there were only five slots: unset custom
+properties resolve to nothing, and three bars rendered black on a near-white
+panel.
+
+There are eight slots because environments are eight. Slots 6–8 were selected
+the same way the first five were: the hue gaps the first five leave (OKLCH 130°,
+212°, 282°), each snapped to the nearest step clearing the lightness band, the
+chroma floor, 3:1 against its own theme's surface, and adjacent-pair CVD
+separation — `#527e03`, `#0390a4`, `#6d58fe` on light, `#6da606`, `#14a4ba`,
+`#786cfd` on dark. Past slot 8 a value falls to muted ink rather than to a
+reused hue: two identities in one colour is a chart that lies.
 
 **Ageing** is ordinal — one blue hue, monotone lightness, with the oldest bucket
 carrying the most presence against its own surface. The direction therefore

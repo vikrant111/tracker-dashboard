@@ -132,6 +132,12 @@
   --series-3: #14906a; /* 3.80:1 — was 2.66 */
   --series-4: #a37000; /* 4.08:1 — was 2.05, the worst on the board */
   --series-5: #cc5580; /* 3.84:1 — was 2.55 */
+  /* Slots 6-8: the hue gaps the first five leave (OKLCH 130/212/282), each
+     snapped to a step that clears the band, the chroma floor, 3:1 on this
+     surface and adjacent CVD separation. Validated as a set of eight. */
+  --series-6: #527e03; /* 4.57:1 */
+  --series-7: #0390a4; /* 3.59:1 */
+  --series-8: #6d58fe; /* 4.44:1 */
 
   /* Ordinal ageing ramp: the brand blue hue, darkening with age. */
   --age-1: #3394e5; /* 3.05:1 — was 2.52 */
@@ -242,6 +248,9 @@
     --series-3: #199e70;
     --series-4: #c98500;
     --series-5: #d55181;
+    --series-6: #6da606;
+    --series-7: #14a4ba;
+    --series-8: #786cfd;
 
     /* Dark ramp brightens with age — the oldest bucket carries the most presence. */
     --age-1: #08609d;
@@ -332,6 +341,9 @@
   --series-3: #199e70;
   --series-4: #c98500;
   --series-5: #d55181;
+  --series-6: #6da606;
+  --series-7: #14a4ba;
+  --series-8: #786cfd;
 
   --age-1: #08609d;
   --age-2: #0f80d0;

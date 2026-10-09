@@ -222,6 +222,43 @@ at the end. `pnpm parity` proves the two drivers agree before you trust either.
 > anything. They are written `0600`, and `pnpm check:env` tells you if git is
 > tracking them. See [Data at rest](docs/operations.md).
 
+### …or no storage at all, per POD
+
+A POD can read its items straight from Azure on every request and store
+**nothing**. Accounts, PODs, permissions and tokens stay where they are; the
+work items are fetched, filtered and counted in memory, cached in the process
+for a minute, and gone on restart.
+
+Two tables decide it, and no filter logic reads a hardcoded list anywhere:
+
+| File | Holds |
+|---|---|
+| [`src/lib/contracts/azure-sources.ts`](src/lib/contracts/azure-sources.ts) | which PODs read live, from which projects, under which field filters |
+| [`src/lib/contracts/item-filters.ts`](src/lib/contracts/item-filters.ts) | the vocabulary, the allowlists, the 365-day window, the cache |
+
+One POD can be made of several projects, and each source carries its own
+filters — a POD field, a SPOC list, a module. The window is why it is
+affordable: a year per POD, bounded in the WIQL *and* re-checked after mapping.
+
+"The last 365 days" means **raised or changed** in that year, not raised in it —
+a bug raised two years ago and still open is the oldest row on an ageing board
+and the one it must never hide. Nothing is dropped for its wording either: every
+value that maps gets its own section, so an unexpected status is a question
+somebody can answer rather than an item nobody can see.
+
+A POD named in the contract still reads the store until a PAT exists (on the POD
+in Admin, or `AZDO_PAT`) — which is what keeps the demo board working on a fresh
+clone. Then **Sync** becomes Refresh, the webhook becomes a cache drop, and a
+spreadsheet upload into that POD is refused rather than stored and never read.
+
+```bash
+pnpm azure:probe --fields spoc   # the reference names a filter must use
+pnpm azure:probe --days 365      # the exact WIQL, what it returns, what the
+                                 # allowlists drop — read-only
+```
+
+Full detail: [Reading live, storing nothing](docs/azure-integration.md#reading-live-storing-nothing).
+
 ---
 
 ## 🧬 The data model
@@ -385,9 +422,9 @@ This project's favourite thing. Seven suites, one command.
 ```mermaid
 graph LR
     T["pnpm test"] --> TS["✅ typecheck"]
-    T --> DOC["📚 543 doc checks<br/><i>links · counts · every module mentioned</i>"]
-    T --> TH["🎨 1330 theme checks<br/><i>contrast · tokens · source rules</i>"]
-    T --> UI["🧠 2884 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
+    T --> DOC["📚 563 doc checks<br/><i>links · counts · every module mentioned</i>"]
+    T --> TH["🎨 1372 theme checks<br/><i>contrast · tokens · source rules</i>"]
+    T --> UI["🧠 3083 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
     T --> RN["🖱️ 127 render checks<br/><i>mounted in jsdom, then clicked</i>"]
     T --> BLD["📦 production build"]
     T --> E2E["🌐 641 end-to-end checks<br/><i>own server · own store · own build dir</i>"]

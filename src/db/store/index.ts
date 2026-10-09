@@ -12,7 +12,9 @@
 import { createJsonStore } from "./json-store.ts";
 import { createMemoryStore } from "./memory-store.ts";
 import { createMongoStore } from "./mongo-store.ts";
+import { withLiveItems } from "./live-items.ts";
 import type { Store } from "./types.ts";
+import { hasLiveSources } from "../../lib/contracts/azure-sources.ts";
 
 export const DB_DRIVERS = ["json", "mongodb", "memory"] as const;
 export type DbDriver = (typeof DB_DRIVERS)[number];
@@ -40,13 +42,28 @@ export function getStore(): Store {
   if (globalForStore.__podTrackerStore) return globalForStore.__podTrackerStore;
   const verdict = resolveDriver();
   if (!verdict.ok) throw new Error(verdict.reason);
-  const store =
-    verdict.driver === "mongodb" ? createMongoStore() : verdict.driver === "memory" ? createMemoryStore() : createJsonStore();
+  const store = liveWrapped(createStore(verdict.driver));
   globalForStore.__podTrackerStore = store;
   return store;
 }
 
-/** For the checks, which need to build a store per driver without a global. */
+/**
+ * Items read from Azure for the PODs the contract names, from the driver for
+ * every other one.
+ *
+ * Wrapped around the driver rather than written as a fourth one: a live POD and
+ * a synced POD appear on the same board, so both have to be answerable by the
+ * same `items.find`. Only `items` is touched — accounts, PODs, permissions and
+ * tokens keep living wherever `DB_DRIVER` says.
+ */
+function liveWrapped(store: Store): Store {
+  return hasLiveSources ? { ...store, items: withLiveItems(store) } : store;
+}
+
+/**
+ * For the checks, which need a store per driver without a global — and the raw
+ * driver, with no live wrapper, so a suite can assert on the driver itself.
+ */
 export function createStore(driver: DbDriver): Store {
   if (driver === "mongodb") return createMongoStore();
   if (driver === "memory") return createMemoryStore();

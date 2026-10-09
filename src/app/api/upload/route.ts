@@ -5,6 +5,7 @@ import { bulkUpsertItems } from "@/controllers/items.controller";
 import { getStore } from "@/db/store";
 import { canSeeTeam, errorResponse, requireAdmin } from "@/lib/session";
 import { getTeam } from "@/lib/teams";
+import { readsLive } from "@/lib/live/fetch";
 import type { Item } from "@/lib/types";
 import { UPLOAD } from "@/lib/constants";
 import { detectSheet, whyNotReadable } from "@/lib/spreadsheet";
@@ -52,6 +53,13 @@ export async function POST(req: Request) {
 
     const team = await getTeam(teamId);
     if (!team) return Response.json({ error: "POD not found." }, { status: 404 });
+    // A live POD reads items from Azure on every request, so an upload into one
+    // would be stored and never read again. Refused rather than accepted and
+    // dropped — that version reports rows imported and shows none.
+    if (readsLive(team)) {
+      const why = `${team.name} reads its items from Azure live, so an upload would never appear on the board. Remove it from src/lib/contracts/azure-sources.ts to import spreadsheets into it.`;
+      return Response.json({ error: why }, { status: 409 });
+    }
 
     await getStore().init();
 

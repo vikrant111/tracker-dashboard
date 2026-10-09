@@ -12,7 +12,7 @@ pages are the internals.
 | [data-model.md](data-model.md) | Documents, indices, id schemes, the vocabulary, ageing. |
 | [metrics.md](metrics.md) | Every tile and chart, and the aggregation behind it. |
 | [changing-the-data.md](changing-the-data.md) | **Recipes for changing what the dashboard fetches, maps and shows.** Which files, in what order, and what breaks if you skip one. |
-| [azure-integration.md](azure-integration.md) | REST calls, WIQL, field mapping, the three live-update paths. |
+| [azure-integration.md](azure-integration.md) | REST calls, WIQL, field mapping, the live-update paths — and reading Azure live, storing nothing. |
 | [auth-and-tenancy.md](auth-and-tenancy.md) | Auth modes, roles, how POD scoping is enforced. |
 | [design-system.md](design-system.md) | Tokens, type, the validated palette, motion, accessibility. |
 | [operations.md](operations.md) | Environment variables, running, seeding, deploying. |
@@ -57,6 +57,10 @@ src/db/           storage. Two drivers behind one interface, picked by DB_DRIVER
                   collection costs a line rather than three hand-written copies
     json-collections  PODs, accounts and watermarks for the file driver
     memory-store  the same contract in memory; for bisecting a failure
+    live-items    items read from Azure on the request, for the PODs the
+                  contract names. Wraps whichever driver is configured rather
+                  than replacing it, because a live POD and a synced POD appear
+                  on the same board and one `items.find` has to answer both
     mongo-store   the same contract against a real cluster
     mongo-collections  the same three collections, against Mongo
   query/
@@ -121,6 +125,18 @@ src/lib/          domain and data. No React, server-only
   metrics/
     types         Filters, Bucket, Dashboard — what the board is described in
     dates         absolute epoch bounds, never relative date math
+  contracts/
+    item-filters  the vocabulary and the live allowlists, as one editable
+                  table. types.ts, the schema enums and the colour slots all
+                  derive from it, so a category costs one line   (client-safe)
+    azure-sources which Azure queries a POD board is made of: project, work
+                  item types, and the field filters. No credentials — the PAT
+                  stays on the POD or in AZDO_PAT
+  live/
+    wiql          a contract source as the WIQL Azure answers. Pure, so the
+                  bounds are asserted on the exact query text
+    fetch         one POD's last 365 days, fetched per request and cached in
+                  this process for a minute. Writes nothing, anywhere
   azure.ts        WIQL + workitemsbatch
   azure-debug.ts  what the client prints about what it fetched, and the
                   redactor that keeps a PAT out of it (AZDO_DEBUG)
@@ -395,9 +411,9 @@ src/components/   client components, dashboard-client.tsx orchestrates
 scripts/
   seed.mjs        indices + admin + demo data
   check.mjs       641 end-to-end checks against a running server
-  check-theme.mjs 1330 static checks: theme tokens, contrast, source rules,
+  check-theme.mjs 1372 static checks: theme tokens, contrast, source rules,
                   and the font switch
-  check-ui.mjs    2687 checks on client-side pure logic — it imports the real
+  check-ui.mjs    3083 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-render.mjs  `pnpm check:render` — compiles the components for real,

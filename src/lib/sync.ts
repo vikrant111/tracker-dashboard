@@ -1,4 +1,5 @@
 import { fetchWorkItems, isConnectable, queryChangedIds } from "./azure";
+import { forgetLive, readsLive } from "./live/fetch";
 import { fromAzure } from "./normalize";
 import { bulkUpsertItems } from "../controllers/items.controller.ts";
 import { findSyncState, saveSyncState } from "../controllers/sync-state.controller.ts";
@@ -19,6 +20,12 @@ export type SyncResult = {
   imported: number;
   failed: number;
   error?: string;
+  /**
+   * Said instead of a count, when a POD had nothing to import because it reads
+   * Azure live. Not an `error`: nothing went wrong, and reporting it as one
+   * puts a red toast in front of somebody whose board is working.
+   */
+  note?: string;
 };
 
 /** How far back a team's very first sync reaches. */
@@ -43,6 +50,19 @@ export async function getSyncState(teamId: string): Promise<SyncState | null> {
 
 export async function syncTeam(team: Team, opts: { full?: boolean } = {}): Promise<SyncResult> {
   const base = { teamId: team.id, teamName: team.name };
+
+  /*
+   * A live POD has nothing to sync, so Sync means **refresh**: drop the cached
+   * answer and the next read fetches from Azure again.
+   *
+   * It returns before touching the store on purpose. Importing items for a POD
+   * whose `find` reads Azure would write rows nothing ever reads again — the
+   * exact "stored a copy anyway" outcome a live board exists to avoid.
+   */
+  if (readsLive(team)) {
+    forgetLive(team.id);
+    return { ...base, imported: 0, failed: 0, note: `${team.name} reads Azure live — refreshed, nothing stored.` };
+  }
 
   try {
     const state = opts.full ? null : await getSyncState(team.id);
@@ -100,7 +120,10 @@ export async function syncAllTeams(): Promise<SyncResult[]> {
   const teams = await listTeams();
   // A full connection, from either source. Checking only the org URL let a POD
   // with a URL but no PAT into the loop, where it failed on every run.
-  const connected = teams.filter(isConnectable);
+  //
+  // A live POD is included although it may carry no project of its own — its
+  // projects are in the contract — so that a sweep still refreshes its cache.
+  const connected = teams.filter((t) => isConnectable(t) || readsLive(t));
   const results: SyncResult[] = [];
   for (const team of connected) results.push(await syncTeam(team));
   return results;
@@ -110,6 +133,15 @@ export async function syncAllTeams(): Promise<SyncResult[]> {
 export async function syncSingleWorkItem(teamId: string, workItemId: number): Promise<boolean> {
   const team = await getTeam(teamId);
   if (!team) return false;
+  /*
+   * For a live POD the hook is a cache invalidation and nothing else: the next
+   * read will see the change because it asks Azure, and writing the item here
+   * would store a copy of data this board deliberately does not keep.
+   */
+  if (readsLive(team)) {
+    forgetLive(team.id);
+    return true;
+  }
   const [wi] = await fetchWorkItems(team, [workItemId]);
   if (!wi) return false;
   await bulkUpsertItems([fromAzure(wi, team)]);

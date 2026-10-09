@@ -66,7 +66,20 @@ Every board is customised differently, so mapping is per-POD.
 1. team `valueMap` override (keys lowercased),
 2. `DEFAULT_VALUE_MAP` exact match,
 3. direct match against the allowed values,
-4. **longest word-bounded match** (see [below](#matching-is-word-bounded-not-substring)).
+4. **the same comparison with the punctuation removed**, so `IT_UAT`, `IT.UAT`
+   and `IT - UAT` are all `IT-UAT`,
+5. **longest word-bounded match** (see [below](#matching-is-word-bounded-not-substring)).
+
+Step 4 is not cosmetic. Without it those spellings fell through to step 5, where
+the longest matching key was `uat` — and every one came back **BIZ-UAT**. IT UAT
+and BIZ-UAT are two different environments, and items moved between two real
+boards' numbers with nothing on screen to show it. Step 5 also draws on the
+vocabulary's own words, but only those of three characters or more: `DR` and
+`CR` match exactly through the earlier steps, and letting two letters into a
+substring pass is the `it`-inside-"microsites" accident again.
+
+Word **order** is the one thing no comparison undoes, so `UAT IT` needs a key in
+[`value-map.ts`](../src/lib/value-map.ts) and has one.
 
 Longest-first is load-bearing: `not a bug` must win over `bug`, `biz-uat` over
 `uat`. Sorting shorter-first silently mislabels items. So is the word boundary:
@@ -131,6 +144,160 @@ subscription per event type.
 
 The dashboard **Sync** button, or Admin → **Sync** / **Full resync**.
 `full: true` ignores the watermark and re-imports the last 365 days.
+
+
+## Reading live, storing nothing
+
+A POD can skip the store entirely: its items are fetched from Azure on the
+request that needs them, filtered in memory, and never written down. Accounts,
+PODs, permissions and tokens are the only durable records left.
+
+Two files decide all of it, and no query-building code has to be touched again:
+
+| File | Holds |
+|---|---|
+| [`contracts/azure-sources.ts`](../src/lib/contracts/azure-sources.ts) | which PODs read live, from which projects, under which field filters |
+| [`contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts) | the vocabulary, the allowlists, the window and the cache |
+
+### What a source is
+
+One POD can be made of several projects. Each source names a project, its work
+item types, and its filters — `all` clauses are ANDed, `any` clauses are ORed
+inside their own bracket:
+
+```ts
+{
+  id: "amc-it-requests",
+  pods: ["amc-pod", "AMC POD"],        // id or name, case-insensitive
+  orgUrl: "https://dev.azure.com/BFLDevOpsOrg",
+  project: "3in1 IT Requests",
+  workItemTypes: ["Bug", "Issue", "Task", "User Story"],
+  any: [
+    { field: "Custom.PODName", values: ["AMC POD"] },
+    { field: "Custom.BFLITSpoc", values: ["Aravind I", "Aravind.i@bajajfinserv.in"] },
+  ],
+  fieldMap: { status: "Custom.BugStatus" },
+}
+```
+
+The bracket round the OR group is load-bearing. WIQL binds `a AND b OR c` as
+`(a AND b) OR c`, so an unbracketed group lets an item through on the OR branch
+alone — no project bound, no date bound, no type bound. That is the whole
+project, which is the failure this design exists to prevent.
+
+An **empty value list throws** rather than being dropped. `Custom.ModuleName IN
+()` quietly removed is a filter on one module becoming every module.
+
+### The window
+
+365 days (`LIVE.windowDays`). What "the last 365 days" *means* is
+`LIVE.windowMode`, overridable per source:
+
+| Mode | Asks Azure for | Misses |
+|---|---|---|
+| `created` | raised inside the window | a bug raised two years ago that is **still open** |
+| `touched` | raised **or** changed inside the window | an open bug nobody has touched in a year |
+| `open-or-touched` | the above, plus anything with no close date at all | nothing |
+
+`touched` is the default, and the default is deliberately not `created`: an
+ageing board exists to show work that has waited, so the row it must never hide
+is the oldest open one — and `created` hides exactly that. `open-or-touched`
+closes the last gap but adds a blank `ClosedDate` clause, which a heavily
+customised process can reject; it fails loudly if so, and one word in the
+contract drops back to `touched`.
+
+Every mode but `created` is an OR group and is **bracketed**. Unbracketed, WIQL
+binds `a AND b OR c` as `(a AND b) OR c` and an item comes back on the date
+branch alone — no project, no type, no filter.
+
+The window is applied a second time after mapping, where the rule is *finished
+long ago and raised long ago*:
+
+| | |
+|---|---|
+| raised inside the window | kept, closed or not |
+| **still open** | kept whatever its age |
+| closed inside the window | kept, so the closure trend is complete |
+| closed before the window **and** raised before it | dropped |
+
+Keeping a two-year-old open bug is correct, not a leak: it lands in the `30+
+days` ageing bucket, and the trend chart ignores a `createdDate` outside its own
+range, so no number is distorted by its presence. What gets dropped is finished
+history, which would otherwise inflate the closed totals with a year nobody
+asked about.
+
+### The allowlists
+
+**Off by default.** `ALLOWED.dropOutside` is `false`, so every value that maps
+reaches the board in its own section and the lists only document what a board is
+expected to say. A dropped item is in no total, in no drill-down, and nothing on
+screen says it existed; a value nobody expected, sitting under its own heading,
+is a question somebody can answer.
+
+Turn `dropOutside` on and the lists are enforced. They are written in **the
+dashboard's words**, not the board's: `1-Critical` is `Critical` by the time it
+is tested, so the board's spelling belongs in
+[`value-map.ts`](../src/lib/value-map.ts) and the mapped word belongs in the
+contract. A word that is in neither could never match, so `pnpm check:ui`
+refuses it rather than letting the board go quietly empty.
+
+`keepUnknown` then decides what happens to a value that mapped to nothing.
+Tasks have no severity and most boards have no environment field, so dropping
+those would hide real work — `Unknown` is honest and stays visible.
+
+### The cache
+
+One answer per POD, in this process's memory, for `LIVE.cacheSeconds` (60).
+Concurrent callers share one in-flight request: a dashboard load fires the board
+and its roster together and the drawer follows immediately, which without it is
+three identical year-long fetches racing.
+
+Nothing is written to disk. Restart and it is gone.
+
+### Nothing is stored, and it is not a convention
+
+`syncTeam` and the upload route both refuse a live POD before they fetch or
+parse. The rule is also stated once where no caller can forget it: the store
+wrapper's `bulkUpsert` **throws** on a document belonging to a live POD, so a
+future importer cannot quietly add a write path. It throws rather than dropping
+the rows, because a write accepted and discarded is a spreadsheet reported as
+imported and invisible forever.
+
+What is on disk under `DB_store/` is accounts, PODs, permissions, tokens and the
+DevOps board's own records. `items.json` exists because the file driver creates
+one file per collection at startup, and it stays empty of a live POD's work —
+`pnpm check:ui` proves that against a real store: read the board, then count
+what landed. Rows left in it from a POD's syncing days are ignored rather than
+merged, so the switch is safe to flip without clearing anything first.
+
+### What changes for a live POD
+
+| | Stored POD | Live POD |
+|---|---|---|
+| **Sync** button | imports and writes | drops the cache, so the next read re-fetches |
+| Webhook | re-fetches that item and upserts it | drops the cache |
+| Spreadsheet upload | imports rows | **refused**, with the reason — an upload would be stored and never read again |
+| Watermark | advanced each run | none; there is nothing incremental about it |
+
+A POD named in the contract still reads the store when there is no PAT
+anywhere. That is the only fallback: a PAT that exists and fails is an error,
+because showing last week's synced numbers as though they were live is worse.
+
+### Getting the field names right
+
+The filters name Azure **reference names**, not the labels on the form, and that
+is the one thing that cannot be guessed:
+
+```bash
+pnpm azure:probe --fields spoc     # reference names matching "spoc"
+pnpm azure:probe --days 365        # for a live POD: the exact WIQL, the ids it
+                                   # returns, what normalize() makes of them,
+                                   # and how many the allowlists drop
+```
+
+A wrong name fails loudly — Azure answers WIQL with *"TF51005: The query
+references a field that does not exist"* and names it. That is deliberate; the
+alternative is a filter that silently matches nothing.
 
 ## Watermark
 

@@ -11,14 +11,26 @@
  * Slots are assigned in fixed order and never cycled. If a dimension grows past
  * its slot count, fold the tail into "Other" rather than inventing a hue.
  */
+import { VOCABULARY } from "./contracts/item-filters.ts";
 
-/** Categorical slots. Fixed order — the order is the CVD safety mechanism. */
+/**
+ * Categorical slots. Fixed order — the order is the CVD safety mechanism.
+ *
+ * Eight, because environments are eight. Slots 6–8 were picked the same way the
+ * first five were — the hue gaps the first five leave (OKLCH 130°, 212°, 282°),
+ * snapped to a step that clears the lightness band, the chroma floor, 3:1 on
+ * each theme's own surface, and adjacent-pair colour-vision separation on both.
+ * They are not a cycle of the first five and not eyeballed.
+ */
 export const SERIES = [
   "var(--series-1)",
   "var(--series-2)",
   "var(--series-3)",
   "var(--series-4)",
   "var(--series-5)",
+  "var(--series-6)",
+  "var(--series-7)",
+  "var(--series-8)",
 ] as const;
 
 export const INK_MUTED = "var(--ink-muted)";
@@ -35,23 +47,27 @@ export const SEVERITY_COLOR: Record<string, string> = {
   Unknown: "var(--sev-unknown)",
 };
 
-/** Environments are identities. Slot order follows the release pipeline. */
-export const ENV_COLOR: Record<string, string> = {
-  "IT-UAT": SERIES[0],
-  "BIZ-UAT": SERIES[1],
-  CUG: SERIES[2],
-  Production: SERIES[3],
-  Unknown: INK_MUTED,
-};
+/**
+ * A slot per value, in the order the contract lists them.
+ *
+ * Derived rather than hand-written so that adding a category in
+ * `contracts/item-filters.ts` cannot leave it without a colour — the bug that
+ * shape prevents is four environments drawn in the same grey because somebody
+ * added them to the vocabulary and not here.
+ *
+ * Past the last slot a value falls to muted ink rather than to a reused hue:
+ * two identities sharing a colour is a chart that lies, and a ninth hue is one
+ * nobody validated. `Unknown` is muted for the same reason it exists — it is an
+ * absence, not an identity.
+ */
+function slots(values: readonly string[]): Record<string, string> {
+  return { ...Object.fromEntries(values.map((v, i) => [v, SERIES[i] ?? INK_MUTED])), Unknown: INK_MUTED };
+}
 
-export const STATUS_COLOR: Record<string, string> = {
-  Open: SERIES[0],
-  Commented: SERIES[1],
-  "For QA Validation": SERIES[2],
-  "Not a Bug": SERIES[3],
-  Closed: SERIES[4],
-  Unknown: INK_MUTED,
-};
+/** Environments are identities. Slot order follows the release pipeline. */
+export const ENV_COLOR: Record<string, string> = slots(VOCABULARY.environment);
+
+export const STATUS_COLOR: Record<string, string> = slots(VOCABULARY.status);
 
 /**
  * The same four states, for **type**.

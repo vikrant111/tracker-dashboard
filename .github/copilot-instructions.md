@@ -2,7 +2,8 @@
 
 Ageing bugs, tickets and CRs across multiple PODs (teams). Data comes from Azure
 DevOps Boards or a spreadsheet upload, lands in MongoDB, and is read back
-through aggregations.
+through aggregations — or, for a POD named in `src/lib/contracts/azure-sources.ts`,
+is fetched from Azure on the request and **never stored at all**.
 
 **Stack:** Next.js 15 App Router (frontend *and* backend) · React 19 · TypeScript
 strict · Tailwind v4 · MongoDB + Mongoose · NextAuth v5 · framer-motion · exceljs.
@@ -82,6 +83,12 @@ pnpm check invariants     # after touching anything that reads or writes items
 ```
 src/lib/            data + domain, no React
   api.ts            request → scoped Filters   ← the security boundary
+  contracts/        the two tables everything filters by — item-filters.ts
+                    (vocabulary + allowlists + the 365-day window) and
+                    azure-sources.ts (which projects a POD reads, and how it
+                    is filtered). Edit these, never the filter logic
+  live/             reading a POD from Azure per request and storing nothing:
+                    wiql.ts builds the query, fetch.ts runs and caches it
   (data access lives in src/db/ and src/controllers/ — see below)
   mappings.json     index mappings, shared with scripts/seed.mjs
   metrics.ts        one aggregation; metrics/ holds query, dates, list-items

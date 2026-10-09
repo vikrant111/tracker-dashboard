@@ -5,6 +5,7 @@ import {
   type Kind,
   type ValueMap,
 } from "../types.ts";
+import { canonical } from "../contracts/item-filters.ts";
 
 /**
  * Turning a board's own words into ours.
@@ -64,6 +65,27 @@ export function resolve<T extends string>(
   if (direct) return direct;
 
   /*
+   * The same comparison with the punctuation gone, so how a board separates two
+   * words is not a category decision.
+   *
+   * This pass is why `IT_UAT`, `IT.UAT`, `IT - UAT` and `IT  UAT` are IT-UAT.
+   * Without it they fell through to the substring pass below, where the longest
+   * matching key was `uat` — and every one of them came back **BIZ-UAT**. Two
+   * real environments merged into one on nothing but a separator, which is the
+   * kind of wrong a reader cannot see and cannot question.
+   *
+   * It runs **before** the substring pass and never after it: an exact answer,
+   * however it was spelled, always beats a word found inside something longer.
+   */
+  const squashed = canonical(key);
+  if (squashed) {
+    const sameValue = allowed.find((a) => canonical(a) === squashed);
+    if (sameValue) return sameValue;
+    const sameKey = Object.keys(table).find((k) => canonical(k) === squashed);
+    if (sameKey && allowed.includes(table[sameKey] as T)) return table[sameKey] as T;
+  }
+
+  /*
    * Longest matching key first, so "not a bug" beats "bug" and "biz-uat" beats
    * "uat" — and **bounded**, so a key only matches a whole word.
    *
@@ -72,11 +94,21 @@ export function resolve<T extends string>(
    * "…Investment Mall and microsites" came back IT-UAT. "monitoring", "credit",
    * "editor" and "digital" all did the same. A two-letter key is a substring of
    * an enormous number of ordinary words.
+   *
+   * The vocabulary's own words join the keys here, so "REGRESSION TESTING"
+   * reaches Regression without a table entry — but only those of three
+   * characters or more. `DR` and `CR` are left out deliberately: a two-letter
+   * word inside a sentence is the accident above, and both still match exactly
+   * through the passes before this one.
    */
-  const partial = Object.keys(table)
+  const keys = [...Object.keys(table), ...allowed.filter((a) => a.length >= 3).map(norm)];
+  const partial = [...new Set(keys)]
     .sort((a, b) => b.length - a.length)
     .find((k) => wordMatch(key, k));
-  if (partial && allowed.includes(table[partial] as T)) return table[partial] as T;
+  if (partial) {
+    const hit = table[partial] ?? allowed.find((a) => norm(a) === partial);
+    if (hit && allowed.includes(hit as T)) return hit as T;
+  }
 
   return fallback;
 }

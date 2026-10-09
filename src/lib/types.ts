@@ -1,15 +1,21 @@
 import { AGEING } from "./constants.ts";
+import { TERMINAL, VOCABULARY } from "./contracts/item-filters.ts";
 
-export const SEVERITIES = ["Critical", "Major", "Minor", "Unknown"] as const;
-export const ENVIRONMENTS = ["IT-UAT", "BIZ-UAT", "CUG", "Production", "Unknown"] as const;
-export const STATUSES = [
-  "Open",
-  "Commented",
-  "For QA Validation",
-  "Not a Bug",
-  "Closed",
-  "Unknown",
-] as const;
+/*
+ * The vocabulary, from the contract table in `contracts/item-filters.ts`.
+ *
+ * Declared here because everything already imports it from here — the schema
+ * enums, the drill-down's dropdowns, the colour slots and the severity rank all
+ * read these three lists — but the values themselves live in one editable file
+ * so adding a board's category is one line in one place.
+ *
+ * `Unknown` is appended rather than listed in the contract: it is not a
+ * category anybody chose, it is what an unrecognised value becomes, and it must
+ * never be something the contract can accidentally remove.
+ */
+export const SEVERITIES = [...VOCABULARY.severity, "Unknown"] as const;
+export const ENVIRONMENTS = [...VOCABULARY.environment, "Unknown"] as const;
+export const STATUSES = [...VOCABULARY.status, "Unknown"] as const;
 export const KINDS = ["bug", "ticket", "cr"] as const;
 
 export type Severity = (typeof SEVERITIES)[number];
@@ -139,8 +145,8 @@ export const DEFAULT_FIELD_MAP: FieldMap = {
 export { DEFAULT_VALUE_MAP } from "./value-map.ts";
 
 
-/** Statuses that mean the item no longer needs work. */
-export const TERMINAL_STATUSES: Status[] = ["Closed", "Not a Bug"];
+/** Statuses that mean the item no longer needs work. Listed in the contract. */
+export const TERMINAL_STATUSES: Status[] = [...TERMINAL];
 
 export const DEFAULT_THRESHOLD_DAYS = AGEING.defaultThresholdDays;
 

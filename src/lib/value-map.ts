@@ -40,6 +40,32 @@ export const DEFAULT_VALUE_MAP: ValueMap = {
     prod: "Production",
     production: "Production",
     live: "Production",
+    /*
+     * Spelled with a space, which several boards do.
+     *
+     * Without these, `IT UAT` reached the word-bounded pass, where the longest
+     * matching key was `uat` — so it came back **BIZ-UAT**. A wrong environment
+     * is worse than Unknown: it moves items between two real boards' numbers.
+     */
+    "it uat": "IT-UAT",
+    "biz uat": "BIZ-UAT",
+    /*
+     * Written the other way round. Separators no longer matter — `IT_UAT` and
+     * `IT - UAT` are handled by the squashed pass — but word *order* is not
+     * something a comparison can undo, and `UAT IT` otherwise matches the bare
+     * `uat` key and comes back BIZ-UAT.
+     */
+    "uat it": "IT-UAT",
+    "uat biz": "BIZ-UAT",
+    /*
+     * `DR`, `N2P`, `PTPaaS` and `Regression` need no keys — they match the
+     * vocabulary exactly, and the exact pass runs before the substring one.
+     * Giving `dr` a key would hand a two-letter token to the substring pass,
+     * which is the accident that put every "microsites" item in IT-UAT.
+     */
+    "disaster recovery": "DR",
+    "pt paas": "PTPaaS",
+    "regression suite": "Regression",
   },
   status: {
     new: "Open",
@@ -79,5 +105,13 @@ export const DEFAULT_VALUE_MAP: ValueMap = {
     done: "Closed",
     completed: "Closed",
     removed: "Not a Bug",
+    /*
+     * A board whose Bug Status field carries `CR` needs no key — it matches the
+     * vocabulary exactly. These are the longer spellings of the same thing.
+     * `cr` itself is deliberately not a key: two letters in the substring pass
+     * made a task tagged "critical" a change request once already.
+     */
+    "change request": "CR",
+    "change-request": "CR",
   },
 };

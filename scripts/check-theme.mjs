@@ -13,6 +13,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+/* The real slot list, so a ninth cannot be added without being checked. */
+import { SERIES } from "../src/lib/palette.ts";
 
 /**
  * The greeting, as one string.
@@ -337,8 +339,16 @@ for (const [themeName, tokens] of [
    * eyeballed: lightness band, chroma floor, CVD separation and normal-vision
    * separation all still pass, and the CVD margin came out better than before.
    */
-  for (let i = 1; i <= 5; i++) {
+  for (let i = 1; i <= SERIES.length; i++) {
     const c = hex(tokens[`--series-${i}`]);
+    /*
+     * A slot the palette offers but the CSS never defines reads as black, and
+     * eight environments drawn with five declared slots is exactly that: three
+     * of them silently became #000 against a near-white panel. Missing is
+     * checked separately from faint, because the fixes are different.
+     */
+    check(`--series-${i} is declared in ${themeName}`, Boolean(tokens[`--series-${i}`]), "missing");
+    if (!tokens[`--series-${i}`]) continue;
     const ratio = contrast(c, surface);
     check(`--series-${i} contrast on ${themeName} surface`, ratio >= 3, `${ratio.toFixed(2)}:1`);
   }

@@ -48,6 +48,16 @@ import { dateFields, fromStored, fromStoredDoc, toDocument, toStoredRow } from "
 import { CycleModel, ItemModel, RepoModel, SyncStateModel, TeamModel, UserModel } from "../src/db/models/index.ts";
 import { agreedThreshold, teamThresholds, thresholdFor, widestThreshold } from "../src/lib/metrics/threshold.ts";
 import { SEVERITIES, clampSeverityThresholds } from "../src/lib/types.ts";
+import { ENVIRONMENTS, STATUSES, TERMINAL_STATUSES } from "../src/lib/types.ts";
+import { ALLOWED, LIVE, VOCABULARY, WINDOW_MODES, allowedBy, allows, canonical } from "../src/lib/contracts/item-filters.ts";
+import { AZURE_SOURCES, sourcesFor } from "../src/lib/contracts/azure-sources.ts";
+import { createStore } from "../src/db/store/index.ts";
+import { withLiveItems } from "../src/db/store/live-items.ts";
+/** The store, with its items answered live wherever the contract says so. */
+const withLiveStore = (store) => ({ ...store, items: withLiveItems(store) });
+import { SourceConfigError, buildSourceWiql } from "../src/lib/live/wiql.ts";
+import { forgetLive, keepAllowed, liveItems, readsLive, windowStart } from "../src/lib/live/fetch.ts";
+import { ENV_COLOR, INK_MUTED, SERIES, SEVERITY_COLOR, STATUS_COLOR } from "../src/lib/palette.ts";
 import { aggregateDashboard } from "../src/controllers/dashboard.aggregate.ts";
 import { describeEmpty } from "../src/components/health-empty-copy.ts";
 import { filterRoster } from "../src/lib/roster.ts";
@@ -1751,7 +1761,7 @@ section("azure connects from the environment alone");
   check("connectability is one shared test", azure.includes("export function isConnectable"));
   // Checking only the org URL let a POD with a URL but no PAT into the sync
   // loop, where it failed on every run.
-  check("sync filters on a full connection", sync.includes("teams.filter(isConnectable)"));
+  check("sync filters on a full connection", /teams\.filter\(\(t\) => isConnectable\(t\) \|\| readsLive\(t\)\)/.test(sync), "or plain teams.filter(isConnectable)");
   check("sync no longer checks the org URL alone", !/t\.azure\.orgUrl \|\| process\.env\.AZDO_ORG_URL/.test(sync));
 
   // With no POD there is nothing to sync, so a configured environment still
@@ -3481,6 +3491,43 @@ section("a board's own words resolve, without false positives");
   ]) {
     check(`environment "${value}" -> ${want}`, item({ E: value }).environment === want, item({ E: value }).environment);
   }
+
+  /*
+   * IT UAT and BIZ-UAT are two different environments, and every one of these
+   * spellings put the first into the second.
+   *
+   * `uat -> BIZ-UAT` is a three-letter key and `it` is a two-letter one, so the
+   * longest-match pass preferred `uat` on anything the exact passes missed —
+   * which was every separator except a single hyphen and a single space, and
+   * both word orders. Items moved between two real boards' numbers, and nothing
+   * on screen could show it had happened. The squashed pass in
+   * `normalize/vocabulary.ts` is what fixes the separators; the `uat it` key in
+   * `value-map.ts` is what fixes the order, which no comparison can undo.
+   */
+  for (const value of ["IT-UAT", "IT UAT", "IT_UAT", "IT.UAT", "IT/UAT", "IT  UAT", "IT - UAT", "ituat", "it uat", "UAT IT", "UAT-UAT IT", "IT UAT Environment"]) {
+    check(`"${value}" is IT-UAT, not BIZ-UAT`, item({ E: value }).environment === "IT-UAT", item({ E: value }).environment);
+  }
+  for (const value of ["BIZ-UAT", "BIZ UAT", "BIZ_UAT", "Biz.UAT", "bizuat", "UAT", "UAT BIZ", "Business UAT"]) {
+    check(`"${value}" is BIZ-UAT`, item({ E: value }).environment === "BIZ-UAT", item({ E: value }).environment);
+  }
+  /* The same separator blindness, for the four categories this board added. */
+  for (const [value, want] of [
+    ["DR", "DR"], ["D.R.", "DR"], ["Disaster Recovery", "DR"],
+    ["N2P", "N2P"], ["n2p", "N2P"], ["N-2-P", "N2P"],
+    ["PTPaaS", "PTPaaS"], ["PT PaaS", "PTPaaS"], ["pt-paas", "PTPaaS"], ["PTPAAS", "PTPaaS"],
+    ["Regression", "Regression"], ["REGRESSION TESTING", "Regression"],
+  ]) {
+    check(`environment "${value}" -> ${want}`, item({ E: value }).environment === want, item({ E: value }).environment);
+  }
+  /*
+   * And the guard on the pass that makes the above work: a two-letter
+   * vocabulary word must not be matched inside a longer one. `DR` is why this
+   * is here — "Dr Reddy" in an area path is not an environment.
+   */
+  for (const word of ["Dr Reddy", "drive", "address", "credit"]) {
+    check(`"${word}" is not read as DR`, item({ "System.AreaPath": word }).environment !== "DR", item({ "System.AreaPath": word }).environment);
+  }
+  check("a CR status is not found inside 'critical'", item({ "System.State": "critical" }).status !== "CR", item({ "System.State": "critical" }).status);
   for (const [value, want] of [
     ["2 - Major", "Major"], ["1 - Critical", "Critical"], ["3 - Medium (UI)", "Minor"],
     ["4 - Low", "Minor"], ["Blocker", "Critical"], ["High", "Major"],
@@ -3550,6 +3597,521 @@ section("a board's own words resolve, without false positives");
   check("...and are clickable", /workItemTypes: on/.test(adminSrc));
 }
 
+
+section("the contract tables are the only place a filter is written");
+{
+  /*
+   * Everything below reads the real contract, not a copy of it. A suite holding
+   * its own list of environments would pass while the board showed four grey
+   * bars, which is the failure these files exist to make impossible.
+   */
+  const VALUES = { severity: VOCABULARY.severity, environment: VOCABULARY.environment, status: VOCABULARY.status };
+
+  for (const dimension of ["severity", "environment", "status"]) {
+    /*
+     * A value in the allowlist that is not in the vocabulary can never match a
+     * mapped item, so the dimension filters **everything** out and the board is
+     * empty for a reason nothing on screen explains. A typo in a contract file
+     * has to fail here instead.
+     */
+    const unknown = ALLOWED[dimension].filter((v) => !VALUES[dimension].some((known) => canonical(known) === v));
+    check(`every allowed ${dimension} is a real ${dimension}`, unknown.length === 0, unknown.join(", "));
+
+    // And the vocabulary itself has to be usable as filter values and as keys.
+    check(`${dimension} has no blank entries`, VALUES[dimension].every((v) => String(v).trim().length > 0));
+    check(`${dimension} has no duplicates`, new Set(VALUES[dimension]).size === VALUES[dimension].length);
+    check(`${dimension} does not redeclare Unknown`, !VALUES[dimension].includes("Unknown"), "Unknown is appended, never listed");
+  }
+
+  // The vocabulary is what `types.ts` publishes, with Unknown on the end.
+  check("ENVIRONMENTS is the contract plus Unknown", ENVIRONMENTS.join("|") === [...VOCABULARY.environment, "Unknown"].join("|"), ENVIRONMENTS.join("|"));
+  check("SEVERITIES is the contract plus Unknown", SEVERITIES.join("|") === [...VOCABULARY.severity, "Unknown"].join("|"));
+  check("STATUSES is the contract plus Unknown", STATUSES.join("|") === [...VOCABULARY.status, "Unknown"].join("|"));
+  check("TERMINAL_STATUSES comes from the contract", TERMINAL_STATUSES.every((s) => STATUSES.includes(s)), TERMINAL_STATUSES.join(", "));
+  check("a change request is not terminal", !TERMINAL_STATUSES.includes("CR"), "CR is open work");
+
+  /* ---------------------------------------------------- canonical spelling */
+
+  check("spaces, hyphens and case are one spelling", canonical("BIZ UAT") === canonical("biz-uat") && canonical("biz_uat") === canonical("BIZ-UAT"));
+  check("...and surrounding punctuation is dropped", canonical("  -PTPaaS- ") === "ptpaas");
+  check("nothing canonicalises to the same thing twice", new Set(VOCABULARY.environment.map(canonical)).size === VOCABULARY.environment.length);
+
+  /* ------------------------------------------------------- the allowlists */
+
+  /*
+   * `dropOutside` is off, so **nothing** is dropped — every value that maps
+   * lands in its own section. That is the shipped setting, and it is the one
+   * that matters: a dropped item is in no total, in no drill-down, and nothing
+   * on screen says it was ever there.
+   */
+  check("the contract drops nothing by default", ALLOWED.dropOutside === false, "dropOutside is on");
+  for (const [dimension, value] of [
+    ["environment", "Production"], ["environment", "DR"], ["severity", "Critical"],
+    ["status", "For QA Validation"], ["status", "Not a Bug"], ["status", "CR"],
+    ["severity", "Unknown"], ["environment", "Unknown"], ["status", "Unknown"],
+  ]) {
+    check(`${dimension} "${value}" reaches the board`, allows(dimension, value));
+  }
+
+  /* Switched on, the lists are enforced — tested through `allowedBy` rather
+     than by mutating the contract, which a check must never leave changed. */
+  const enforcing = { ...ALLOWED, dropOutside: true };
+  check("switched on, an allowed environment passes", allowedBy(enforcing, "environment", "Production"));
+  check("...however the contract spells it", allowedBy(enforcing, "environment", "BIZ-UAT"), "contract says 'BIZ UAT'");
+  check("...and one outside the list is dropped", !allowedBy(enforcing, "severity", "Trivial"));
+  check("...as is a status the board does not list", !allowedBy(enforcing, "status", "For QA Validation"));
+  check("Unknown follows keepUnknown", allowedBy(enforcing, "severity", "Unknown") === enforcing.keepUnknown);
+  check("...and is refused when that is off", !allowedBy({ ...enforcing, keepUnknown: false }, "severity", "Unknown"));
+  /*
+   * Unknown is the one value that must not be judged by the list: it is what an
+   * unmapped board value becomes, so testing it for membership would drop every
+   * task (which has no severity) whatever the flag said.
+   */
+  check("Unknown is never looked up in the list", !ALLOWED.severity.includes("unknown"));
+
+  /* ------------------------------------------------------ the 365-day wall */
+
+  check("the window is a year", LIVE.windowDays === 365, String(LIVE.windowDays));
+  const NOW = Date.UTC(2026, 9, 9);
+  const live = (over) => ({
+    id: "t:1", workItemId: "1", teamId: "t", source: "azure", kind: "bug", type: "Bug", title: "t",
+    url: "", assignee: "A", assigneeEmail: "", severity: "Critical", environment: "Production",
+    status: "Open", state: "Active", priority: null, tags: [],
+    createdDate: new Date(NOW - 10 * 86400000).toISOString(), changedDate: new Date(NOW).toISOString(),
+    closedDate: null, isActive: true, ...over,
+  });
+  const kept = (over) => keepAllowed([live(over)], NOW).length === 1;
+
+  const old = (days) => new Date(NOW - days * 86_400_000).toISOString();
+
+  check("an item from this year is kept", kept({}));
+  check("one day inside the window is kept", kept({ createdDate: old(364) }));
+
+  /*
+   * The rule is *finished long ago and raised long ago*, not *raised recently*.
+   *
+   * A bug raised two years ago and still open is the single most important row
+   * an ageing board has, and windowing on the raised date alone hides exactly
+   * that one. It is kept, and the buckets place it correctly — `30+ days` for
+   * ageing, and outside the trend chart's own range, so nothing is distorted.
+   */
+  check("an old item that is still open is kept", kept({ createdDate: old(800), isActive: true }));
+  check("...and so is one closed inside the window", kept({ createdDate: old(800), isActive: false, closedDate: old(30) }));
+  check("an old item closed long ago is dropped", !kept({ createdDate: old(800), isActive: false, closedDate: old(400) }));
+  check("...and so is an old one with no close date that is not open", !kept({ createdDate: old(800), isActive: false, closedDate: null }));
+  check("an unparseable created date is dropped, not kept as now", !kept({ createdDate: "not a date" }));
+  check("an unparseable close date cannot rescue old history", !kept({ createdDate: old(800), isActive: false, closedDate: "not a date" }));
+
+  /* Nothing is dropped for its words, because `dropOutside` is off. */
+  check("an environment in the contract's list is kept", kept({ environment: "IT-UAT" }));
+  check("...and so is one outside it", kept({ environment: "Staging" }));
+  check("a status the board does not list is still kept", kept({ status: "For QA Validation" }));
+  check("a severity the board does not list is still kept", kept({ severity: "Trivial" }));
+  check("the window start is a year back", Math.round((NOW - Date.parse(windowStart(NOW))) / 86400000) === 365);
+
+  /* ------------------------------------------------- which POD reads live */
+
+  const pod = (id, name) => ({ id, name });
+  check("a POD named in the contract has sources", sourcesFor(pod("amc-pod", "AMC POD")).length === 2);
+  check("...matched by name as well as id", sourcesFor(pod("renamed-id", "AMC POD")).length === 2);
+  check("...case-insensitively, either way round", sourcesFor(pod("AMC-POD", "x")).length === 2 && sourcesFor(pod("x", "amc pod")).length === 2);
+  check("...but not by a partial name", sourcesFor(pod("x", "AMC")).length === 0, "a name is matched whole, not as a prefix");
+  check("a POD not in the contract has none", sourcesFor(pod("payments-pod", "Payments POD")).length === 0);
+  check("a POD with no id or name has none", sourcesFor(pod("", "")).length === 0);
+
+  /*
+   * No PAT anywhere means no live read, which is what lets a clone of this
+   * repository run the demo board. It is the **only** fallback: a PAT that
+   * exists and fails is an error, because showing last week's synced numbers as
+   * though they were live is the worse failure.
+   */
+  const bare = { id: "amc-pod", name: "AMC POD", azure: { orgUrl: "", project: "", pat: "", areaPath: "", workItemTypes: [] } };
+  check("a contract POD with no PAT falls back to the store", readsLive(bare) === false);
+  check("...and reads live once it has one", readsLive({ ...bare, azure: { ...bare.azure, pat: "x" } }) === true);
+}
+
+section("the live WIQL is bounded on every axis");
+{
+  const SINCE = "2025-10-09T00:00:00.000Z";
+  const source = AZURE_SOURCES.find((s) => s.any?.length);
+  const both = AZURE_SOURCES.find((s) => s.all?.length);
+  check("the contract has a source with an OR group", Boolean(source));
+  check("the contract has a source with an AND group", Boolean(both));
+
+  const q = buildSourceWiql(source, SINCE);
+  check("the project is bounded", q.includes("[System.TeamProject] = '3in1 IT Requests'"), q);
+  check("the work item types are bounded", /\[System\.WorkItemType\] IN \('Bug', 'Issue'/.test(q));
+  check("the window is bounded", q.includes("[System.CreatedDate] >= '2025-10-09T00:00:00Z'"), "and without milliseconds, which WIQL rejects");
+
+  /*
+   * One clause per mode, and every one of them bracketed. WIQL binds
+   * `a AND b OR c` as `(a AND b) OR c`, so an unbracketed OR in the date bound
+   * would return items with no project, type or filter bound at all.
+   */
+  const modes = Object.fromEntries(WINDOW_MODES.map((m) => [m, buildSourceWiql({ ...both, windowMode: m }, SINCE)]));
+  check("created: the raised date alone", modes.created.includes("AND [System.CreatedDate] >= '2025-10-09T00:00:00Z' AND"), modes.created);
+  check("touched: raised or changed, bracketed", modes.touched.includes("AND ([System.CreatedDate] >= '2025-10-09T00:00:00Z' OR [System.ChangedDate] >= '2025-10-09T00:00:00Z') AND"), modes.touched);
+  check("open-or-touched: and anything never closed", modes["open-or-touched"].includes("OR [Microsoft.VSTS.Common.ClosedDate] = '') AND"), modes["open-or-touched"]);
+  check("the default mode is touched", buildSourceWiql(both, SINCE) === modes[LIVE.windowMode], `default is ${LIVE.windowMode}`);
+  /*
+   * `created` is the mode that hides an old open bug, so it must be a choice
+   * somebody made rather than what you get by leaving the field out.
+   */
+  check("...and it is not 'created'", LIVE.windowMode !== "created", "the default would hide every long-open item");
+  const badMode = (() => {
+    try { buildSourceWiql({ ...both, windowMode: "last-year" }, SINCE); return false; }
+    catch (err) { return err instanceof SourceConfigError; }
+  })();
+  check("an unknown window mode is refused", badMode);
+  /*
+   * The bracket is load-bearing. `a AND b OR c` binds as `(a AND b) OR c`, so
+   * an unbracketed OR group lets an item through on the OR branch alone — no
+   * project bound, no date bound, no type bound. That is the whole project.
+   */
+  check("the OR group is bracketed", /AND \(\[Custom\.PODName\] = 'AMC POD' OR \[Custom\.BFLITSpoc\] IN \(/.test(q), q);
+  check("a single value uses = rather than IN", q.includes("[Custom.PODName] = 'AMC POD'"));
+  check("a list uses IN", /\[Custom\.BFLITSpoc\] IN \('Aravind I', '/.test(q));
+  check("newest first, so truncation keeps the recent end", /ORDER BY \[System\.ChangedDate\] DESC$/.test(q), q);
+
+  const q2 = buildSourceWiql(both, SINCE);
+  check("every AND clause is present", q2.includes("[Custom.DeliverySPOC] IN (") && q2.includes("[Custom.ModuleName] = 'AMC'"), q2);
+  /* The filters are ANDed. The date bound carries its own OR, inside brackets. */
+  check("...joined with AND, not OR", !q2.replace(/\([^)]*\)/g, "").includes(" OR "), q2);
+
+  /* A quote in a value is doubled, or it ends the string and the rest is syntax. */
+  const quoted = buildSourceWiql({ ...both, all: [{ field: "Custom.ModuleName", values: ["O'Brien"] }] }, SINCE);
+  check("a quote in a value is escaped", quoted.includes("'O''Brien'"), quoted);
+
+  /*
+   * An empty list is a half-filled contract, not "match everything". Dropping
+   * the clause would turn a filter on one module into the whole project, which
+   * is the failure the whole contract exists to prevent — so it throws.
+   */
+  const threw = (over) => {
+    try {
+      buildSourceWiql({ ...both, ...over }, SINCE);
+      return false;
+    } catch (err) {
+      return err instanceof SourceConfigError;
+    }
+  };
+  check("an empty value list refuses to build a query", threw({ all: [{ field: "Custom.ModuleName", values: [] }] }));
+  check("...and says which file to edit", (() => {
+    try {
+      buildSourceWiql({ ...both, all: [{ field: "Custom.ModuleName", values: [] }] }, SINCE);
+      return false;
+    } catch (err) {
+      return err.message.includes("azure-sources.ts") && err.message.includes("Custom.ModuleName");
+    }
+  })());
+  check("a blank field name refuses too", threw({ all: [{ field: "  ", values: ["AMC"] }] }));
+  check("no work item types refuses too", threw({ workItemTypes: [] }));
+  check("values that are only whitespace count as empty", threw({ all: [{ field: "Custom.ModuleName", values: ["  ", ""] }] }));
+
+  /* An area path is optional, and narrows rather than replaces. */
+  const scoped = buildSourceWiql({ ...both, areaPath: "Proj\\AMC" }, SINCE);
+  check("an area path is added when set", scoped.includes("[System.AreaPath] UNDER 'Proj\\AMC'"));
+  check("...and left out when blank", !buildSourceWiql(both, SINCE).includes("AreaPath"));
+}
+
+section("a live POD, end to end, against a stubbed Azure");
+{
+  /*
+   * The one path that cannot be reached from a check suite is the one that
+   * matters most, so Azure is answered here rather than skipped. Every stage
+   * runs for real: the WIQL is built from the contract, both projects are
+   * queried, each source's own field mapping is applied, the allowlists and the
+   * window are enforced, and the answer is cached.
+   *
+   * `globalThis.fetch` is the seam. The alternative — an env var that redirects
+   * the org URL — would be production surface existing only for a test, and the
+   * first thing to go wrong in production would be somebody setting it.
+   */
+  const team = {
+    id: "amc-pod",
+    name: "AMC POD",
+    description: "",
+    members: [],
+    azure: { orgUrl: "", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
+    fieldMap: { severity: "Microsoft.VSTS.Common.Severity", environment: "Custom.Environment", status: "System.State" },
+    valueMap: { severity: {}, environment: {}, status: {} },
+    ageingThresholdDays: 7,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+
+  const NOW = Date.UTC(2026, 9, 9);
+  const ago = (days) => new Date(NOW - days * 86_400_000).toISOString();
+
+  /** One Azure work item, as `workitemsbatch` returns it. */
+  const wi = (id, over = {}) => ({
+    id,
+    fields: {
+      "System.WorkItemType": "Bug",
+      "System.Title": `Item ${id}`,
+      "System.State": "Active",
+      "System.CreatedDate": ago(10),
+      "System.ChangedDate": ago(1),
+      "Microsoft.VSTS.Common.Severity": "1-Critical",
+      "Custom.BugEnvironment": "BIZ UAT",
+      "Custom.BugStatus": "Open",
+      ...over,
+    },
+    _links: { html: { href: `https://example.invalid/${id}` } },
+  });
+
+  /* Per project, because a POD made of two must query both. */
+  const PLANNED = {
+    "3in1 IT Requests": [
+      wi(101),
+      wi(102, { "Custom.BugEnvironment": "PTPaaS", "Custom.BugStatus": "CR" }),
+      /*
+       * Kept, in its own section. The board's status list does not name "For PO
+       * Validation", and `dropOutside` is off — a value nobody expected showing
+       * up under its own heading is a question somebody can answer, where a
+       * missing item is invisible.
+       */
+      wi(103, { "Custom.BugStatus": "For PO Validation" }),
+      // Kept: raised outside the window but still open, which is the oldest and
+      // most important row an ageing board has.
+      wi(104, { "System.CreatedDate": ago(400) }),
+      // Dropped: finished history. Raised and closed before the window.
+      wi(105, {
+        "System.CreatedDate": ago(500),
+        "Custom.BugStatus": "Closed",
+        "Microsoft.VSTS.Common.ClosedDate": ago(450),
+      }),
+    ],
+    "3in1_Agile_Projects": [
+      wi(201, { "Custom.BugEnvironment": "DR", "Microsoft.VSTS.Common.Severity": "3-Minor" }),
+      // The same work item id reaching both projects must land once, not twice.
+      wi(101),
+    ],
+  };
+
+  const seen = { wiql: [], batch: 0 };
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init?.body ?? "{}");
+    const ok = (json) => new Response(JSON.stringify(json), { status: 200, headers: { "Content-Type": "application/json" } });
+
+    if (String(url).includes("/_apis/wit/wiql")) {
+      seen.wiql.push({ url: String(url), query: body.query });
+      const project = /\[System\.TeamProject\] = '([^']+)'/.exec(body.query)?.[1];
+      return ok({ workItems: (PLANNED[project] ?? []).map((w) => ({ id: w.id })) });
+    }
+    if (String(url).includes("/_apis/wit/workitemsbatch")) {
+      seen.batch++;
+      const wanted = new Set(body.ids);
+      const all = Object.values(PLANNED).flat();
+      // Deduplicated the way Azure would: ids are unique across an org.
+      const byId = new Map(all.map((w) => [w.id, w]));
+      return ok({ value: [...wanted].map((id) => byId.get(id)).filter(Boolean) });
+    }
+    throw new Error(`the stub was asked for ${url}`);
+  };
+
+  try {
+    forgetLive();
+    const items = await liveItems(team, NOW);
+
+    check("both projects were queried", seen.wiql.length === 2, `${seen.wiql.length} WIQL calls`);
+    check("...each against its own project", seen.wiql.every((c, i) => c.url.includes(encodeURIComponent(AZURE_SOURCES[i].project).replace(/%20/g, "%20"))), seen.wiql.map((c) => c.url).join(" "));
+    check("the window reached the query", seen.wiql.every((c) => c.query.includes(`'${ago(365).replace(/\.\d{3}Z$/, "Z")}'`)), seen.wiql[0]?.query);
+    check("the PAT never appears in a URL", seen.wiql.every((c) => !c.url.includes("test-pat")));
+
+    const ids = items.map((i) => i.workItemId).sort();
+    check("every current item arrived", ids.join(",") === "101,102,103,104,201", ids.join(","));
+    check("...one row per work item, not one per source", items.filter((i) => i.workItemId === "101").length === 1);
+    check("a status the board does not list keeps its own section", ids.includes("103"));
+    check("an old item that is still open is kept", ids.includes("104"), "the oldest open row must never be hidden");
+    check("finished history is dropped", !ids.includes("105"), "raised and closed before the window");
+
+    const byId = new Map(items.map((i) => [i.workItemId, i]));
+    /*
+     * The per-source field mapping. Read off `System.State` instead, every one
+     * of these would be "Open" — including the CR, which is the value this
+     * board added the vocabulary for.
+     */
+    check("status came from the source's own field", byId.get("102").status === "CR", byId.get("102").status);
+    check("...and an unlisted one still maps to its real section", byId.get("103").status === "For QA Validation", byId.get("103").status);
+    check("a long-open item reads as open", byId.get("104").isActive === true);
+    check("environment came from the source's own field", byId.get("102").environment === "PTPaaS", byId.get("102").environment);
+    check("the board's severity spelling resolves", byId.get("101").severity === "Critical", byId.get("101").severity);
+    check("...and the second source's too", byId.get("201").severity === "Minor", byId.get("201").severity);
+    check("a spaced environment resolves", byId.get("101").environment === "BIZ-UAT", byId.get("101").environment);
+    check("DR resolves without a value-map key", byId.get("201").environment === "DR", byId.get("201").environment);
+    check("the item id is namespaced by POD", byId.get("101").id === "amc-pod:101", byId.get("101").id);
+    check("an open item is active", byId.get("101").isActive === true);
+    check("the link is the one Azure gave", byId.get("101").url === "https://example.invalid/101");
+
+    /* The cache: a second read inside the TTL asks Azure nothing. */
+    const callsBefore = seen.wiql.length;
+    const again = await liveItems(team, NOW + 1000);
+    check("a second read inside the window is cached", seen.wiql.length === callsBefore, `${seen.wiql.length - callsBefore} extra calls`);
+    check("...and returns the same rows", again.length === items.length);
+
+    forgetLive(team.id);
+    await liveItems(team, NOW + 2000);
+    check("forgetting the cache re-fetches", seen.wiql.length === callsBefore + 2, `${seen.wiql.length - callsBefore} calls after forgetting`);
+
+    /* Concurrent readers share one request, or a board load fires three. */
+    forgetLive(team.id);
+    const mark = seen.wiql.length;
+    await Promise.all([liveItems(team, NOW + 3000), liveItems(team, NOW + 3000), liveItems(team, NOW + 3000)]);
+    check("three concurrent readers make one round of calls", seen.wiql.length === mark + 2, `${seen.wiql.length - mark} calls for three readers`);
+  } finally {
+    globalThis.fetch = real;
+    forgetLive();
+  }
+}
+
+section("a live POD cannot be written to the store, by anybody");
+{
+  /*
+   * The claim this whole design rests on, proved against a real store rather
+   * than asserted in a comment: read a live POD's board end to end, then look
+   * at what landed. The memory driver is used because it shares every line of
+   * the file driver's logic and none of its I/O — if nothing reaches it,
+   * nothing would have reached a file either.
+   */
+  const store = withLiveStore(createStore("memory"));
+  await store.init();
+  await store.dropAll();
+
+  const team = {
+    id: "amc-pod", name: "AMC POD", description: "", members: [],
+    azure: { orgUrl: "", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
+    fieldMap: { severity: "Microsoft.VSTS.Common.Severity", environment: "Custom.Environment", status: "System.State" },
+    valueMap: { severity: {}, environment: {}, status: {} },
+    ageingThresholdDays: 7, createdAt: "2026-01-01T00:00:00Z",
+  };
+  await store.teams.save(team);
+
+  const NOW = Date.UTC(2026, 9, 9);
+  const wi = (id, over = {}) => ({
+    id,
+    fields: {
+      "System.WorkItemType": "Bug", "System.Title": `Item ${id}`, "System.State": "Active",
+      "System.CreatedDate": new Date(NOW - 20 * 86_400_000).toISOString(),
+      "System.ChangedDate": new Date(NOW - 86_400_000).toISOString(),
+      "Microsoft.VSTS.Common.Severity": "1-Critical",
+      "Custom.BugEnvironment": "IT UAT", "Custom.BugStatus": "Open", ...over,
+    },
+    _links: { html: { href: `https://x.invalid/${id}` } },
+  });
+
+  const real = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init?.body ?? "{}");
+    const ok = (json) => new Response(JSON.stringify(json), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (String(url).includes("/wiql")) return ok({ workItems: [{ id: 700 }, { id: 701 }] });
+    if (String(url).includes("/workitemsbatch")) return ok({ value: body.ids.map((id) => wi(id)) });
+    throw new Error(String(url));
+  };
+
+  try {
+    forgetLive();
+    const filters = { teamId: "amc-pod", thresholdDays: 7, thresholdByTeam: { "amc-pod": 7 } };
+    const found = await store.items.find(filters, NOW);
+
+    check("the live POD's items reached the board", found.length === 2, `${found.length} rows`);
+    check("...and none of them reached the store", (await store.items.count()) === 0, `${await store.items.count()} stored`);
+
+    /* A second read, in case it is the read that persists. */
+    forgetLive();
+    await store.items.find(filters, NOW);
+    check("reading twice still stores nothing", (await store.items.count()) === 0, `${await store.items.count()} stored`);
+
+    /*
+     * And the write path itself, called directly the way a future sync or a new
+     * importer would. It must refuse rather than quietly drop the rows.
+     */
+    let refusal = null;
+    try {
+      await store.items.bulkUpsert([{ ...found[0], _id: "amc-pod:700" }]);
+    } catch (err) {
+      refusal = err.message;
+    }
+    check("writing a live POD's item is refused", refusal !== null, "it was accepted");
+    check("...and the refusal names the file to edit", /azure-sources\.ts/.test(refusal ?? ""), refusal ?? "");
+    check("...and nothing was stored by the attempt", (await store.items.count()) === 0);
+
+    /* A POD that is not in the contract still writes, or the board loses its other half. */
+    const stored = { ...team, id: "payments-pod", name: "Payments POD" };
+    await store.teams.save(stored);
+    const failed = await store.items.bulkUpsert([{ ...found[0], id: "payments-pod:1", _id: "payments-pod:1", teamId: "payments-pod", workItemId: "1" }]);
+    check("a POD outside the contract still stores normally", failed === 0 && (await store.items.count()) === 1, `${failed} failed, ${await store.items.count()} stored`);
+
+    /*
+     * Both halves on one board. The stored POD's row and the live POD's items
+     * must both appear, and the live POD must not also return a stale stored
+     * row — which is how a POD that used to sync would double-count.
+     */
+    await store.items.bulkUpsert([{ ...found[0], id: "amc-pod:stale", _id: "amc-pod:stale", teamId: "payments-pod", workItemId: "stale" }]);
+    const both = await store.items.find({ thresholdByTeam: { "amc-pod": 7, "payments-pod": 7 } }, NOW);
+    check("a live POD and a stored POD share one board", both.length === 4, `${both.length} rows`);
+    check("...and the live half is never read from the store", both.filter((d) => d.teamId === "amc-pod").length === 2, "stale rows leaked in");
+  } finally {
+    globalThis.fetch = real;
+    forgetLive();
+    await store.dropAll();
+  }
+}
+
+section("a live board borrows the stored board's logic, never a copy of it");
+{
+  const live = readFileSync(new URL("../src/db/store/live-items.ts", import.meta.url), "utf8");
+  /*
+   * The whole reason every number on this dashboard agrees with the list behind
+   * it is that one predicate answers both. A live store that filtered items its
+   * own way would reintroduce exactly the disagreement `matchesFilters` exists
+   * to prevent.
+   */
+  check("the live store filters with matchesFilters", /matchesFilters\(doc, filters, now\)/.test(live));
+  check("...imported from the shared predicate", /from "\.\.\/query\/predicate\.ts"/.test(live));
+  /*
+   * A POD that moved to live may still have rows from when it synced. Returning
+   * both sets is every item twice and every number doubled.
+   */
+  check("stored rows for a live POD are excluded", /!liveIds\.has\(String\(d\.teamId\)\)/.test(live));
+  check("the scope comes from the caller's visible PODs", /thresholdByTeam/.test(live), "never a fresh unscoped team list");
+
+  const fetch = readFileSync(new URL("../src/lib/live/fetch.ts", import.meta.url), "utf8");
+  check("a live fetch writes nothing", !/bulkUpsert|saveSyncState|writeFile/.test(fetch));
+  check("concurrent readers share one fetch", /inflight/.test(fetch), "or a dashboard load fires three year-long queries");
+  check("the cache is keyed per POD", /entries\.set\(team\.id/.test(fetch));
+  check("the normaliser sees each source's own project", /orgUrl: source\.orgUrl/.test(fetch));
+
+  const syncSrc = readFileSync(new URL("../src/lib/sync.ts", import.meta.url), "utf8");
+  check("sync refuses to store a live POD's items", /if \(readsLive\(team\)\)/.test(syncSrc));
+  check("...before it reaches the store", syncSrc.indexOf("readsLive(team)") < syncSrc.indexOf("await bulkUpsertItems("), "the guard must precede the write, not just the import");
+
+  const upload = readFileSync(new URL("../src/app/api/upload/route.ts", import.meta.url), "utf8");
+  check("an upload into a live POD is refused, not dropped", /readsLive\(team\)/.test(upload));
+}
+
+section("every word the board can show has a colour of its own");
+{
+  /*
+   * Eight environments and five slots was the bug: three of them resolved to
+   * nothing, which renders as black on a near-white panel. Past the slots a
+   * value falls to muted ink deliberately — but nothing in the contract today
+   * may be there, because two identities in one grey is a chart that lies.
+   */
+  for (const dimension of ["environment", "status"]) {
+    const table = dimension === "environment" ? ENV_COLOR : STATUS_COLOR;
+    for (const value of VOCABULARY[dimension]) {
+      check(`${dimension} "${value}" has a slot`, Boolean(table[value]) && table[value] !== INK_MUTED, table[value] ?? "nothing");
+    }
+    check(`${dimension} Unknown is muted ink`, table.Unknown === INK_MUTED);
+    const used = VOCABULARY[dimension].map((v) => table[v]);
+    check(`no two ${dimension}s share a slot`, new Set(used).size === used.length, used.join(" "));
+  }
+  check("there are enough slots for the longest dimension", SERIES.length >= Math.max(...["environment", "status", "severity"].map((d) => VOCABULARY[d].length)), `${SERIES.length} slots`);
+  for (const value of VOCABULARY.severity) {
+    check(`severity "${value}" has a colour`, Boolean(SEVERITY_COLOR[value]), "severity uses the reserved status palette, not a series slot");
+  }
+}
 
 section("the change recipes still describe the code");
 {

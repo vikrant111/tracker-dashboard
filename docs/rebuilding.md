@@ -128,8 +128,9 @@ type Item = {
   assignee: string;
   assigneeEmail: string;
   severity: "Critical" | "Major" | "Minor" | "Unknown";
-  environment: "IT-UAT" | "BIZ-UAT" | "CUG" | "Production" | "Unknown";
-  status: "Open" | "Commented" | "For QA Validation" | "Not a Bug" | "Closed" | "Unknown";
+  environment: "IT-UAT" | "BIZ-UAT" | "CUG" | "Production" | "DR" | "N2P" | "PTPaaS" | "Regression" | "Unknown";
+  status: "Open" | "Commented" | "For QA Validation" | "Not a Bug" | "Closed" | "CR" | "Unknown";
+  // Both lists are generated from src/lib/contracts/item-filters.ts — see below.
   state: string;           // the board's own state text, kept for display
   priority: number | null;
   tags: string[];

@@ -21,7 +21,9 @@ to the recipe.
 ```
   ①  Azure Boards                    ②  a spreadsheet
      src/lib/azure.ts                   src/app/api/upload/route.ts
-     └── which items, which fields      └── which columns
+     src/lib/contracts/  ← the tables   └── which columns
+     src/lib/live/       ← live reads
+     └── which items, which fields
                     │                              │
                     └──────────────┬───────────────┘
                                    ▼
@@ -34,6 +36,7 @@ to the recipe.
                                    │
                                    ▼
   ⑤  MongoDB                     src/db/schemas/item.schema.ts
+     …or nothing at all, for a live POD: src/db/store/live-items.ts
                                    │
                                    ▼
   ⑥  src/lib/metrics/            one query → every tile and chart
@@ -44,6 +47,56 @@ to the recipe.
 
 **The direction matters.** Adding a field means walking ③ → ⑦. Changing a
 *mapping* usually means only ④. Changing a *chart* usually means only ⑥ and ⑦.
+
+---
+
+## Recipe 0 · "Change which items the board is made of"
+
+**Time: 2 minutes. Files: 1 — and it is a table, not code.**
+
+Everything about *which* items a live POD reads, and *which values* survive, is
+two contract tables. No filter logic reads a hardcoded list anywhere, so none of
+it has to be edited again.
+
+| I want to… | Edit | Where |
+|---|---|---|
+| add a POD name, a SPOC, a module | the `values` array | [`contracts/azure-sources.ts`](../src/lib/contracts/azure-sources.ts) |
+| point a filter at a renamed field | the `field` reference name | same |
+| read a second project | another entry in `AZURE_SOURCES` | same |
+| allow one more environment or status through | the `ALLOWED` list | [`contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts) |
+| widen or narrow the 365-day window | `LIVE.windowDays` | same |
+| change what "last 365 days" means | `LIVE.windowMode` — `created`, `touched` or `open-or-touched` | same |
+| drop values the board does not list | `ALLOWED.dropOutside` (off by default) | same |
+| add a brand-new category | `VOCABULARY` — the colour follows | same |
+
+Two things the tables will not let you get wrong:
+
+- **An empty `values` list throws.** `Custom.ModuleName IN ()` silently dropped
+  is a filter on one module becoming every module — the "it fetched the whole
+  project" failure.
+- **An `ALLOWED` word that is not in `VOCABULARY` fails `pnpm check:ui`.** It
+  could never match a mapped item, so the dimension would filter *everything*
+  out and the board would be empty for a reason nothing on screen explains.
+
+`ALLOWED` is written in **the dashboard's words**, not the board's. A board
+saying `1-Critical` is `Critical` by the time it is tested — the board's
+spelling goes in [`value-map.ts`](../src/lib/value-map.ts) (Recipe 1), the
+mapped word goes in the contract.
+
+Adding to `VOCABULARY` is the one that reaches past the table: the value needs a
+colour slot, and there are eight. Past that it falls to muted ink, and
+`pnpm check:ui` says so rather than letting two categories share a grey.
+
+Field reference names are the one thing you cannot guess:
+
+```bash
+pnpm azure:probe --fields module   # reference names matching "module"
+pnpm azure:probe --days 365        # the exact WIQL, the ids, the mapping, and
+                                   # how many items the allowlists drop
+```
+
+See [azure-integration.md](azure-integration.md#reading-live-storing-nothing)
+for what a live POD changes — Sync becomes Refresh, and an upload is refused.
 
 ---
 
@@ -264,7 +317,10 @@ For production, take a snapshot first: [operations.md](operations.md#backup-and-
 
 | I want to change… | File |
 |---|---|
-| which items Azure returns | [`azure.ts`](../src/lib/azure.ts) `queryChangedIds` |
+| **which items a live POD reads** | [`contracts/azure-sources.ts`](../src/lib/contracts/azure-sources.ts) ← **a table** |
+| **which values survive the filter** | [`contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts) ← **a table** |
+| how far back a live read reaches | `LIVE.windowDays` in [`contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts) |
+| which items Azure returns on a *sync* | [`azure.ts`](../src/lib/azure.ts) `queryChangedIds` |
 | which Azure fields are read | [`normalize.ts`](../src/lib/normalize.ts) `fromAzure` |
 | which spreadsheet columns are read | [`normalize/columns.ts`](../src/lib/normalize/columns.ts) `COLUMN_ALIASES` |
 | what a board's words become | [`value-map.ts`](../src/lib/value-map.ts) |

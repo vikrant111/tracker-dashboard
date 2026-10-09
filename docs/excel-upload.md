@@ -79,14 +79,16 @@ Progress" with a closed date is closed.
 
 ## How values are matched
 
-Severity, environment and status are matched against this vocabulary. Anything
-unrecognised becomes `Unknown` rather than being invented into a category.
+Severity, environment and status are matched against this vocabulary, which is
+one table — [`src/lib/contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts).
+Anything unrecognised becomes `Unknown` rather than being invented into a
+category.
 
 | | Values | Recognised from |
 |---|---|---|
 | Severity | `Critical`, `Major`, `Minor`, `Unknown` | `1 - Critical`, `Blocker`, `High`, `Medium`, `Low`, `2 - High`… |
-| Environment | `IT-UAT`, `BIZ-UAT`, `CUG`, `Production`, `Unknown` | `ituat`, `uat`, `biz`, `stage`, `staging`, `prod`, `live`… |
-| Status | `Open`, `Commented`, `For QA Validation`, `Not a Bug`, `Closed`, `Unknown` | your board's own state names |
+| Environment | `IT-UAT`, `BIZ-UAT`, `CUG`, `Production`, `DR`, `N2P`, `PTPaaS`, `Regression`, `Unknown` | `ituat`, `it uat`, `uat`, `biz`, `stage`, `staging`, `prod`, `live`, `disaster recovery`… |
+| Status | `Open`, `Commented`, `For QA Validation`, `Not a Bug`, `Closed`, `CR`, `Unknown` | your board's own state names |
 
 Matching runs in three passes: an exact match on your POD's own overrides, then
 on the shipped table above, then a **whole-word** pass with the longest key

@@ -15,7 +15,7 @@
 
 /** Turn a sync response into the sentence to show. Pure, so it is checked directly. */
 export function describeSync(body: {
-  results?: { imported?: number; error?: string }[];
+  results?: { imported?: number; error?: string; note?: string }[];
 }): { text: string; tone: "ok" | "bad" } {
   const results = Array.isArray(body?.results) ? body.results : [];
 
@@ -25,6 +25,13 @@ export function describeSync(body: {
   if (failed?.error) return { text: failed.error, tone: "bad" };
 
   const imported = results.reduce((n, r) => n + (Number(r?.imported) || 0), 0);
+  /*
+   * A POD that reads Azure live imports nothing, every time. "Already up to
+   * date" is true but reads as "nothing happened", so the POD's own sentence
+   * wins when there is nothing to count.
+   */
+  const note = results.find((r) => r?.note)?.note;
+  if (!imported && note) return { text: note, tone: "ok" };
   return {
     text: imported ? `Synced ${imported} work item${imported === 1 ? "" : "s"}.` : "Already up to date.",
     tone: "ok",

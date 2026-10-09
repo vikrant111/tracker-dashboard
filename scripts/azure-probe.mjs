@@ -5,6 +5,7 @@
  *     pnpm azure:probe --full          plus one whole work item, values included
  *     pnpm azure:probe --days 90       widen the window (default 30)
  *     pnpm azure:probe --team amc-pod  one POD (default: every connected one)
+ *     pnpm azure:probe --fields spoc   reference names matching "spoc", then stop
  *
  * Reads only. It never writes a document, never advances a watermark, and
  * never touches the dashboard's data — so it is safe to point at production
@@ -16,7 +17,11 @@
  */
 import { connectToDatabase, disconnectFromDatabase } from "../src/db/connect.ts";
 import { findAllTeams } from "../src/controllers/teams.controller.ts";
-import { fetchWorkItems, isConnectable, queryChangedIds, resolveCreds } from "../src/lib/azure.ts";
+import { credsFor, fetchWorkItems, isConnectable, queryChangedIds, resolveCreds } from "../src/lib/azure.ts";
+import { sourcesFor } from "../src/lib/contracts/azure-sources.ts";
+import { ALLOWED, LIVE, allows } from "../src/lib/contracts/item-filters.ts";
+import { buildSourceWiql } from "../src/lib/live/wiql.ts";
+import { queryIds, fetchByIds } from "../src/lib/azure.ts";
 import { redact } from "../src/lib/azure-debug.ts";
 import { fromAzure } from "../src/lib/normalize.ts";
 
@@ -29,6 +34,7 @@ const DAYS = Number(flag("days", 30)) || 30;
 const FULL = args.includes("--full");
 const ONLY = flag("team", null);
 const LIMIT = Number(flag("limit", 200)) || 200;
+const FIELDS = flag("fields", null);
 
 /*
  * The probe does its own printing rather than setting AZDO_DEBUG, so the two
@@ -138,17 +144,136 @@ async function probe(team) {
   }
 }
 
+/**
+ * Reference names, searched.
+ *
+ * The one thing you cannot guess and cannot see on the work item form. The
+ * filters in `src/lib/contracts/azure-sources.ts` name these exactly, and a
+ * wrong one fails the whole query — so this exists to be run before writing
+ * one, not after it breaks.
+ */
+async function fields(team, needle) {
+  const projects = sourcesFor(team).map((x) => x.project);
+  if (!projects.length) projects.push(resolveCreds(team).project);
+  const term = String(needle).toLowerCase();
+
+  for (const project of projects) {
+    const c = credsFor(team, { project });
+    const res = await fetch(`${c.orgUrl}/${encodeURIComponent(project)}/_apis/wit/fields?api-version=7.1`, {
+      headers: { Authorization: `Basic ${Buffer.from(`:${c.pat}`).toString("base64")}` },
+    });
+    if (!res.ok) {
+      say(`\n${project}: could not list fields (${res.status})`);
+      continue;
+    }
+    const all = (await res.json()).value ?? [];
+    const hits = all.filter(
+      (f) => `${f.name} ${f.referenceName}`.toLowerCase().includes(term) || term === "*",
+    );
+    say(`\n${project} — ${hits.length} of ${all.length} fields match "${needle}"`);
+    const w = Math.max(10, ...hits.map((f) => String(f.name).length));
+    for (const f of hits.sort((a, b) => a.referenceName.localeCompare(b.referenceName))) {
+      say(`   ${String(f.name).padEnd(w)}  ${f.referenceName}`);
+    }
+  }
+}
+
+/**
+ * What a **live** POD's dashboard will actually contain.
+ *
+ * The one question the contract cannot answer on its own: the field names are
+ * a guess until a real org confirms them, and the allowlists only matter once
+ * you can see how many items they drop. Printed per source, because a POD made
+ * of two projects can have one of them silently matching nothing.
+ */
+async function probeLive(team) {
+  const since = new Date(Date.now() - LIVE.windowDays * 86_400_000).toISOString();
+
+  for (const source of sourcesFor(team)) {
+    say(`\n${"─".repeat(72)}`);
+    say(`POD "${team.name}"  →  ${source.orgUrl}/${source.project}   [live source ${source.id}]`);
+    const query = buildSourceWiql(source, since);
+    say(`\n  WIQL (last ${LIVE.windowDays} days, mode "${source.windowMode ?? LIVE.windowMode}")\n   ${query}`);
+
+    const c = credsFor(team, { orgUrl: source.orgUrl, project: source.project });
+    let ids = [];
+    try {
+      ids = await queryIds(c, query);
+    } catch (err) {
+      say(`\n  failed: ${err.message}`);
+      say(`  If that names a field, fix it in src/lib/contracts/azure-sources.ts`);
+      say(`  — "pnpm azure:probe --fields <word>" lists the real reference names.`);
+      continue;
+    }
+    say(`\n  ${ids.length} ids`);
+    if (!ids.length) continue;
+
+    const take = ids.slice(0, LIMIT);
+    const items = await fetchByIds(c, take);
+    const view = {
+      ...team,
+      azure: { ...team.azure, orgUrl: source.orgUrl, project: source.project, areaPath: source.areaPath ?? "", workItemTypes: [...source.workItemTypes] },
+      fieldMap: { ...team.fieldMap, ...(source.fieldMap ?? {}) },
+    };
+    const mapped = items.map((wi) => fromAzure(wi, view));
+    const tally = (pick) => {
+      const t = new Map();
+      for (const m of mapped) t.set(pick(m), (t.get(pick(m)) ?? 0) + 1);
+      return [...t.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}:${n}`).join("  ");
+    };
+    say(`\n  After normalize() — ${mapped.length} of ${ids.length} hydrated`);
+    say(`     severity     ${tally((m) => m.severity)}`);
+    say(`     environment  ${tally((m) => m.environment)}`);
+    say(`     status       ${tally((m) => m.status)}`);
+
+    /*
+     * What the allowlists drop. A big number here is not a bug — it is the
+     * filter doing its job — but it is the number to look at when the board
+     * seems empty, and the only place it is visible.
+     */
+    const dropped = mapped.filter(
+      (m) => !(allows("severity", m.severity) && allows("environment", m.environment) && allows("status", m.status)),
+    );
+    say(`\n  Allowlists (src/lib/contracts/item-filters.ts, dropOutside=${ALLOWED.dropOutside})`);
+    say(`     ${mapped.length - dropped.length} kept, ${dropped.length} dropped`);
+    if (!ALLOWED.dropOutside && !dropped.length) {
+      say(`     Nothing is dropped for its wording while dropOutside is off —`);
+      say(`     every value that maps gets its own section on the board.`);
+    }
+    for (const m of dropped.slice(0, 8)) {
+      const why = [
+        allows("severity", m.severity) ? null : `severity=${m.severity}`,
+        allows("environment", m.environment) ? null : `environment=${m.environment}`,
+        allows("status", m.status) ? null : `status=${m.status}`,
+      ].filter(Boolean);
+      say(`       #${m.workItemId}  ${why.join("  ")}`);
+    }
+    if (dropped.length > 8) say(`       … and ${dropped.length - 8} more`);
+  }
+}
+
 async function main() {
   await connectToDatabase();
   const teams = (await findAllTeams()).filter((t) => (ONLY ? t.id === ONLY : true));
-  const connected = teams.filter(isConnectable);
+  /* A live POD may carry no project of its own — its projects are in the contract. */
+  const connected = teams.filter((t) => isConnectable(t) || (resolveCreds(t).pat && sourcesFor(t).length));
+
+  if (FIELDS) {
+    for (const team of connected) await fields(team, FIELDS);
+    return;
+  }
 
   if (!connected.length) {
     say("No POD has an Azure connection.");
     say("Set AZDO_ORG_URL / AZDO_PROJECT / AZDO_PAT, or configure a POD in Admin → Azure Boards.");
     return;
   }
-  for (const team of connected) await probe(team);
+  for (const team of connected) {
+    /* A live POD's items never come from its own project, so probing that would
+       describe a board nobody sees. Probe what the contract actually asks for. */
+    if (sourcesFor(team).length) await probeLive(team);
+    else await probe(team);
+  }
   say(`\n${"─".repeat(72)}`);
   say("Read-only: nothing was imported, and no watermark moved.");
 }
