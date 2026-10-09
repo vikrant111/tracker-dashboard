@@ -11,6 +11,8 @@
  * to tell which driver it is reading from.
  */
 import { existsSync } from "node:fs";
+import { readsLive } from "../../lib/live/fetch.ts";
+import type { Team } from "../../lib/types.ts";
 import type { ItemDoc } from "../models/index.ts";
 import { ItemModel } from "../models/index.ts";
 import { fromStoredDoc, toDocument, toStoredRow } from "../document.ts";
@@ -20,6 +22,30 @@ import { matchesFilters } from "../query/predicate.ts";
 import { drain, ensureStoreDir, mutate, readCollection } from "./json-files.ts";
 import { COLLECTION_NAMES, STORE_DIR, storeFile } from "./json-paths.ts";
 import type { Store } from "./types.ts";
+
+/** The fields the decision below needs off a stored POD row. */
+type PodRow = { id?: unknown; name?: unknown; azure?: { pat?: unknown } };
+
+/**
+ * Is there a POD whose items this store is responsible for?
+ *
+ * Takes the rows rather than reading them, so the decision is exercised
+ * directly by `pnpm check:ui` — the file-creation mechanics are Node's, the
+ * judgement about which POD owns its items is ours and is the part that can be
+ * wrong.
+ *
+ * No PODs answers **no**, which is the fresh-clone case: nothing has been
+ * stored, so nothing needs a file yet.
+ */
+export function storesAnyItems(rows: PodRow[]): boolean {
+  return rows.some((row) =>
+    !readsLive({
+      id: String(row?.id ?? ""),
+      name: String(row?.name ?? ""),
+      azure: { pat: String(row?.azure?.pat ?? "") },
+    } as Team),
+  );
+}
 
 export function createJsonStore(): Store {
   return {
@@ -38,6 +64,17 @@ export function createJsonStore(): Store {
        */
       for (const name of COLLECTION_NAMES) {
         if (existsSync(storeFile(name))) continue;
+        /*
+         * `items.json` is not created when nothing will be put in it.
+         *
+         * Every POD reading from Azure live means there is no stored work item
+         * and never will be, and an empty file named after the data somebody
+         * was told is not stored is a fair thing to be suspicious of. A missing
+         * collection already reads as empty, and the first real write creates it
+         * through `mutate` like any other — so this costs nothing and the file
+         * appears exactly when there is something in it.
+         */
+        if (name === "items" && !storesAnyItems(readCollection<PodRow>("teams"))) continue;
         /*
          * Through `mutate`, so creating a missing file takes the same lock every
          * other write does. Writing directly here raced a concurrent writer —

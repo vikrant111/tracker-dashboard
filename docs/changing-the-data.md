@@ -67,6 +67,7 @@ it has to be edited again.
 | widen or narrow the 365-day window | `LIVE.windowDays` | same |
 | change what "last 365 days" means | `LIVE.windowMode` — `created`, `touched` or `open-or-touched` | same |
 | drop values the board does not list | `ALLOWED.dropOutside` (off by default) | same |
+| stop re-checking the filters on what came back | `LIVE.verifyFilters` (on by default) | same |
 | add a brand-new category | `VOCABULARY` — the colour follows | same |
 
 Two things the tables will not let you get wrong:

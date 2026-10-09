@@ -10,6 +10,8 @@ import { SearchBox } from "./search-box";
 import { ThemeToggle } from "./theme-toggle";
 import { Button, Menu, MenuItem, MenuSection, SegmentedControl } from "./ui";
 import { BoardActions } from "./topbar-actions";
+import { RangeSelect } from "./range-select";
+import type { DateRange } from "@/lib/contracts/date-ranges";
 import { ChangePassword } from "./change-password";
 import { BoardSwitch } from "./devops/board-switch";
 
@@ -28,6 +30,9 @@ export function Topbar({
   onTeam,
   kind,
   onKind,
+  ranges,
+  rangeId,
+  onRange,
   search,
   onSearch,
   suggestions,
@@ -47,6 +52,10 @@ export function Topbar({
   onTeam: (id: string) => void;
   kind: Kind | "all";
   onKind: (k: Kind | "all") => void;
+  /** The stretches of the window on offer, and which one is showing. */
+  ranges: DateRange[];
+  rangeId: string;
+  onRange: (id: string) => void;
   search: string;
   onSearch: (s: string) => void;
   /** Names on this board, offered as you type. */
@@ -144,6 +153,7 @@ export function Topbar({
           </select>
 
           <SegmentedControl groupId="kind-filter" value={kind} onChange={onKind} options={KINDS} />
+          <RangeSelect id="board-range" ranges={ranges} value={rangeId} onChange={onRange} />
         </div>
 
         <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:flex-nowrap">
@@ -218,6 +228,7 @@ export function Topbar({
                     ))}
                   </select>
                   <SegmentedControl groupId="kind-filter-menu" value={kind} onChange={onKind} options={KINDS} />
+                  <RangeSelect id="board-range-menu" ranges={ranges} value={rangeId} onChange={onRange} />
                 </div>
               </MenuSection>
             </div>

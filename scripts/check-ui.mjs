@@ -51,11 +51,15 @@ import { SEVERITIES, clampSeverityThresholds } from "../src/lib/types.ts";
 import { ENVIRONMENTS, STATUSES, TERMINAL_STATUSES } from "../src/lib/types.ts";
 import { ALLOWED, LIVE, VOCABULARY, WINDOW_MODES, allowedBy, allows, canonical } from "../src/lib/contracts/item-filters.ts";
 import { AZURE_SOURCES, sourcesFor } from "../src/lib/contracts/azure-sources.ts";
+import { FISCAL_START_MONTH, rangeById, rangeOptions } from "../src/lib/contracts/date-ranges.ts";
 import { createStore } from "../src/db/store/index.ts";
 import { withLiveItems } from "../src/db/store/live-items.ts";
+import { storesAnyItems } from "../src/db/store/json-store.ts";
+import { toDoc } from "../src/controllers/items.shape.ts";
 /** The store, with its items answered live wherever the contract says so. */
 const withLiveStore = (store) => ({ ...store, items: withLiveItems(store) });
 import { SourceConfigError, buildSourceWiql } from "../src/lib/live/wiql.ts";
+import { satisfiesClause, satisfiesSource, valuesOf } from "../src/lib/live/verify.ts";
 import { forgetLive, keepAllowed, liveItems, readsLive, windowStart } from "../src/lib/live/fetch.ts";
 import { ENV_COLOR, INK_MUTED, SERIES, SEVERITY_COLOR, STATUS_COLOR } from "../src/lib/palette.ts";
 import { aggregateDashboard } from "../src/controllers/dashboard.aggregate.ts";
@@ -3720,14 +3724,196 @@ section("the contract tables are the only place a filter is written");
   check("a POD with no id or name has none", sourcesFor(pod("", "")).length === 0);
 
   /*
-   * No PAT anywhere means no live read, which is what lets a clone of this
-   * repository run the demo board. It is the **only** fallback: a PAT that
-   * exists and fails is an error, because showing last week's synced numbers as
-   * though they were live is the worse failure.
+   * Being named in the contract is the whole test — **there is no fallback to
+   * the store.** It used to fall back when no PAT was set, so a fresh clone
+   * showed the demo board; but those rows are whatever was seeded or synced
+   * once, which is precisely the data the filters exist to exclude. A POD
+   * carries contract data or says why it cannot.
    */
   const bare = { id: "amc-pod", name: "AMC POD", azure: { orgUrl: "", project: "", pat: "", areaPath: "", workItemTypes: [] } };
-  check("a contract POD with no PAT falls back to the store", readsLive(bare) === false);
-  check("...and reads live once it has one", readsLive({ ...bare, azure: { ...bare.azure, pat: "x" } }) === true);
+  check("a contract POD reads live with no PAT configured", readsLive(bare) === true, "a PAT must not decide where data comes from");
+  check("...and with one", readsLive({ ...bare, azure: { ...bare.azure, pat: "x" } }) === true);
+  check("a POD outside the contract never reads live", readsLive({ ...bare, id: "payments-pod", name: "Payments POD", azure: { ...bare.azure, pat: "x" } }) === false);
+
+  /*
+   * And it says which thing is missing. The generic "no Azure connection"
+   * message sends somebody to fill in an org URL and a project this POD does
+   * not use — they come from the contract.
+   */
+  const noPatError = await liveItems(bare, Date.now()).then(() => null, (err) => err);
+  check("a contract POD with no PAT fails loudly", noPatError !== null, "it returned rows instead");
+  check("...as a 503, not a crash", noPatError?.status === 503, String(noPatError?.status));
+  check("...naming the POD and the PAT", /AMC POD/.test(noPatError?.message ?? "") && /AZDO_PAT/.test(noPatError?.message ?? ""), noPatError?.message ?? "");
+  check("...and saying the store is not used", /not what the contract/.test(noPatError?.message ?? ""), noPatError?.message ?? "");
+  forgetLive();
+}
+
+section("the quarter picker's ranges");
+{
+  const OCT = Date.UTC(2026, 9, 9);
+  const at = (ms) => rangeOptions(ms);
+  const ids = (ms) => at(ms).map((o) => o.id).join(" ");
+  const labels = (ms) => at(ms).map((o) => o.label).join(" ");
+
+  /*
+   * The first choice carries **no** date bound, and that is load-bearing: a
+   * long-open bug is kept whatever its age, and a `createdFrom` of a year ago
+   * would hide exactly those — the oldest rows on an ageing board.
+   */
+  const first = at(OCT)[0];
+  check("the default range is the whole window", first.id === "window", first.id);
+  check("...and applies no date bound", first.from === undefined && first.to === undefined, `${first.from} ${first.to}`);
+  check("...and says so", /still open/.test(first.hint), first.hint);
+  check("every quarter carries both bounds", at(OCT).slice(1).every((o) => o.from && o.to));
+
+  /*
+   * An Indian financial year: April to March, named for the year it ends in. So
+   * October 2026 is Q3 of FY27, and **January 2026 is Q4 of FY26** — the case
+   * that was wrong, because the quarter's start year was read off the year the
+   * financial year began, and every quarter reaching past December came out a
+   * year early.
+   */
+  check("the financial year starts in April", FISCAL_START_MONTH === 4, String(FISCAL_START_MONTH));
+  check("October is Q3 of the next FY", labels(OCT).includes("Q3 FY27"), labels(OCT));
+  check("January is Q4 of the FY in progress", labels(Date.UTC(2026, 0, 15)).includes("Q4 FY26"), labels(Date.UTC(2026, 0, 15)));
+  check("...dated in that January, not the one before", at(Date.UTC(2026, 0, 15))[1].from.startsWith("2026-01-01"), at(Date.UTC(2026, 0, 15))[1].from);
+  check("March is still Q4 of the same FY", labels(Date.UTC(2026, 2, 31)).includes("Q4 FY26"));
+  check("April starts Q1 of the next FY", labels(Date.UTC(2026, 3, 1)).includes("Q1 FY27"), labels(Date.UTC(2026, 3, 1)));
+  check("...and the quarter before it is Q4", at(Date.UTC(2026, 3, 1))[2].label === "Q4 FY26", at(Date.UTC(2026, 3, 1))[2].label);
+
+  /* Every quarter is three whole months, and they are contiguous going back. */
+  for (const ms of [OCT, Date.UTC(2026, 3, 1), Date.UTC(2026, 0, 15), Date.UTC(2026, 6, 20)]) {
+    const qs = at(ms).slice(1);
+    const day = (iso) => new Date(iso).getUTCDate();
+    check(`every quarter starts on the 1st (${new Date(ms).toISOString().slice(0, 10)})`, qs.every((o) => o.partial || day(o.from) === 1), qs.map((o) => o.from.slice(0, 10)).join(" "));
+    check(`...and ends where the next begins`, qs.every((o, i) => i === 0 || o.to === qs[i - 1].from), qs.map((o) => `${o.from.slice(0, 10)}→${o.to.slice(0, 10)}`).join(" "));
+    /*
+     * Nothing may reach before the fetch window, or the quarter shows a number
+     * lower than it really held and reads as a quiet quarter.
+     */
+    const floor = ms - LIVE.windowDays * 86_400_000;
+    check(`...and none reaches before the window`, qs.every((o) => Date.parse(o.from) >= floor), qs.map((o) => o.from.slice(0, 10)).join(" "));
+    check(`...with the clamped one marked partial`, qs.every((o) => !o.partial || Date.parse(o.from) === floor));
+    check(`...and the ids are distinct`, new Set(at(ms).map((o) => o.id)).size === at(ms).length, ids(ms));
+  }
+
+  /*
+   * A 365-day window touches parts of five quarters whenever it does not start
+   * on a quarter boundary, which is almost always. A cap of four dropped the
+   * oldest silently.
+   */
+  check("five quarters are offered mid-quarter", at(OCT).length === 6, `${at(OCT).length} options`);
+  check("...and four when the window starts on a boundary", at(Date.UTC(2026, 3, 1)).length === 6, `${at(Date.UTC(2026, 3, 1)).length} options`);
+
+  /* A stale bookmark must not leave the board with a range nobody can see. */
+  check("an unknown id falls back to the whole window", rangeById("fy2001q1", OCT).id === "window");
+  check("a known id is returned", rangeById("fy2027q2", OCT).label === "Q2 FY27", rangeById("fy2027q2", OCT).label);
+  check("an empty id falls back too", rangeById("", OCT).id === "window");
+}
+
+section("the dropdown loses nothing from the window");
+{
+  /*
+   * The question this answers: can picking from the dropdown hide something the
+   * board had? Measured rather than argued, with one item per day across the
+   * whole window plus the three cases that sit awkwardly at its edge.
+   */
+  const NOW = Date.UTC(2026, 9, 9);
+  const ago = (d) => new Date(NOW - d * 86_400_000).toISOString();
+  const mk = (workItemId, over) => ({
+    id: `t:${workItemId}`, workItemId: String(workItemId), teamId: "t", source: "azure", kind: "bug",
+    type: "Bug", title: "t", url: "", assignee: "A", assigneeEmail: "",
+    severity: "Critical", environment: "Production", status: "Open", state: "Active",
+    priority: null, tags: [], createdDate: ago(10), changedDate: ago(1), closedDate: null,
+    isActive: true, ...over,
+  });
+
+  const population = [];
+  for (let d = 0; d < LIVE.windowDays; d++) population.push(mk(1000 + d, { createdDate: ago(d) }));
+  const oldOpen = mk(9001, { createdDate: ago(800) });
+  const oldClosedInside = mk(9002, { createdDate: ago(800), isActive: false, closedDate: ago(30) });
+  const oldClosedOutside = mk(9003, { createdDate: ago(800), isActive: false, closedDate: ago(400) });
+  population.push(oldOpen, oldClosedInside, oldClosedOutside);
+
+  const kept = keepAllowed(population, NOW);
+  const ids = (rows) => new Set(rows.map((r) => r.workItemId));
+
+  check("the window keeps every day of the year", LIVE.windowDays === kept.filter((r) => Number(r.workItemId) < 9000).length, `${kept.length} kept`);
+  check("...and the old open one", ids(kept).has("9001"));
+  check("...and the one closed inside it", ids(kept).has("9002"));
+  check("...but not history closed before it", !ids(kept).has("9003"));
+
+  const docs = kept.map((i) => ({ ...toDoc(i), _id: i.id }));
+  const inRange = (r) => docs.filter((d) => matchesFilters(d, { createdFrom: r.from, createdTo: r.to }, NOW));
+  const quarters = rangeOptions(NOW).filter((r) => r.from);
+
+  /*
+   * Every day of the window lands in exactly one quarter: the sum being equal
+   * means no gaps **and** no double-counting, which two separate checks could
+   * each pass while the board was wrong.
+   */
+  const perQuarter = quarters.map(inRange);
+  const total = perQuarter.reduce((n, rows) => n + rows.length, 0);
+  const everyDay = docs.filter((d) => Number(d.workItemId) < 9000);
+  check("the quarters cover every day of the window", total === everyDay.length, `${total} across quarters vs ${everyDay.length} days`);
+  const seen = new Set(perQuarter.flat().map((d) => d.workItemId));
+  check("...with no day in two quarters", seen.size === total, `${seen.size} distinct of ${total} counted`);
+  check("...and none left out", everyDay.every((d) => seen.has(d.workItemId)), "a day fell between two quarters");
+
+  /*
+   * The one thing a quarter **cannot** hold: an item raised before the window,
+   * kept because it is still open or closed inside it. "Raised in Q2" is the
+   * honest meaning of picking Q2, so this is correct rather than a leak — but
+   * it is why the default range carries no date bound, and why it is the
+   * default. Those are the oldest rows on an ageing board.
+   */
+  check("an item raised before the window is in no quarter", !seen.has("9001") && !seen.has("9002"));
+  check("...and the default range still shows it", ids(kept).has("9001") && ids(kept).has("9002"));
+  check("the default range applies no bound, which is what makes that true", rangeOptions(NOW)[0].from === undefined);
+}
+
+section("the quarter the board shows is the quarter the drawer opens");
+{
+  /*
+   * The one wiring that cannot be executed here and must not be wrong.
+   *
+   * `baseQuery` is the single object that feeds the metrics request **and** the
+   * drill-down provider, which is the whole reason a tile and the list behind it
+   * agree. A range added to the request but not to that object would narrow the
+   * board and leave every drawer showing the full year — and both numbers would
+   * look plausible on their own.
+   */
+  const dash = readFileSync(new URL("../src/components/dashboard-client.tsx", import.meta.url), "utf8");
+
+  check("the range is in the shared query", /q\.createdFrom = range\.from/.test(dash) && /q\.createdTo = range\.to/.test(dash), "the drawer would show the whole year");
+  check("...and the query is what the board asks with", /\/api\/metrics\?\$\{new URLSearchParams\(baseQuery\)\}/.test(dash));
+  check("...and what the drawer is given", /<DrillProvider baseQuery=\{baseQuery\}/.test(dash), "the drawer builds its own query");
+  /*
+   * A memo that does not list the range recomputes without it, so the board
+   * keeps the first quarter it was given however many times you change the
+   * dropdown.
+   */
+  check("the memo depends on the range", /\}, \[teamId, kind, search, range\.from, range\.to\]\)/.test(dash), dash.match(/\}, \[teamId[^\]]*\]\)/)?.[0] ?? "no deps found");
+
+  /*
+   * The options are built **once per mount**. The oldest quarter's start is
+   * clamped to `now - 365 days`, so recomputing it per render produced a new
+   * SWR key every render — a refetch loop, on the one option most likely to be
+   * chosen when somebody wants the full history.
+   */
+  check("the options are computed once", /useMemo\(\(\) => rangeOptions\(\), \[\]\)/.test(dash), "a moving clamp makes a new key every render");
+
+  /* Clearing the filters has to clear this one too, or "nothing matched"
+     persists with no visible reason. */
+  check("the range counts as a filter", /rangeId !== ranges\[0\]\.id/.test(dash));
+  check("...and clearing resets it", /setRangeId\(ranges\[0\]\.id\)/.test(dash));
+
+  const bar = readFileSync(new URL("../src/components/topbar.tsx", import.meta.url), "utf8");
+  check("the picker is on the bar", /<RangeSelect id="board-range"/.test(bar));
+  /* The narrow-screen menu holds the same controls, or the dropdown vanishes on
+     a phone — where the id must differ, because two labels cannot share one. */
+  check("...and in the narrow-screen menu", /<RangeSelect id="board-range-menu"/.test(bar));
+  check("...with distinct ids", !/id="board-range"[\s\S]*id="board-range"[\s\S]*onChange/.test(bar.replace(/board-range-menu/g, "x")));
 }
 
 section("the live WIQL is bounded on every axis");
@@ -3842,7 +4028,12 @@ section("a live POD, end to end, against a stubbed Azure");
   const NOW = Date.UTC(2026, 9, 9);
   const ago = (days) => new Date(NOW - days * 86_400_000).toISOString();
 
-  /** One Azure work item, as `workitemsbatch` returns it. */
+  /**
+   * One Azure work item, as `workitemsbatch` returns it — **carrying the filter
+   * fields**, because the fetch checks them again against the contract. An
+   * identity arrives as an object rather than a string, which is the shape that
+   * matters here.
+   */
   const wi = (id, over = {}) => ({
     id,
     fields: {
@@ -3854,6 +4045,10 @@ section("a live POD, end to end, against a stubbed Azure");
       "Microsoft.VSTS.Common.Severity": "1-Critical",
       "Custom.BugEnvironment": "BIZ UAT",
       "Custom.BugStatus": "Open",
+      "Custom.PODName": "AMC POD",
+      "Custom.BFLITSpoc": { displayName: "Aravind I", uniqueName: "aravind.i@bajajfinserv.in" },
+      "Custom.DeliverySPOC": { displayName: "Aravind I", uniqueName: "Aravind.i@bajajfinserv.in" },
+      "Custom.ModuleName": "AMC",
       ...over,
     },
     _links: { html: { href: `https://example.invalid/${id}` } },
@@ -3880,6 +4075,13 @@ section("a live POD, end to end, against a stubbed Azure");
         "Custom.BugStatus": "Closed",
         "Microsoft.VSTS.Common.ClosedDate": ago(450),
       }),
+      /*
+       * Dropped: it carries neither filter value, so whatever Azure matched it
+       * on, it is not this POD's work. Azure matches an identity field
+       * generously and this is the item that proves the second check is doing
+       * something — a stub can return anything, and so can a real org.
+       */
+      wi(106, { "Custom.PODName": "TM POD", "Custom.BFLITSpoc": { displayName: "Someone Else", uniqueName: "someone@bajajfinserv.in" } }),
     ],
     "3in1_Agile_Projects": [
       wi(201, { "Custom.BugEnvironment": "DR", "Microsoft.VSTS.Common.Severity": "3-Minor" }),
@@ -3925,6 +4127,7 @@ section("a live POD, end to end, against a stubbed Azure");
     check("a status the board does not list keeps its own section", ids.includes("103"));
     check("an old item that is still open is kept", ids.includes("104"), "the oldest open row must never be hidden");
     check("finished history is dropped", !ids.includes("105"), "raised and closed before the window");
+    check("an item carrying no filter value is dropped", !ids.includes("106"), "the query's match is not taken on trust");
 
     const byId = new Map(items.map((i) => [i.workItemId, i]));
     /*
@@ -3965,6 +4168,69 @@ section("a live POD, end to end, against a stubbed Azure");
   }
 }
 
+section("a fetched item is checked against the filter that asked for it");
+{
+  /*
+   * The WIQL already carries the filters, so this is a second opinion — and it
+   * exists because Azure's first one is generous. An identity clause naming an
+   * email comes back matched on a display name, and a multi-select field holds
+   * several values in one string, so an item can arrive not carrying the value
+   * the contract asked for. Every shape a real payload uses is put through it
+   * here, because getting this wrong empties a board.
+   */
+  const clause = { field: "Custom.BFLITSpoc", values: ["Aravind I", "Aravind.i@bajajfinserv.in"] };
+  const sat = (value) => satisfiesClause({ "Custom.BFLITSpoc": value }, clause);
+
+  check("a plain string matches", sat("Aravind I"));
+  check("...whatever its case", sat("aravind i"));
+  check("...and its surrounding space", sat("  Aravind I  "));
+  check("an email matches the email in the list", sat("Aravind.i@bajajfinserv.in"));
+
+  /* Identities arrive as an object, which is the shape a naive compare drops. */
+  check("an identity matches on display name", sat({ displayName: "Aravind I", uniqueName: "aravind.i@bajajfinserv.in" }));
+  check("...and on sign-in name when the list holds the email", satisfiesClause({ "Custom.BFLITSpoc": { displayName: "A I", uniqueName: "Aravind.i@bajajfinserv.in" } }, clause));
+  check("...and on `name`, which some payloads use", satisfiesClause({ "Custom.BFLITSpoc": { name: "Aravind I" } }, clause));
+
+  /* A multi-select field holds "A; B" in one string. */
+  check("one value of a multi-select matches", sat("Someone Else; Aravind I"));
+  check("...and the whole string is not compared", !sat("Aravind Iyer"), "a longer name must not match");
+
+  check("a value outside the list does not match", !sat("Someone Else"));
+  /*
+   * An absent field is a no. Azure cannot have matched a field the item does
+   * not have, so its absence means the item arrived for some other reason —
+   * which is the case this exists to catch.
+   */
+  check("an absent field does not match", !satisfiesClause({}, clause));
+  check("an empty field does not match", !sat(""));
+  check("a null field does not match", !sat(null));
+  check("an empty value list matches nothing", !satisfiesClause({ "Custom.BFLITSpoc": "x" }, { field: "Custom.BFLITSpoc", values: [] }));
+  check("a numeric field still compares", satisfiesClause({ "Custom.Code": 42 }, { field: "Custom.Code", values: ["42"] }));
+
+  /* ------------------------------------------- the source's own clause shape */
+
+  const anySource = AZURE_SOURCES.find((s) => s.any?.length);
+  const allSource = AZURE_SOURCES.find((s) => s.all?.length);
+
+  const podField = anySource.any[0].field;
+  const spocField = anySource.any[1].field;
+  check("an OR source is satisfied by its first branch", satisfiesSource({ [podField]: "AMC POD" }, anySource));
+  check("...or by its second", satisfiesSource({ [spocField]: "Aravind I" }, anySource));
+  check("...and not by neither", !satisfiesSource({ [podField]: "TM POD" }, anySource));
+  check("...nor by an item carrying no filter field at all", !satisfiesSource({ "System.Title": "x" }, anySource));
+
+  const spoc = allSource.all[0];
+  const module = allSource.all[1];
+  check("an AND source needs every clause", satisfiesSource({ [spoc.field]: spoc.values[0], [module.field]: module.values[0] }, allSource));
+  check("...and one is not enough", !satisfiesSource({ [spoc.field]: spoc.values[0] }, allSource));
+  check("...nor is the other alone", !satisfiesSource({ [module.field]: module.values[0] }, allSource));
+
+  /* A source that filters on nothing is bounded by its project and types only. */
+  check("a source with no clauses accepts anything", satisfiesSource({}, { ...allSource, all: undefined, any: undefined }));
+
+  check("verification is on", LIVE.verifyFilters === true, "an unverified item would reach the board");
+}
+
 section("a live POD cannot be written to the store, by anybody");
 {
   /*
@@ -3995,7 +4261,12 @@ section("a live POD cannot be written to the store, by anybody");
       "System.CreatedDate": new Date(NOW - 20 * 86_400_000).toISOString(),
       "System.ChangedDate": new Date(NOW - 86_400_000).toISOString(),
       "Microsoft.VSTS.Common.Severity": "1-Critical",
-      "Custom.BugEnvironment": "IT UAT", "Custom.BugStatus": "Open", ...over,
+      "Custom.BugEnvironment": "IT UAT", "Custom.BugStatus": "Open",
+      /* The filter fields, because the fetch verifies them against the contract. */
+      "Custom.PODName": "AMC POD",
+      "Custom.DeliverySPOC": { displayName: "Aravind I", uniqueName: "Aravind.i@bajajfinserv.in" },
+      "Custom.ModuleName": "AMC",
+      ...over,
     },
     _links: { html: { href: `https://x.invalid/${id}` } },
   });
@@ -4051,11 +4322,65 @@ section("a live POD cannot be written to the store, by anybody");
     const both = await store.items.find({ thresholdByTeam: { "amc-pod": 7, "payments-pod": 7 } }, NOW);
     check("a live POD and a stored POD share one board", both.length === 4, `${both.length} rows`);
     check("...and the live half is never read from the store", both.filter((d) => d.teamId === "amc-pod").length === 2, "stale rows leaked in");
+  /*
+   * One POD that cannot be read must not empty the others. An expired PAT on
+   * one board is not a reason for a leadership roll-up — or an unrelated DevOps
+   * export, which joins back to the tracker for a bug's severity — to return
+   * nothing at all. Scoped to that POD it still throws, because then the
+   * failure *is* the answer.
+   */
+  {
+    const broken = { ...team, id: "amc-pod", azure: { ...team.azure, pat: "" } };
+    await store.teams.save(broken);
+    await store.items.bulkUpsert([
+      { ...found[0], id: "payments-pod:9", _id: "payments-pod:9", teamId: "payments-pod", workItemId: "9" },
+    ]);
+    forgetLive();
+
+    const scope = { thresholdByTeam: { "amc-pod": 7, "payments-pod": 7 } };
+    const across = await store.items.find(scope, NOW);
+    check("a POD with no PAT does not empty the whole board", across.length >= 1, `${across.length} rows`);
+    check("...and contributes nothing of its own", across.every((d) => d.teamId !== "amc-pod"), "it returned rows without a PAT");
+
+    const scoped = await store.items.find({ ...scope, teamId: "amc-pod" }, NOW).then(() => null, (err) => err);
+    check("...while asking for that POD alone says why", scoped !== null && /AZDO_PAT/.test(scoped.message ?? ""), scoped?.message ?? "it returned rows");
+    await store.teams.save({ ...broken, azure: { ...broken.azure, pat: "test-pat" } });
+    forgetLive();
+  }
+
   } finally {
     globalThis.fetch = real;
     forgetLive();
     await store.dropAll();
   }
+}
+
+section("the store creates no file for data it will never hold");
+{
+  /*
+   * An empty `items.json` sitting next to a board that was described as storing
+   * nothing is a fair thing to be suspicious of, so it is not created. A missing
+   * collection already reads as empty, and the first real write creates it — so
+   * the file appears exactly when there is something in it.
+   */
+  const live = { id: "amc-pod", name: "AMC POD", azure: { pat: "test-pat" } };
+  const notInContract = { id: "payments-pod", name: "Payments POD", azure: { pat: "test-pat" } };
+  const noPatRow = { id: "amc-pod", name: "AMC POD", azure: { pat: "" } };
+
+  check("a fresh store owns no items", storesAnyItems([]) === false);
+  check("a POD reading live owns none either", storesAnyItems([live]) === false);
+  check("a POD outside the contract does own its items", storesAnyItems([notInContract]) === true);
+  /* A contract POD owns no stored items whether it has a PAT or not: there is
+     no fallback, so nothing will ever be written for it. */
+  check("...while a contract POD owns none even with no PAT", storesAnyItems([noPatRow]) === false);
+  check("one stored POD among live ones is enough", storesAnyItems([live, notInContract]) === true);
+  /* A hand-edited or half-written row must not decide this by throwing. */
+  check("a malformed row is treated as owning its items", storesAnyItems([{}]) === true);
+  check("...and does not throw", (() => { try { storesAnyItems([null, undefined, { azure: null }]); return true; } catch { return false; } })());
+
+  const src = readFileSync(new URL("../src/db/store/json-store.ts", import.meta.url), "utf8");
+  check("init consults it before creating items.json", /name === "items" && !storesAnyItems\(/.test(src));
+  check("...and only for that collection", !/name === "teams" && !storesAnyItems/.test(src), "other collections are always created");
 }
 
 section("a live board borrows the stored board's logic, never a copy of it");

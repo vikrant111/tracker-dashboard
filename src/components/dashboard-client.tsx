@@ -2,9 +2,11 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useMemo, useState } from "react";
-import useSWR, { useSWRConfig } from "swr";
+import useSWR from "swr";
 import type { Dashboard } from "@/lib/metrics";
-import { REFRESH_MS, SWR_OPTIONS, failureReason, fetcher, isApiKey } from "@/lib/swr";
+import { REFRESH_MS, SWR_OPTIONS, failureReason, fetcher } from "@/lib/swr";
+import { rangeOptions } from "@/lib/contracts/date-ranges";
+import { useBoardWrites } from "./use-board-writes";
 import { LAYOUT } from "@/lib/constants";
 import type { Kind } from "@/lib/types";
 import type { Weather } from "@/lib/weather";
@@ -16,7 +18,6 @@ import { useSearchScope } from "./use-search-scope";
 import { breakdownPanels } from "./breakdown-panels";
 import { Leaderboard } from "./leaderboard";
 import { agedPhrase } from "@/lib/metrics/threshold";
-import { describeSync, describeUpload } from "./board-actions";
 import { useScrollToTopOnScopeChange } from "./use-scroll-to-top";
 import { Footer } from "./footer";
 import { PodPurgePanel } from "./pod-purge";
@@ -57,9 +58,15 @@ export function DashboardClient({
 }) {
   const [teamId, setTeamId] = useState(initialTeamId);
   const [kind, setKind] = useState<Kind | "all">("all");
+  /*
+   * Which stretch of the window is on screen. Computed once per mount, so the
+   * oldest quarter's clamped start does not move between renders — it is
+   * `now - 365 days`, and recomputing it made a new SWR key every render.
+   */
+  const ranges = useMemo(() => rangeOptions(), []);
+  const [rangeId, setRangeId] = useState(ranges[0].id);
+  const range = ranges.find((r) => r.id === rangeId) ?? ranges[0];
   const [search, setSearch] = useState("");
-  const [syncing, setSyncing] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
   // The health card, once it exists. A callback ref in state rather than a
   // `useRef` object: the backdrop must re-measure when the card mounts, and a
@@ -71,18 +78,27 @@ export function DashboardClient({
     if (teamId) q.teamId = teamId;
     if (kind !== "all") q.kind = kind;
     if (search.trim()) q.search = search.trim();
+    /*
+     * The chosen quarter, as the bounds the board and every drill-down behind
+     * it already share — which is why a tile and the list it opens cannot
+     * disagree about which quarter they are showing. The default range carries
+     * no bound at all, so a long-open bug stays visible.
+     */
+    if (range.from) q.createdFrom = range.from;
+    if (range.to) q.createdTo = range.to;
     return q;
-  }, [teamId, kind, search]);
+  }, [teamId, kind, search, range.from, range.to]);
 
   /*
    * Whether the board is narrowed. An empty result then reads as "nothing
    * matched" rather than "nothing tracked" — different problems, different
    * ways out, and only one of them is the reader's mistake.
    */
-  const filtered = Boolean(search.trim()) || kind !== "all";
+  const filtered = Boolean(search.trim()) || kind !== "all" || rangeId !== ranges[0].id;
   const clearFilters = () => {
     setSearch("");
     setKind("all");
+    setRangeId(ranges[0].id);
   };
 
   /*
@@ -96,63 +112,19 @@ export function DashboardClient({
   const scope = useSearchScope({ search, teamId, onSwitch: pickTeam });
   useScrollToTopOnScopeChange(teamId);
 
-  const { mutate: mutateAll } = useSWRConfig();
   const { data, error, isLoading, mutate } = useSWR<Payload>(
     `/api/metrics?${new URLSearchParams(baseQuery)}`,
     fetcher,
     SWR_OPTIONS,
   );
 
-  /**
-   * Sync and upload change the data under every panel at once, so refresh every
-   * API key rather than just this one. Otherwise an open drawer or an expanded
-   * POD row keeps showing pre-sync numbers beside post-sync tiles.
-   */
-  const refreshEverything = () => mutateAll(isApiKey);
-
   const flash = (text: string, tone: "ok" | "bad" = "ok") => {
     setToast({ text, tone });
     setTimeout(() => setToast(null), 5000);
   };
 
-  const sync = async () => {
-    setSyncing(true);
-    try {
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ teamId: teamId || undefined }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Sync failed.");
-
-      const said = describeSync(body);
-      flash(said.text, said.tone);
-      await refreshEverything();
-    } catch (err) {
-      flash(err instanceof Error ? err.message : "Sync failed.", "bad");
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const upload = async (file: File) => {
-    setUploading(true);
-    try {
-      const form = new FormData();
-      form.set("file", file);
-      form.set("teamId", teamId);
-      const res = await fetch("/api/upload", { method: "POST", body: form });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Upload failed.");
-      flash(describeUpload(body));
-      await refreshEverything();
-    } catch (err) {
-      flash(err instanceof Error ? err.message : "Upload failed.", "bad");
-    } finally {
-      setUploading(false);
-    }
-  };
+  /* Sync and upload, and the revalidation they both need. See use-board-writes. */
+  const { sync, upload, syncing, uploading, refreshEverything } = useBoardWrites({ teamId, flash });
 
   const podName = teamId ? (teams.find((t) => t.id === teamId)?.name ?? teamId) : "All PODs";
 
@@ -173,6 +145,9 @@ export function DashboardClient({
           onTeam={setTeamId}
           kind={kind}
           onKind={setKind}
+          ranges={ranges}
+          rangeId={rangeId}
+          onRange={setRangeId}
           search={search}
           onSearch={setSearch}
           suggestions={(data?.assignees ?? []).map((a) => a.name)}

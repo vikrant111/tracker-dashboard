@@ -206,7 +206,15 @@ async function main() {
     return;
   }
 
-  const amc = team("amc-pod", "AMC POD", "Asset management console", AMC_MEMBERS, "Demo\\AMC");
+  /*
+   * Not "amc-pod" any more.
+   *
+   * `src/lib/contracts/azure-sources.ts` points that id at a real Azure board,
+   * and a POD named there reads Azure rather than the store — so seeding demo
+   * items under it put 240 rows nothing would ever read behind a board that is
+   * supposed to carry only what the contract's filters matched.
+   */
+  const amc = team("demo-pod", "Demo POD", "Asset management console", AMC_MEMBERS, "Demo\\AMC");
   const pay = team("payments-pod", "Payments POD", "Collections and settlement", PAY_MEMBERS, "Demo\\Payments");
   for (const t of [amc, pay]) await store.teams.save(t);
 

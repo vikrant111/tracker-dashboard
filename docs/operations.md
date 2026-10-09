@@ -315,9 +315,9 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass
 
 pnpm dev           # in one terminal
-pnpm check         # in another — 641 end-to-end checks
+pnpm check         # in another — 691 end-to-end checks
 pnpm check:theme   # static, no server needed — 1372 theme-token checks
-pnpm check:ui      # static — 3083 checks on client-side pure logic
+pnpm check:ui      # static — 3183 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code
 ```
 

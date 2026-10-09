@@ -921,6 +921,33 @@ console.log("\n\x1b[1mIn a browser\x1b[0m \x1b[2m— mounted, then clicked\x1b[0
   await mountPanel(h(CyclesSection, { flash }), "the cycles panel", ["Deployment cycles"]);
 }
 
+/* -------------------------------------------------- the quarter dropdown */
+
+{
+  const { RangeSelect } = await load("components/range-select.js");
+  const { rangeOptions } = await load("lib/contracts/date-ranges.js");
+  const ranges = rangeOptions(Date.UTC(2026, 9, 9));
+  const markup = render(h(RangeSelect, { id: "r", ranges, value: ranges[0].id, onChange: () => {} }));
+
+  /*
+   * Every option on offer, named. The contract decides the list; this proves
+   * the control shows all of it rather than a slice — a dropdown missing its
+   * oldest quarter is indistinguishable from a quarter with no work in it.
+   */
+  for (const r of ranges) check(`"${r.label}" is on offer`, markup.includes(r.label), markup.slice(0, 160));
+  check("the dates are given for each", ranges.every((r) => markup.includes(r.hint.slice(0, 18))), "no dates to read");
+  check("a cut-short quarter says so", !ranges.some((r) => r.partial) || markup.includes("(part)"), "a partial quarter reads as a quiet one");
+  check("the default is selected", new RegExp(`value="${ranges[0].id}"`).test(markup), markup.slice(0, 160));
+  /* A select with no label is announced as nothing by a screen reader. */
+  check("it is labelled", /Date range/.test(markup), "no label");
+  /*
+   * And it is a real `select`. The platform's dropdown brings the keyboard
+   * handling and the mobile picker with it, which is why the POD switcher
+   * beside it is one too.
+   */
+  check("it is a native select", /<select/.test(markup), "a hand-built dropdown re-implements the platform");
+}
+
 rmSync(OUT, { recursive: true, force: true });
 
 console.log("\n" + "─".repeat(60));

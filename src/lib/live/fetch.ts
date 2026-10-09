@@ -15,21 +15,26 @@
 import { credsFor, fetchByIds, queryIds, resolveCreds, type AzureWorkItem } from "../azure.ts";
 import { sourcesFor, type AzureSource } from "../contracts/azure-sources.ts";
 import { LIVE, allows } from "../contracts/item-filters.ts";
+import { HttpError } from "../http-error.ts";
 import { fromAzure } from "../normalize.ts";
 import type { Item, Team } from "../types.ts";
+import { satisfiesSource } from "./verify.ts";
 import { buildSourceWiql } from "./wiql.ts";
 
 /**
- * Whether this POD reads live.
+ * Whether this POD reads live. Naming it in the contract is the whole test.
  *
- * Two conditions, and the second is what keeps a demo install working: a POD
- * named in the contract still falls back to the store when there is no PAT
- * anywhere to read Azure with. That is the only fallback — a PAT that exists
- * and fails is an error, loudly, because quietly showing yesterday's synced
- * numbers as though they were live is the worse outcome.
+ * **There is no fallback to the store, and that is deliberate.** It used to
+ * fall back when no PAT was configured, so a fresh clone still showed the demo
+ * board — but those rows are whatever was seeded or synced once, which is
+ * exactly the data the contract's filters exist to exclude. Showing them under
+ * a POD that is supposed to carry only what the filters matched is the quiet
+ * version of being wrong.
+ *
+ * So a POD named in the contract carries contract data or says why it cannot.
  */
 export function readsLive(team: Team): boolean {
-  return sourcesFor(team).length > 0 && Boolean(resolveCreds(team).pat);
+  return sourcesFor(team).length > 0;
 }
 
 /** The ISO instant the window starts at. */
@@ -88,6 +93,21 @@ export function keepAllowed(items: Item[], now: number): Item[] {
   });
 }
 
+/**
+ * The one thing the contract cannot supply.
+ *
+ * Org and project come from the source, so a PAT is all that is missing — and
+ * saying that is the point. The generic "no Azure connection" message sends
+ * somebody to fill in an org URL and a project that this POD does not use.
+ */
+function requirePat(team: Team): void {
+  if (resolveCreds(team).pat) return;
+  throw new HttpError(
+    503,
+    `${team.name} reads its items from Azure and has no personal access token. Add one on the POD in Admin → Azure Boards, or set AZDO_PAT. Nothing is shown from the store for this POD, because stored rows are not what the contract's filters matched.`,
+  );
+}
+
 async function fetchSource(team: Team, source: AzureSource, now: number): Promise<Item[]> {
   const creds = credsFor(team, { orgUrl: source.orgUrl, project: source.project });
   const since = windowStart(now);
@@ -98,12 +118,33 @@ async function fetchSource(team: Team, source: AzureSource, now: number): Promis
   // read of a few thousand items is a handful of seconds; if that stops being
   // acceptable, this loop is the place to add bounded parallelism.
   const workItems: AzureWorkItem[] = await fetchByIds(creds, ids.slice(0, LIVE.maxIds));
+
+  /*
+   * The filters, checked again against what came back.
+   *
+   * Azure matches an identity field generously — a clause naming an email can
+   * come back matched on a display name — so an item can arrive without
+   * carrying the value the contract asked for. Dropped here rather than
+   * trusted, and counted, because "the board shows only what the contract
+   * matched" is the whole promise and it should not rest on the query alone.
+   */
+  const verified = LIVE.verifyFilters
+    ? workItems.filter((wi) => satisfiesSource(wi.fields ?? {}, source))
+    : workItems;
+  const unverified = workItems.length - verified.length;
+  if (unverified) {
+    console.warn(
+      `[live] ${source.id}: ${unverified} of ${workItems.length} work items did not carry a filter value from src/lib/contracts/azure-sources.ts and were dropped. Run "pnpm azure:probe --days 365" to see which.`,
+    );
+  }
+
   const view = viewFor(team, source);
-  return workItems.map((wi) => fromAzure(wi, view));
+  return verified.map((wi) => fromAzure(wi, view));
 }
 
 /** Every live source for this POD, merged and deduplicated by item id. */
 async function fetchAll(team: Team, now: number): Promise<Item[]> {
+  requirePat(team);
   const byId = new Map<string, Item>();
   for (const source of sourcesFor(team)) {
     for (const item of await fetchSource(team, source, now)) byId.set(item.id, item);

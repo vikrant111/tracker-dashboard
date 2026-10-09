@@ -47,7 +47,10 @@ src/db/           storage. Two drivers behind one interface, picked by DB_DRIVER
     types         what a driver must provide. It fetches; it never aggregates,
                   so both drivers produce identical numbers by construction
     index         driver selection: json (default) | mongodb | memory
-    json-store    the file driver: DB_store/*.json, nothing installed
+    json-store    the file driver: DB_store/*.json, nothing installed. Creates
+                  a file per collection on first run — except items.json, which
+                  is skipped while every POD reads Azure live and there is
+                  nothing to put in it
     json-files    read fresh, write atomically, one writer at a time
     json-lock     a lock that holds across processes, and waits without
                   blocking the event loop
@@ -129,6 +132,9 @@ src/lib/          domain and data. No React, server-only
     item-filters  the vocabulary and the live allowlists, as one editable
                   table. types.ts, the schema enums and the colour slots all
                   derive from it, so a category costs one line   (client-safe)
+    date-ranges   the quarter picker's choices: where a financial year starts,
+                  how many quarters are offered, and the clamping that stops
+                  one reaching past the fetch window   (client-safe, pure)
     azure-sources which Azure queries a POD board is made of: project, work
                   item types, and the field filters. No credentials — the PAT
                   stays on the POD or in AZDO_PAT
@@ -137,6 +143,9 @@ src/lib/          domain and data. No React, server-only
                   bounds are asserted on the exact query text
     fetch         one POD's last 365 days, fetched per request and cached in
                   this process for a minute. Writes nothing, anywhere
+    verify        the same clauses, re-checked against what came back. Azure
+                  matches an identity field generously, so an item can arrive
+                  not carrying the value the contract asked for (pure)
   azure.ts        WIQL + workitemsbatch
   azure-debug.ts  what the client prints about what it fetched, and the
                   redactor that keeps a PAT out of it (AZDO_DEBUG)
@@ -331,6 +340,12 @@ src/components/   client components, dashboard-client.tsx orchestrates
                         board changed, and the roll-up they clicked from is
                         gone (client-safe rule, pure)
   board-actions         what Sync and Upload say when they finish (pure)
+  use-board-writes      the two writes themselves — sync and upload — and the
+                        revalidation they share, so dashboard-client stays about
+                        what is on screen
+  range-select          the quarter dropdown. A native select, like the POD
+                        switcher: the mobile picker and the keyboard handling
+                        are already written
   devops/
     board-switch        moving between the POD board and the DevOps board
     devops-client       the DevOps board shell — same layout, same motion
@@ -410,10 +425,10 @@ src/components/   client components, dashboard-client.tsx orchestrates
     tooltip-place where it lands — the anchor is display:contents and has no box
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       641 end-to-end checks against a running server
+  check.mjs       691 end-to-end checks against a running server
   check-theme.mjs 1372 static checks: theme tokens, contrast, source rules,
                   and the font switch
-  check-ui.mjs    3083 checks on client-side pure logic — it imports the real
+  check-ui.mjs    3183 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-render.mjs  `pnpm check:render` — compiles the components for real,

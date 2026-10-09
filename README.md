@@ -246,10 +246,21 @@ and the one it must never hide. Nothing is dropped for its wording either: every
 value that maps gets its own section, so an unexpected status is a question
 somebody can answer rather than an item nobody can see.
 
-A POD named in the contract still reads the store until a PAT exists (on the POD
-in Admin, or `AZDO_PAT`) — which is what keeps the demo board working on a fresh
-clone. Then **Sync** becomes Refresh, the webhook becomes a cache drop, and a
-spreadsheet upload into that POD is refused rather than stored and never read.
+A POD named in the contract **never reads the store** — not even with no PAT,
+where it shows a `503` naming what is missing. Stored rows are whatever was
+seeded or synced once, which is exactly what the filters exist to exclude. One
+POD failing doesn't empty the others: an unscoped board logs it and carries on,
+while asking for that POD alone tells you why.
+
+**Sync** becomes Refresh, the webhook becomes a cache drop, and a spreadsheet
+upload into that POD is refused rather than stored and never read. Storing is
+refused at the store itself, not only at those call sites, so a future importer
+cannot quietly add a write path — and with no POD left reading the store,
+`DB_store/items.json` is never created.
+
+The filters are applied twice: by Azure, and again to what came back, because
+Azure matches an identity field generously enough that an item can arrive not
+carrying the value the contract asked for.
 
 ```bash
 pnpm azure:probe --fields spoc   # the reference names a filter must use
@@ -424,10 +435,10 @@ graph LR
     T["pnpm test"] --> TS["✅ typecheck"]
     T --> DOC["📚 563 doc checks<br/><i>links · counts · every module mentioned</i>"]
     T --> TH["🎨 1372 theme checks<br/><i>contrast · tokens · source rules</i>"]
-    T --> UI["🧠 3083 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
-    T --> RN["🖱️ 127 render checks<br/><i>mounted in jsdom, then clicked</i>"]
+    T --> UI["🧠 3183 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
+    T --> RN["🖱️ 138 render checks<br/><i>mounted in jsdom, then clicked</i>"]
     T --> BLD["📦 production build"]
-    T --> E2E["🌐 641 end-to-end checks<br/><i>own server · own store · own build dir</i>"]
+    T --> E2E["🌐 691 end-to-end checks<br/><i>own server · own store · own build dir</i>"]
 ```
 
 ```bash

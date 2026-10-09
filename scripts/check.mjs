@@ -78,15 +78,55 @@ async function signIn(email, password) {
 
 // ---------------------------------------------------------------- invariants
 
+const { rangeOptions } = await import("../src/lib/contracts/date-ranges.ts");
+
 async function invariants(session) {
   const get = (p) => call(session, p);
   const count = async (q) => (await get(`/api/items?${q}&limit=500`)).json.total;
 
-  for (const scope of ["", "teamId=amc-pod", "kind=bug"]) {
-    section(`invariants — scope: ${scope || "all PODs"}`);
+  /*
+   * A quarter from the picker, run through the **same** invariants as every
+   * other scope. The range travels as `createdFrom` / `createdTo`, which the
+   * board and the drill-down already share — so this is what proves a tile and
+   * the list it opens cannot disagree about which quarter they are showing.
+   *
+   * The quarter is chosen by asking which one actually holds rows. A hardcoded
+   * one would pass vacuously the moment the seed's dates moved, and 0 === 0 is
+   * not a check.
+   */
+  const quarters = rangeOptions().filter((r) => r.from);
+  const withRows = [];
+  for (const q of quarters) {
+    const query = `createdFrom=${encodeURIComponent(q.from)}&createdTo=${encodeURIComponent(q.to)}`;
+    const total = (await get(`/api/metrics?${query}`)).json?.totals?.total ?? 0;
+    if (total > 0) withRows.push({ ...q, query, total });
+  }
+  const windowTotal = (await get("/api/metrics")).json?.totals?.total ?? 0;
+
+  section("invariants — the quarter picker narrows the board");
+  check("at least one quarter holds rows", withRows.length > 0, `${quarters.length} quarters, none with rows`);
+  check("a quarter never holds more than the window", withRows.every((q) => q.total <= windowTotal), `${withRows.map((q) => `${q.label}:${q.total}`).join(" ")} vs ${windowTotal}`);
+  check("...and narrows it rather than doing nothing", withRows.some((q) => q.total < windowTotal), `every quarter returned all ${windowTotal}`);
+  /* The quarters partition the window by raised date, so they cannot sum past
+     it — anything more means an item is being counted in two quarters. */
+  const quarterSum = withRows.reduce((n, q) => n + q.total, 0);
+  check("the quarters do not overlap", quarterSum <= windowTotal, `${quarterSum} across quarters vs ${windowTotal} in the window`);
+  check("a range outside the window is empty", ((await get("/api/metrics?createdFrom=2000-01-01&createdTo=2000-04-01")).json?.totals?.total ?? -1) === 0);
+  /* Junk must be dropped, not passed into date maths. `isoParam` does that. */
+  check("an unparseable range is ignored, not a 500", (await get("/api/metrics?createdFrom=notadate")).status === 200);
+
+  const busiest = withRows.sort((a, b) => b.total - a.total)[0];
+
+  for (const [label, scope] of [
+    ["all PODs", ""],
+    ["one POD", "teamId=demo-pod"],
+    ["bugs", "kind=bug"],
+    ...(busiest ? [[`the quarter ${busiest.label}`, busiest.query]] : []),
+  ]) {
+    section(`invariants — scope: ${label}`);
     const d = (await get(`/api/metrics?${scope}`)).json;
     if (d.error) {
-      check(`metrics load (${scope})`, false, d.error);
+      check(`metrics load (${label})`, false, d.error);
       continue;
     }
     const t = d.totals;
@@ -266,7 +306,7 @@ async function input(session) {
   const all = await get("/api/search/pods?q=Ananya");
   check("a person with items resolves to their POD", all.status === 200);
   const first = all.json?.matches?.[0];
-  check("...naming the POD", first?.teamId === "amc-pod", first?.teamId ?? "none");
+  check("...naming the POD", first?.teamId === "demo-pod", first?.teamId ?? "none");
   check("...with a count of what is there", (first?.items ?? 0) > 0, `${first?.items}`);
   check("...and why it matched", (first?.people ?? []).some((n) => /Ananya/i.test(n)));
 
@@ -336,7 +376,7 @@ section("a JSON body can carry an object where a string is expected");
      * never asked for. The controllers refuse a non-string id, and these keep
      * them refusing it.
      */
-    const OPERATORS = [{ $ne: null }, { $gt: "" }, { $regex: ".*" }, ["amc-pod"], 42, true];
+    const OPERATORS = [{ $ne: null }, { $gt: "" }, { $regex: ".*" }, ["demo-pod"], 42, true];
 
     for (const value of OPERATORS) {
       const label = JSON.stringify(value);
@@ -349,7 +389,7 @@ section("a JSON body can carry an object where a string is expected");
        * an unauthorised caller learning what PODs exist.
        */
       const body = JSON.stringify(sync.json ?? {});
-      check(`...and names no POD`, !/teamName|amc-pod|payments-pod/i.test(body), body.slice(0, 80));
+      check(`...and names no POD`, !/teamName|demo-pod|payments-pod/i.test(body), body.slice(0, 80));
 
       const upload = await post("/api/upload", { teamId: value });
       /*
@@ -511,8 +551,8 @@ section("input — every filter param survives hostile values");
   {
     // Duplicated keys: URLSearchParams.get takes the first, so the tighter of
     // the two wins rather than the caller getting to append a wider one.
-    const r = await get("/api/metrics?teamId=amc-pod&teamId=payments-pod");
-    check("duplicate teamId takes the first", r.json.teams?.every((t) => t.teamId === "amc-pod"));
+    const r = await get("/api/metrics?teamId=demo-pod&teamId=payments-pod");
+    check("duplicate teamId takes the first", r.json.teams?.every((t) => t.teamId === "demo-pod"));
   }
 
   section("input — malformed numerics must never reach date math or [size]");
@@ -551,9 +591,15 @@ section("input — every filter param survives hostile values");
   check("long name is truncated", (long.json?.team?.name?.length ?? 999) <= 80);
   // Compare against a snapshot, not against seed specifics — this POD is a real
   // one that people edit, so a hardcoded member count would rot immediately.
-  const before = (await get("/api/teams")).json.teams.find((t) => t.id === "amc-pod");
-  check("near-collision on an existing slug is refused", (await post("/api/teams", { name: "AMC/POD" })).status === 409);
-  const after = (await get("/api/teams")).json.teams.find((t) => t.id === "amc-pod");
+  const before = (await get("/api/teams")).json.teams.find((t) => t.id === "demo-pod");
+  /*
+   * A name that slugs onto an id already in use. It follows the seeded POD
+   * rather than naming a slug outright: "AMC/POD" used to be the collision, and
+   * `amc-pod` is now a live Azure board in the contract — so this check was
+   * quietly creating one and then failing on it.
+   */
+  check("near-collision on an existing slug is refused", (await post("/api/teams", { name: "Demo/POD" })).status === 409);
+  const after = (await get("/api/teams")).json.teams.find((t) => t.id === "demo-pod");
   check(
     "the existing POD survived that attempt",
     after?.name === before?.name && after?.members.length === before?.members.length,
@@ -604,14 +650,14 @@ section("input — every filter param survives hostile values");
      * One repository is routinely worked on by several teams. A single owner
      * made somebody pick one and be wrong about the rest.
      */
-    const multi = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod", "payments-pod"] });
-    check("a repo takes several PODs", (multi.json?.repo?.teamIds ?? []).join() === "amc-pod,payments-pod", JSON.stringify(multi.json?.repo?.teamIds));
-    const dedup = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod", "amc-pod", "", "  "] });
-    check("...deduplicated and without blanks", (dedup.json?.repo?.teamIds ?? []).join() === "amc-pod", JSON.stringify(dedup.json?.repo?.teamIds));
+    const multi = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["demo-pod", "payments-pod"] });
+    check("a repo takes several PODs", (multi.json?.repo?.teamIds ?? []).join() === "demo-pod,payments-pod", JSON.stringify(multi.json?.repo?.teamIds));
+    const dedup = await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["demo-pod", "demo-pod", "", "  "] });
+    check("...deduplicated and without blanks", (dedup.json?.repo?.teamIds ?? []).join() === "demo-pod", JSON.stringify(dedup.json?.repo?.teamIds));
 
     /* A repo saved the old way must not lose the POD it already had. */
-    const legacy = await post("/api/repos", { url: "https://github.com/chk-acme/chk-legacy", teamId: "amc-pod" });
-    check("a single teamId is migrated to the list", (legacy.json?.repo?.teamIds ?? []).join() === "amc-pod", JSON.stringify(legacy.json?.repo?.teamIds));
+    const legacy = await post("/api/repos", { url: "https://github.com/chk-acme/chk-legacy", teamId: "demo-pod" });
+    check("a single teamId is migrated to the list", (legacy.json?.repo?.teamIds ?? []).join() === "demo-pod", JSON.stringify(legacy.json?.repo?.teamIds));
     await del("/api/repos?id=chk-acme-chk-legacy");
 
     // -- freezing, which in a dry run touches nothing ---------------------
@@ -694,7 +740,7 @@ section("input — every filter param survives hostile values");
      * against a team that does not work on the repository reads as an answer
      * and is wrong.
      */
-    await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod", "payments-pod"] });
+    await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["demo-pod", "payments-pod"] });
     const chosen = await post("/api/deployments", {
       repoId: "chk-acme-chk-cms", cycleId, title: "Chosen POD", teamId: "payments-pod",
     });
@@ -706,9 +752,9 @@ section("input — every filter param survives hostile values");
     check("...and refuses one the repo does not have", (wrong.json?.deployment?.teamId ?? "") === "", `${wrong.json?.deployment?.teamId}`);
 
     /* One POD is not a choice, so it is filled in rather than asked for. */
-    await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["amc-pod"] });
+    await post("/api/repos", { id: "chk-acme-chk-cms", url: repo.url, teamIds: ["demo-pod"] });
     const only = await post("/api/deployments", { repoId: "chk-acme-chk-cms", cycleId, title: "Only POD" });
-    check("a repo with one POD fills it in", only.json?.deployment?.teamId === "amc-pod", `${only.json?.deployment?.teamId}`);
+    check("a repo with one POD fills it in", only.json?.deployment?.teamId === "demo-pod", `${only.json?.deployment?.teamId}`);
 
     for (const r of [chosen, wrong, only]) {
       if (r.json?.deployment) await del(`/api/deployments?id=${encodeURIComponent(r.json.deployment.id)}`);
@@ -1113,7 +1159,7 @@ section("input — every filter param survives hostile values");
     const itemRows = (allItems.json?.counts ?? []).find((c) => c.target === "items")?.rows ?? 0;
     check("work items are counted by date", itemRows > 0, JSON.stringify(allItems.json?.counts));
 
-    const scopedItems = await get("/api/devops/purge?period=2026&teamId=amc-pod");
+    const scopedItems = await get("/api/devops/purge?period=2026&teamId=demo-pod");
     const scopedRows = (scopedItems.json?.counts ?? []).find((c) => c.target === "items")?.rows ?? 0;
     check("...and narrowed to one POD", scopedRows > 0 && scopedRows < itemRows, `${scopedRows} of ${itemRows}`);
 
@@ -1124,7 +1170,7 @@ section("input — every filter param survives hostile values");
     /* And a scoped clear really only takes that POD's rows. */
     const clearedPod = await post("/api/devops/purge", { period: "2026", targets: ["items"], teamId: "payments-pod" });
     check("a scoped clear removes only that POD", clearedPod.json?.removed?.find((r) => r.target === "items")?.rows === otherRows, JSON.stringify(clearedPod.json?.removed));
-    const untouched = await get("/api/devops/purge?period=2026&teamId=amc-pod");
+    const untouched = await get("/api/devops/purge?period=2026&teamId=demo-pod");
     check("...leaving the other POD alone", (untouched.json?.counts ?? []).find((c) => c.target === "items")?.rows === scopedRows, "a scoped clear took somebody else's work items");
 
     const gone = await del("/api/repos?id=chk-acme-chk-cms");
@@ -1172,10 +1218,10 @@ section("input — every filter param survives hostile values");
   check("email without @ refused", (await post("/api/users", { email: "nope" })).status === 400);
   // A bare string survives `.includes()` as a substring test, which would grant
   // access to any POD whose id is a substring of it.
-  await post("/api/users", { email: "chk-sub@x.com", name: "S", teamIds: "amc-pod-archive" });
+  await post("/api/users", { email: "chk-sub@x.com", name: "S", teamIds: "demo-pod-archive" });
   const sub = (await get("/api/users")).json.users.find((u) => u.email === "chk-sub@x.com");
   check("teamIds coerced to an array", Array.isArray(sub?.teamIds), JSON.stringify(sub?.teamIds));
-  check("no substring access grant", !sub?.teamIds?.includes("amc-pod"));
+  check("no substring access grant", !sub?.teamIds?.includes("demo-pod"));
   await post("/api/users", { email: "chk-role@x.com", name: "R", role: "root" });
   const role = (await get("/api/users")).json.users.find((u) => u.email === "chk-role@x.com");
   check("unknown role falls back to member", role?.role === "member", `=${role?.role}`);
@@ -1416,7 +1462,7 @@ section("input — every filter param survives hostile values");
   }
 
   section("input — a failed sync must not corrupt the watermark");
-  await post("/api/sync", { teamId: "amc-pod" });
+  await post("/api/sync", { teamId: "demo-pod" });
   /*
    * Read through the store, so this works on whichever driver is configured.
    * It used to fetch `localhost:9200` directly — a leftover from the
@@ -1425,7 +1471,7 @@ section("input — every filter param survives hostile values");
    */
   const store = getStore();
   await store.init();
-  const wm = (await store.sync.byId("amc-pod"))?.lastChangedDate;
+  const wm = (await store.sync.byId("demo-pod"))?.lastChangedDate;
   check("watermark is not the epoch", new Date(wm).getFullYear() > 2000, `=${wm}`);
   check("watermark stays within the first-run window", Date.now() - new Date(wm) < 370 * 86400000, `=${wm}`);
 
@@ -1440,13 +1486,13 @@ async function auth(admin) {
   await call(admin, "/api/users", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: "chk-member@x.com", name: "Checker", password: "pw123456", role: "member", teamIds: ["amc-pod"] }),
+    body: JSON.stringify({ email: "chk-member@x.com", name: "Checker", password: "pw123456", role: "member", teamIds: ["demo-pod"] }),
   });
   const member = await signIn("chk-member@x.com", "pw123456");
 
   const reads = [
     ["metrics without a teamId", "/api/metrics", 200],
-    ["metrics for their own POD", "/api/metrics?teamId=amc-pod", 200],
+    ["metrics for their own POD", "/api/metrics?teamId=demo-pod", 200],
     ["metrics for another POD", "/api/metrics?teamId=payments-pod", 403],
     ["items for another POD", "/api/items?teamId=payments-pod", 403],
     ["the user list", "/api/users", 403],
@@ -1454,9 +1500,9 @@ async function auth(admin) {
   for (const [label, path, want] of reads) check(label, (await call(member, path)).status === want, `want ${want}`);
 
   const scoped = await call(member, "/api/metrics");
-  check("their metrics cover only their POD", scoped.json.teams.every((t) => t.teamId === "amc-pod"));
+  check("their metrics cover only their POD", scoped.json.teams.every((t) => t.teamId === "demo-pod"));
   const teams = await call(member, "/api/teams");
-  check("their POD list is scoped", teams.json.teams.length === 1 && teams.json.teams[0].id === "amc-pod");
+  check("their POD list is scoped", teams.json.teams.length === 1 && teams.json.teams[0].id === "demo-pod");
 
   /*
    * "Where is this?" must not become "what PODs exist?".
@@ -1470,7 +1516,7 @@ async function auth(admin) {
     const where = await call(member, "/api/search/pods?q=a");
     check("search-scope is reachable by a member", where.status === 200, `${where.status}`);
     const named = (where.json?.matches ?? []).map((m) => m.teamId);
-    check("...and names only PODs they can see", named.every((id) => id === "amc-pod"), named.join(", "));
+    check("...and names only PODs they can see", named.every((id) => id === "demo-pod"), named.join(", "));
   }
 
   section("auth — member cannot write");
@@ -1496,12 +1542,12 @@ async function auth(admin) {
    * Uploading is a write, and the one a member could most plausibly mistake for
    * a read of their own POD. A spreadsheet row overwrites whatever item shares
    * its id, so an upload is a bulk edit of the board the whole POD is measured
-   * by — from a file nobody else has seen. `amc-pod` is the member's *own* POD,
+   * by — from a file nobody else has seen. `demo-pod` is the member's *own* POD,
    * which is the point: the refusal is about the act, not the access.
    */
   const memberUpload = new FormData();
   memberUpload.set("file", new File(["Work Item ID,Title\nMx-1,Member upload"], "member.csv"));
-  memberUpload.set("teamId", "amc-pod");
+  memberUpload.set("teamId", "demo-pod");
   const memberUp = await fetch(BASE + "/api/upload", {
     method: "POST",
     body: memberUpload,
@@ -1512,11 +1558,11 @@ async function auth(admin) {
   check("...and is told why, not given a stack trace", /admin/i.test(memberSaid?.error ?? ""), memberSaid?.error ?? "no body");
 
   /* The item did not land. A 403 that still wrote would be the worst outcome. */
-  const after403 = await call(member, "/api/items?teamId=amc-pod&search=Member%20upload");
+  const after403 = await call(member, "/api/items?teamId=demo-pod&search=Member%20upload");
   check("...and nothing was written", (after403.json?.items ?? []).length === 0, `${after403.json?.items?.length}`);
 
   /* Reading is still theirs: the gate is on writing, not on the data. */
-  check("downloading their own POD still works", (await call(member, "/api/export?teamId=amc-pod")).status === 200);
+  check("downloading their own POD still works", (await call(member, "/api/export?teamId=demo-pod")).status === 200);
 
   /*
    * The DevOps board splits the same way. A member has to see whether develop
@@ -1559,7 +1605,7 @@ async function auth(admin) {
    * tested "a row needs a real repository", which is a different rule, checked
    * in the input group, and it left this one silently checking nothing.
    */
-  await call(admin, "/api/repos", json('{"url":"https://github.com/chk-auth/chk-scope","name":"Chk auth scope","teamIds":["amc-pod"]}'));
+  await call(admin, "/api/repos", json('{"url":"https://github.com/chk-auth/chk-scope","name":"Chk auth scope","teamIds":["demo-pod"]}'));
   const authCycle = await call(admin, "/api/cycles", json('{"repoId":"chk-auth-chk-scope","name":"member-writes"}'));
   const theirCycle = authCycle.json?.cycle;
   check("there is an open cycle to add to", Boolean(theirCycle?.id), `${authCycle.status} ${authCycle.json?.error ?? ""}`);
@@ -1735,7 +1781,7 @@ async function auth(admin) {
     // The whole reason this beats delete-and-recreate.
     const row = (await call(admin, "/api/users")).json.users.find((u) => u.email === "chk-member@x.com");
     check("the role survived the reset", row?.role === "member", row?.role);
-    check("their PODs survived the reset", JSON.stringify(row?.teamIds) === JSON.stringify(["amc-pod"]), JSON.stringify(row?.teamIds));
+    check("their PODs survived the reset", JSON.stringify(row?.teamIds) === JSON.stringify(["demo-pod"]), JSON.stringify(row?.teamIds));
     check("they still have a password", row?.hasPassword === true);
 
     // Back to what the rest of the suite expects.
@@ -1773,7 +1819,7 @@ async function auth(admin) {
       });
 
     const email = "chk-nopass@x.com";
-    await post("/api/users", { email, name: "No Password", role: "member", teamIds: ["amc-pod"] });
+    await post("/api/users", { email, name: "No Password", role: "member", teamIds: ["demo-pod"] });
 
     const listed = (await call(admin, "/api/users")).json.users.find((u) => u.email === email);
     check("an account can be created with no password", listed?.hasPassword === false, `${listed?.hasPassword}`);
@@ -1796,7 +1842,7 @@ async function auth(admin) {
      */
     const kept = (await call(admin, "/api/users")).json.users.find((u) => u.email === email);
     check("their role survived", kept?.role === "member", kept?.role);
-    check("their PODs survived", JSON.stringify(kept?.teamIds) === JSON.stringify(["amc-pod"]), JSON.stringify(kept?.teamIds));
+    check("their PODs survived", JSON.stringify(kept?.teamIds) === JSON.stringify(["demo-pod"]), JSON.stringify(kept?.teamIds));
     check("and they now have a password", kept?.hasPassword === true);
 
     await call(admin, `/api/users?email=${encodeURIComponent(email)}`, { method: "DELETE" });

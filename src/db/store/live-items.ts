@@ -62,7 +62,25 @@ export function withLiveItems(store: Store): ItemStore {
 
       const fetched: ItemDoc[] = [];
       for (const team of live) {
-        for (const item of await liveItems(team, now)) {
+        /*
+         * One POD that cannot be read must not take the others down with it —
+         * the same rule `syncAllTeams` follows, and for the same reason: an
+         * expired PAT on one board is not a reason for a leadership roll-up, or
+         * an unrelated DevOps export, to return nothing at all.
+         *
+         * A request **scoped to that POD** still throws, because then the
+         * failure is the answer and the reader needs to see it. Swallowing it
+         * there would show an empty board with no explanation.
+         */
+        let items: Awaited<ReturnType<typeof liveItems>>;
+        try {
+          items = await liveItems(team, now);
+        } catch (err) {
+          if (filters.teamId) throw err;
+          console.error(`[live] ${team.name} could not be read: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+        for (const item of items) {
           const doc = { ...toDoc(item), _id: item.id } as ItemDoc;
           if (matchesFilters(doc, filters, now)) fetched.push(doc);
         }

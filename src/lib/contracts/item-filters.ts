@@ -113,6 +113,17 @@ export type WindowMode = (typeof WINDOW_MODES)[number];
 export const LIVE = {
   windowDays: 365,
   windowMode: "touched" as WindowMode,
+  /**
+   * Check every fetched item against the filters that asked for it, instead of
+   * trusting the query to have been exact.
+   *
+   * On, because Azure matches an identity field generously: a clause naming an
+   * email can come back matched on a display name, so an item can arrive
+   * without carrying the value the contract asked for. One that fails is
+   * dropped and counted in the server log. Turn it off only to find out whether
+   * it is what is emptying a board.
+   */
+  verifyFilters: true,
   cacheSeconds: 60,
   /** WIQL will not return more ids than this in one query; Azure's own ceiling. */
   maxIds: 20_000,

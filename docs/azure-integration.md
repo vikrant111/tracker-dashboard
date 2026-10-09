@@ -226,6 +226,31 @@ range, so no number is distorted by its presence. What gets dropped is finished
 history, which would otherwise inflate the closed totals with a year nobody
 asked about.
 
+### The filters, checked twice
+
+Azure applies the filters, and then they are applied again to what came back —
+`satisfiesSource()` in [`live/verify.ts`](../src/lib/live/verify.ts), the same
+`all`/`any` shape the WIQL is built from so the two cannot drift.
+
+This is not belt-and-braces for its own sake. Azure matches an **identity**
+field generously: a clause naming an email can come back matched on a display
+name, and a multi-select field holds several values in one string. An item can
+arrive not carrying the value the contract asked for, and nothing downstream
+would question it. One that fails is dropped before it reaches a number, and
+counted in the server log.
+
+What the check understands, because each one has broken a naive version:
+
+| Payload shape | Compared as |
+|---|---|
+| `"Aravind I"` | trimmed, case-insensitive |
+| `{ displayName, uniqueName }` | either one — a contract may name either |
+| `"Someone Else; Aravind I"` | each part, not the whole string |
+| field absent from the payload | **no match** — Azure cannot have matched a field the item lacks |
+
+`LIVE.verifyFilters` turns it off, for finding out whether it is what is
+emptying a board. `pnpm azure:probe --days 365` reports the count either way.
+
 ### The allowlists
 
 **Off by default.** `ALLOWED.dropOutside` is `false`, so every value that maps
@@ -244,6 +269,48 @@ refuses it rather than letting the board go quietly empty.
 `keepUnknown` then decides what happens to a value that mapped to nothing.
 Tasks have no severity and most boards have no environment field, so dropping
 those would hide real work — `Unknown` is honest and stays visible.
+
+### Picking a quarter
+
+The board carries a date-range dropdown: the whole window, then each quarter it
+touches. It changes **nothing about what is fetched** — one Azure read covers the
+window and is cached per POD, so switching quarters narrows what is already in
+hand. Instant, and it costs Azure nothing.
+
+The range travels as `createdFrom` / `createdTo`, which the dashboard and every
+drill-down behind it already share, so a tile and the list it opens cannot
+disagree about which quarter they are showing. `pnpm check` runs the whole
+invariant battery against a quarter for exactly that reason.
+
+[`contracts/date-ranges.ts`](../src/lib/contracts/date-ranges.ts) holds the
+settings: `FISCAL_START_MONTH` is **4**, so `Q1` is April–June and `FY26` is the
+year ending March 2026 — set it to `1` for calendar quarters and the labels
+follow. `QUARTERS_OFFERED` is 5, because a 365-day window touches parts of five
+quarters whenever it does not start on a quarter boundary.
+
+The first choice is the whole window and carries **no** date bound. That is
+deliberate: a long-open bug is kept whatever its age, and a `createdFrom` of a
+year ago would hide precisely those. A quarter reaching back past the window has
+its start clamped and is marked `(part)`, so a cut-short quarter does not read
+as a quiet one.
+
+#### What the dropdown can and cannot hide
+
+Measured by `pnpm check:ui`, with one item per day across the window plus the
+three cases that sit at its edge:
+
+| | |
+|---|---|
+| **Last 365 days** | everything the window kept — misses nothing |
+| the quarters together | every day of the window, each day in **exactly one** quarter |
+| in no quarter | an item **raised before** the window, kept because it is still open or was closed inside it |
+
+The quarters tile the window by *raised* date with no gaps and no overlap — the
+check asserts the sum, so a gap and a double-count cannot each hide behind a
+looser test. The one thing a quarter cannot hold is an item raised before the
+window: "raised in Q2" is the honest meaning of picking Q2, and those items are
+precisely why the whole-window range carries no bound and is the default. They
+are the oldest rows on an ageing board.
 
 ### The cache
 
@@ -264,11 +331,20 @@ the rows, because a write accepted and discarded is a spreadsheet reported as
 imported and invisible forever.
 
 What is on disk under `DB_store/` is accounts, PODs, permissions, tokens and the
-DevOps board's own records. `items.json` exists because the file driver creates
-one file per collection at startup, and it stays empty of a live POD's work —
-`pnpm check:ui` proves that against a real store: read the board, then count
-what landed. Rows left in it from a POD's syncing days are ignored rather than
-merged, so the switch is safe to flip without clearing anything first.
+DevOps board's own records. **`items.json` is not created at all** when no POD
+reads from the store: a missing collection already reads as empty, and the first
+real write creates it like any other, so the file appears exactly when there is
+something in it. An empty file named after the data somebody was told is not
+stored is a fair thing to be suspicious of.
+
+`storesAnyItems()` in [`json-store.ts`](../src/db/store/json-store.ts) is the
+decision, and it takes its rows as an argument so the suite exercises it
+directly. One POD outside the contract — or one inside it with no PAT, which
+still reads the store — and the file is created as before.
+
+Rows left in an existing `items.json` from a POD's syncing days are ignored
+rather than merged, so the switch is safe to flip without clearing anything
+first.
 
 ### What changes for a live POD
 
@@ -279,9 +355,22 @@ merged, so the switch is safe to flip without clearing anything first.
 | Spreadsheet upload | imports rows | **refused**, with the reason — an upload would be stored and never read again |
 | Watermark | advanced each run | none; there is nothing incremental about it |
 
-A POD named in the contract still reads the store when there is no PAT
-anywhere. That is the only fallback: a PAT that exists and fails is an error,
-because showing last week's synced numbers as though they were live is worse.
+**There is no fallback to the store.** Being named in the contract is the whole
+test. A POD there with no PAT shows a `503` naming the POD and the PAT, not
+stored rows — those rows are whatever was seeded or synced once, which is
+exactly the data the filters exist to exclude, and showing them under a POD
+meant to carry only matched work is the quiet way to be wrong.
+
+One POD failing does not empty the others. An unscoped board logs it and carries
+on with the PODs it can read — the rule `syncAllTeams` already follows, because
+an expired PAT on one board is no reason for a leadership roll-up, or the DevOps
+scope sheet that joins back for a bug's severity, to return nothing. A request
+**scoped to that POD** still throws, because there the failure is the answer.
+
+> The demo seed used to create a POD under the id `amc-pod`, which the contract
+> now points at a real board. `pnpm seed` creates **`demo-pod`** instead. A POD
+> whose name slugs onto a contract id inherits that contract, so pick names with
+> that in mind.
 
 ### Getting the field names right
 

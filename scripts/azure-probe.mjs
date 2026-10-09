@@ -21,6 +21,7 @@ import { credsFor, fetchWorkItems, isConnectable, queryChangedIds, resolveCreds 
 import { sourcesFor } from "../src/lib/contracts/azure-sources.ts";
 import { ALLOWED, LIVE, allows } from "../src/lib/contracts/item-filters.ts";
 import { buildSourceWiql } from "../src/lib/live/wiql.ts";
+import { satisfiesSource, valuesOf } from "../src/lib/live/verify.ts";
 import { queryIds, fetchByIds } from "../src/lib/azure.ts";
 import { redact } from "../src/lib/azure-debug.ts";
 import { fromAzure } from "../src/lib/normalize.ts";
@@ -210,12 +211,31 @@ async function probeLive(team) {
 
     const take = ids.slice(0, LIMIT);
     const items = await fetchByIds(c, take);
+
+    /*
+     * Did Azure return anything the contract did not actually ask for? The
+     * query carries the filters, but Azure matches an identity field
+     * generously, so this is where a mismatch becomes visible rather than
+     * being taken on trust.
+     */
+    const offFilter = items.filter((wi) => !satisfiesSource(wi.fields ?? {}, source));
+    say(`\n  Filter check (src/lib/contracts/azure-sources.ts, verifyFilters=${LIVE.verifyFilters})`);
+    say(`     ${items.length - offFilter.length} carry a filter value, ${offFilter.length} do not`);
+    for (const wi of offFilter.slice(0, 8)) {
+      const held = [...(source.all ?? []), ...(source.any ?? [])]
+        .map((cl) => `${cl.field}=${JSON.stringify(valuesOf(wi.fields?.[cl.field]))}`)
+        .join("  ");
+      say(`       #${wi.id}  ${held}`);
+    }
+    if (offFilter.length > 8) say(`       … and ${offFilter.length - 8} more`);
+    if (offFilter.length) say(`     Those are dropped before they reach the board.`);
+
     const view = {
       ...team,
       azure: { ...team.azure, orgUrl: source.orgUrl, project: source.project, areaPath: source.areaPath ?? "", workItemTypes: [...source.workItemTypes] },
       fieldMap: { ...team.fieldMap, ...(source.fieldMap ?? {}) },
     };
-    const mapped = items.map((wi) => fromAzure(wi, view));
+    const mapped = items.filter((wi) => satisfiesSource(wi.fields ?? {}, source)).map((wi) => fromAzure(wi, view));
     const tally = (pick) => {
       const t = new Map();
       for (const m of mapped) t.set(pick(m), (t.get(pick(m)) ?? 0) + 1);
