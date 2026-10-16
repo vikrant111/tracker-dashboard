@@ -1,9 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import { THEME_SCRIPT } from "@/components/theme-toggle";
 /*
- * Resolved by `next.config.ts` from `FONT_SOURCE` — google (default), local or
- * system. The indirection exists because `next/font/google` downloads at
- * *compile* time, so choosing with an `if` here would still trigger the fetch.
+ * Resolved by `next.config.ts` from `FONT_SOURCE` — local (default) or system.
+ * The indirection exists because a font loader resolves at *compile* time, so
+ * choosing with an `if` here would still compile both branches. Neither one
+ * touches the network: the faces are committed under `src/fonts/files/`.
  * See `docs/restricted-environments.md`.
  */
 import { fontClassName } from "@/fonts";

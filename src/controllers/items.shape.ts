@@ -9,7 +9,7 @@
  * what crosses the wire. This is the one place that knows.
  */
 import type { ItemDoc } from "../db/models/index.ts";
-import { DAY_MS } from "../lib/metrics/dates.ts";
+import { businessDaysBetween } from "../lib/metrics/dates.ts";
 import type { ListedItem } from "../lib/metrics/types.ts";
 import type { Item } from "../lib/types.ts";
 
@@ -62,7 +62,13 @@ export function toDoc(item: Item): Omit<ItemDoc, "_id"> {
   };
 }
 
-/** Age in whole days, measured to the close date when there is one. */
+/**
+ * Age in **working days**, measured to the close date when there is one.
+ *
+ * The same unit the thresholds are in, so a row reading "7" beside a Major
+ * allowed 6 is plainly past it. Counting calendar days here while judging in
+ * working ones put rows in the drawer that looked within their turnaround.
+ */
 export function withAge(item: Item, now: number): ListedItem {
   const end = item.closedDate ? new Date(item.closedDate).getTime() : now;
   const start = new Date(item.createdDate).getTime();
@@ -70,6 +76,5 @@ export function withAge(item: Item, now: number): ListedItem {
    * An unparseable stored date would otherwise produce NaN, which serialises to
    * null and renders as an empty cell rather than a zero.
    */
-  const days = Number.isFinite(start) ? Math.round((end - start) / DAY_MS) : 0;
-  return { ...item, ageDays: Math.max(0, days) };
+  return { ...item, ageDays: Number.isFinite(start) ? businessDaysBetween(start, end) : 0 };
 }

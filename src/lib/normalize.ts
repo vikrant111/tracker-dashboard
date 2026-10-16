@@ -47,7 +47,10 @@ export function fromAzure(wi: AzureWorkItem, team: Team): Item {
     SEVERITIES,
     "Unknown",
   );
-  const environment = resolveEnvironment(get(team.fieldMap.environment), tags, areaPath, team.valueMap);
+  const title = String(f["System.Title"] ?? `Work item ${wi.id}`);
+  /* The title too: neither BFL board has an environment field, and one of them
+     carries it only in the first segment of the title. */
+  const environment = resolveEnvironment(get(team.fieldMap.environment), tags, areaPath, team.valueMap, title);
 
   // Only ClosedDate — ResolvedDate is set while an item is still waiting on QA,
   // and counting that as closed would overstate the closure trend.
@@ -61,7 +64,7 @@ export function fromAzure(wi: AzureWorkItem, team: Team): Item {
     source: "azure",
     kind: kindOf(type, tags),
     type,
-    title: String(f["System.Title"] ?? `Work item ${wi.id}`),
+    title,
     url: wi._links?.html?.href || `${team.azure.orgUrl}/${team.azure.project}/_workitems/edit/${wi.id}`,
     assignee: assignedTo?.displayName || "Unassigned",
     assigneeEmail: assignedTo?.uniqueName || "",

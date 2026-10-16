@@ -104,8 +104,13 @@ src/controllers/  what routes and lib/* call
   dashboard.aggregate   every number on the board, computed once, from a list
                         of items — the only implementation, so switching driver
                         cannot move a figure
+  dashboard.trend       the closure trend: its own window, its own slice, and
+                        the clamping that keeps a query param out of the series
+                        builder's loop
   dashboard.shape       raw output -> what the panels render (pure)
   dashboard.parts       the loops the board is assembled from (pure)
+  metrics/trend-stats   what the trend adds up to — totals, net, busiest
+                        bucket, and the run of buckets that kept up (pure)
   metrics/threshold     how old is old: POD default, per-severity override,
                         board fallback — the one resolver all of them ask
   items.controller      drill-down, export cursor, bulk upsert, deletes
@@ -129,6 +134,11 @@ src/lib/          domain and data. No React, server-only
     types         Filters, Bucket, Dashboard — what the board is described in
     dates         absolute epoch bounds, never relative date math
   contracts/
+    filter-values THE FILE TO EDIT. POD_TAG maps each POD, as the dashboard
+                  names it, to the Azure tag(s) that find its work — a POD is
+                  one line, and both boards follow. POD_NAME, BFL_IT_SPOC and
+                  DELIVERY_SPOC are the second ways to find the same work.
+                  Emptying an array removes that filter       (client-safe)
     item-filters  the vocabulary and the live allowlists, as one editable
                   table. types.ts, the schema enums and the colour slots all
                   derive from it, so a category costs one line   (client-safe)
@@ -141,6 +151,11 @@ src/lib/          domain and data. No React, server-only
   live/
     wiql          a contract source as the WIQL Azure answers. Pure, so the
                   bounds are asserted on the exact query text
+    fields        the label on the form -> the reference name a query needs.
+                  Nobody can read `Custom.PODName` off a work item, and a wrong
+                  guess fails the whole query, so the project is asked
+    cache        one answer per POD, in memory, for a minute — so a board, its
+                  roster, the drawer and the export read the same year
     fetch         one POD's last 365 days, fetched per request and cached in
                   this process for a minute. Writes nothing, anywhere
     verify        the same clauses, re-checked against what came back. Azure
@@ -151,7 +166,9 @@ src/lib/          domain and data. No React, server-only
                   redactor that keeps a PAT out of it (AZDO_DEBUG)
   normalize.ts    Azure work item / spreadsheet row → Item
   normalize/
-    vocabulary    a board's own words → ours, in three passes
+    vocabulary    a board's own words → ours, in four passes
+    title         what a board writes before the first separator — the only
+                  place one of these boards records the environment
     columns       the spreadsheet's columns, in both directions
   sync.ts         watermarked incremental sync, webhook team routing
   poller.ts       background timer
@@ -219,6 +236,9 @@ src/lib/          domain and data. No React, server-only
     pull-sync     reading merged PRs from GitHub. Not gated by GITHUB_MODE —
                   reading changes nothing; the token gates it
     pulls         listing, signing off, recording a deploy date
+    period-bounds the two days a period covers, for callers that step from one
+                  to the other rather than testing a date — the closure trend's
+                  window. The only place the month-end arithmetic is written
     period        a year, a month and a day are one thing: a YYYY-MM-DD prefix.
                   An empty period matches NOTHING, because this backs a delete
     calendar      typing and laying out dates (pure, in .ts so it is checkable)
@@ -275,8 +295,7 @@ src/fonts/    which typefaces the build uses, picked by FONT_SOURCE in
   local           the .woff2 files in files/ — no network, for a machine
                   behind a TLS-inspecting proxy
   system          no web fonts at all; the CSS fallbacks take over
-  files/          the vendored latin subset, ~140 KB, refreshed by
-                  pnpm fonts:vendor
+  files/          the committed latin subset, ~140 KB. Nothing downloads it
 
 src/app/admin/
   admin-client    the screen: state, toasts, and which POD is being edited
@@ -363,8 +382,6 @@ src/components/   client components, dashboard-client.tsx orchestrates
     report-table        its rows; risky ones tinted, labelled and worded
     report-row-detail   a PR opened up: where it landed, and the four fields
                         that are ours rather than GitHub's
-    popover             a panel that hangs off a trigger through a portal, so
-                        an overflow-hidden Panel cannot clip it
     toast               the one-line confirmation, shared by three screens
     move-to-scope       the per-row button, disabled with the reason why
     scope-remove        taking a row off the sheet; a row that came from a PR
@@ -375,7 +392,8 @@ src/components/   client components, dashboard-client.tsx orchestrates
     expandable-row      makes a whole table row open when it is clicked, without
                         stealing the clicks of the controls inside it
     sync-control        which repo and which branch to read PRs from
-    period-picker       type a date, click one, or pick a month that has data
+    period-picker       type a date, click one, or pick a month that has data.
+                        Shared: the closure trend uses it for its window too
     month-grid          one month, with a dot on the days that hold rows
     purge-panel         clearing a period: counts first, asks twice
     scope-bar           which repo, which cycle, and a filter — one row
@@ -402,6 +420,16 @@ src/components/   client components, dashboard-client.tsx orchestrates
   use-debounced   a value that settles before it is used
   use-width       an element's measured width, for charts that draw in pixels
   trend-readout   what the trend crosshair is pointing at
+  trend-controls  the trend's own filter row: bug type, and a date window
+  trend-series    the two curves — gradient area, then the line
+  trend-headline  what they add up to: average, busiest bucket, streak, and
+                  the warning when the board's range hides part of the period
+  trend-net       net closed-minus-raised per bucket, its own strip on the
+                  chart's x scale — never a second y-axis
+  trend-weekends  Sat/Sun shaded on the daily grain, so the sawtooth reads as
+                  a weekend rather than a problem
+  trend-tooltip   the hover card and the legend under the chart
+  use-trend-view  the trend's slice and window, and the params they travel as
   trend-axis      the gridlines and their labels — one y-scale, never two
   trend-end-labels  where each series' name sits, nudged apart when they collide
   team-rollup-cell    one number in the roll-up, with a tooltip
@@ -421,14 +449,17 @@ src/components/   client components, dashboard-client.tsx orchestrates
     menu          the "For you" panel: roving focus, outside-press close
     menu-context  how an item closes the menu it is in
     menu-item     MenuSection and MenuItem
+    popover       a panel that hangs off a trigger through a portal, so an
+                  overflow-hidden Panel cannot clip it. Flips, follows scroll,
+                  and never grows wider than the window
     tooltip       a label that escapes the panel through a portal
     tooltip-place where it lands — the anchor is display:contents and has no box
 scripts/
   seed.mjs        indices + admin + demo data
-  check.mjs       691 end-to-end checks against a running server
-  check-theme.mjs 1372 static checks: theme tokens, contrast, source rules,
+  check.mjs       765 end-to-end checks against a running server
+  check-theme.mjs 1413 static checks: theme tokens, contrast, source rules,
                   and the font switch
-  check-ui.mjs    3183 checks on client-side pure logic — it imports the real
+  check-ui.mjs    3579 checks on client-side pure logic — it imports the real
                   modules, so breaking one fails the suite
   brand-ramp.mjs  regenerate the brand blue OKLCH ramp
   check-render.mjs  `pnpm check:render` — compiles the components for real,
@@ -447,9 +478,6 @@ scripts/
   azure-probe.mjs `pnpm azure:probe` — read-only: what Azure sends, how much of
                   it, which fields are on every item and which are not, and what
                   normalize() makes of them. Never writes, never moves a watermark
-  vendor-fonts.mjs
-                  `pnpm fonts:vendor` — downloads the typefaces into
-                  src/fonts/files/ so a build never needs Google
   parity.mjs      `pnpm parity` — writes one POD and one item through the
                   configured driver and prints what came back. Run it under
                   DB_DRIVER=json and again under DB_DRIVER=mongodb: the two

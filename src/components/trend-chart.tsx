@@ -1,6 +1,5 @@
 "use client";
 
-import { motion } from "framer-motion";
 import { TrendingUp } from "lucide-react";
 import { useState } from "react";
 import { TrendReadout } from "./trend-readout";
@@ -8,9 +7,17 @@ import { endLabelPositions } from "./trend-end-labels";
 import { TrendAxis } from "./trend-axis";
 import { useWidth } from "./use-width";
 import type { TrendPoint } from "@/lib/metrics";
-import { STATUS, TREND_COLOR } from "@/lib/palette";
+import { TrendControls } from "./trend-controls";
+import { grainFor, splitFacet, trendTitle } from "@/lib/contracts/trend-view";
+import { TREND_COLOR } from "@/lib/palette";
 import { useDrill } from "./drill-drawer";
-import { Empty, Panel, PanelHeader, SegmentedControl } from "./ui";
+import { Empty, Panel, PanelHeader } from "./ui";
+import { TrendLegend, TrendTooltip } from "./trend-tooltip";
+import { TrendSeries } from "./trend-series";
+import { TrendHeadline } from "./trend-headline";
+import { TrendNet } from "./trend-net";
+import { TrendWeekends } from "./trend-weekends";
+import { trendStats } from "@/lib/metrics/trend-stats";
 const fmtDay = (iso: string) =>
   new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
@@ -22,8 +29,25 @@ const HEIGHT = 250;
  * directly comparable. Both series carry a direct end-label as well as the
  * legend, so identity never rests on colour alone.
  */
-export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: TrendPoint[] }) {
-  const [grain, setGrain] = useState<"daily" | "weekly">("daily");
+export function TrendChart({
+  daily,
+  weekly,
+  window: plotted,
+  controls,
+}: {
+  daily: TrendPoint[];
+  weekly: TrendPoint[];
+  /** The window the server actually plotted, after clamping. */
+  window: { from: string; to: string; clipped: boolean };
+  controls: React.ComponentProps<typeof TrendControls>;
+}) {
+  /*
+   * The grain follows the window rather than a toggle. A Daily/Weekly control
+   * asked the reader to answer a question the dates already answer — nine
+   * months of daily points is a smear, and a fortnight of weekly ones is two
+   * columns.
+   */
+  const grain = grainFor(plotted);
   const [hover, setHover] = useState<number | null>(null);
   const [ref, width] = useWidth<HTMLDivElement>();
   const drill = useDrill();
@@ -37,15 +61,14 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
 
   const x = (i: number) => PAD.left + (points.length <= 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
   const y = (v: number) => PAD.top + innerH - (v / niceMax) * innerH;
-  const path = (key: "raised" | "closed") =>
-    points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
-
   const endLabels = endLabelPositions({ points, y, top: PAD.top + 4, bottom: PAD.top + innerH });
 
   const ticks = [0, niceMax / 4, niceMax / 2, (niceMax * 3) / 4, niceMax];
-  const totalRaised = points.reduce((n, p) => n + p.raised, 0);
-  const totalClosed = points.reduce((n, p) => n + p.closed, 0);
-  const net = totalClosed - totalRaised;
+  /* Derived from the points on screen, so the headline cannot disagree with
+     the curve under it. */
+  const stats = trendStats(points);
+  const { raised: totalRaised, closed: totalClosed, net } = stats;
+  const unit = grain === "daily" ? "day" : "week";
 
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -58,28 +81,19 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
     <Panel className="p-4 sm:p-6" delay={0.1} hue="var(--series-1)">
       <PanelHeader
         eyebrow="Closure trend"
-        title={grain === "daily" ? "Raised vs closed, last 30 days" : "Raised vs closed, last 12 weeks"}
+        title={trendTitle(grain, Boolean(controls.period), plotted, controls.facet)}
         icon={<TrendingUp size={16} strokeWidth={2.2} />}
         hue="var(--series-1)"
-        action={
-          <SegmentedControl
-            groupId="trend-grain"
-            value={grain}
-            onChange={setGrain}
-            options={[
-              { key: "daily" as const, label: "Daily" },
-              { key: "weekly" as const, label: "Weekly" },
-            ]}
-          />
-        }
+        action={<TrendControls {...controls} />}
       />
 
-      <p className="-mt-3 mb-3 text-xs text-[var(--ink-muted)]">
-        {totalRaised} raised, {totalClosed} closed —{" "}
-        <span style={{ color: net >= 0 ? STATUS.good : STATUS.serious }}>
-          {net >= 0 ? `net ${net} ahead` : `net ${Math.abs(net)} behind`}
-        </span>
-      </p>
+      <TrendHeadline
+        stats={stats}
+        unit={unit}
+        clipped={plotted.clipped}
+        fmtDay={fmtDay}
+        empty={points.length === 0}
+      />
 
       {points.length === 0 ? (
         <Empty title="No trend yet" hint="Once items have created and closed dates, the curve appears here." />
@@ -103,43 +117,13 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
             role="img"
             aria-label={`Raised versus closed, ${grain}. ${totalRaised} raised and ${totalClosed} closed in the window.`}
           >
+            {/* Behind everything: nothing is raised at the weekend, and the
+                sawtooth that causes looks like a problem until it is shaded. */}
+            <TrendWeekends points={points} x={x} top={PAD.top} height={innerH} grain={grain} />
+
             <TrendAxis ticks={ticks} y={y} padLeft={PAD.left} innerW={innerW} />
 
-            <defs>
-              {(["raised", "closed"] as const).map((key) => (
-                <linearGradient key={key} id={`fill-${key}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={TREND_COLOR[key]} stopOpacity={0.32} />
-                  <stop offset="100%" stopColor={TREND_COLOR[key]} stopOpacity={0} />
-                </linearGradient>
-              ))}
-            </defs>
-
-            {/* Area under each line, so the chart carries weight rather than two hairlines. */}
-            {(["raised", "closed"] as const).map((key, si) => (
-              <motion.path
-                key={`area-${key}`}
-                d={`${path(key)} L${x(points.length - 1).toFixed(1)},${(PAD.top + innerH).toFixed(1)} L${x(0).toFixed(1)},${(PAD.top + innerH).toFixed(1)} Z`}
-                fill={`url(#fill-${key})`}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.9, delay: 0.5 + si * 0.15 }}
-              />
-            ))}
-
-            {(["raised", "closed"] as const).map((key, si) => (
-              <motion.path
-                key={key}
-                d={path(key)}
-                fill="none"
-                stroke={TREND_COLOR[key]}
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                initial={{ pathLength: 0, opacity: 0 }}
-                animate={{ pathLength: 1, opacity: 1 }}
-                transition={{ duration: 1.1, delay: si * 0.15, ease: [0.22, 1, 0.36, 1] }}
-              />
-            ))}
+            <TrendSeries points={points} x={x} y={y} baseline={PAD.top + innerH} />
 
             {/*
               * Direct end-labels: identity without reading the legend.
@@ -222,7 +206,17 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
                   drill({
                     title: `Raised on ${fmtDay(p.date)}`,
                     subtitle: `${p.raised} raised · ${p.closed} closed that ${grain === "daily" ? "day" : "week"}`,
-                    query: { createdFrom: start.toISOString(), createdTo: end.toISOString() },
+                    /*
+                     * The chart's slice, re-stated as a real filter. The trend
+                     * narrows itself without touching the board, so without
+                     * this the drawer would list every environment's bugs for
+                     * that day while the point plotted only one.
+                     */
+                    query: {
+                      ...splitFacet(controls.facet),
+                      createdFrom: start.toISOString(),
+                      createdTo: end.toISOString(),
+                    },
                   });
                 }}
               />
@@ -245,39 +239,27 @@ export function TrendChart({ daily, weekly }: { daily: TrendPoint[]; weekly: Tre
             )}
           </svg>
 
+          {/*
+            * Net per bucket, under the curves and on the same x scale. The two
+            * lines say how many in and how many out; whether the backlog grew
+            * is the difference, and reading that off two curves is work the
+            * chart should do.
+            */}
+          <TrendNet points={points} x={x} width={width} hover={hover} />
+          <p className="mt-0.5 text-[10px] text-[var(--ink-muted)]">Net closed − raised, per {unit}</p>
+
           {hover != null && (
-            <div
-              className="pointer-events-none absolute z-10 rounded-xl border border-[var(--hairline)] bg-[var(--panel)]/95 px-3 py-2 text-xs shadow-xl backdrop-blur-md"
-              style={{
-                left: Math.min(Math.max(x(hover) - 60, 0), Math.max(0, width - 130)),
-                top: PAD.top,
-              }}
-            >
-              <p className="font-medium text-[var(--ink)]">{fmtDay(points[hover].date)}</p>
-              {(["raised", "closed"] as const).map((key) => (
-                <p key={key} className="mt-1 flex items-center gap-2 text-[var(--ink-2)]">
-                  <span
-                    aria-hidden
-                    className="h-2 w-2 rounded-full"
-                    style={{ background: TREND_COLOR[key] }}
-                  />
-                  <span className="capitalize">{key}</span>
-                  <span className="ml-auto font-[family-name:var(--font-mono)] tnum">{points[hover][key]}</span>
-                </p>
-              ))}
-            </div>
+            <TrendTooltip
+              point={points[hover]}
+              label={fmtDay(points[hover].date)}
+              left={Math.min(Math.max(x(hover) - 60, 0), Math.max(0, width - 130))}
+              top={PAD.top}
+            />
           )}
         </div>
       )}
 
-      <div className="mt-3 flex items-center gap-4 border-t border-[var(--hairline)] pt-3">
-        {(["raised", "closed"] as const).map((key) => (
-          <span key={key} className="inline-flex items-center gap-1.5 text-[11px] text-[var(--ink-2)] capitalize">
-            <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: TREND_COLOR[key] }} />
-            {key}
-          </span>
-        ))}
-      </div>
+      <TrendLegend />
     </Panel>
   );
 }

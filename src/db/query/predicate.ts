@@ -8,7 +8,7 @@
  *
  * Pure, so the checks exercise it without a database or a server.
  */
-import { daysAgo, floorDay } from "../../lib/metrics/dates.ts";
+import { businessDaysAgo, floorDay } from "../../lib/metrics/dates.ts";
 import { agedBefore } from "../../lib/metrics/threshold.ts";
 import type { Filters } from "../../lib/metrics/types.ts";
 import type { ItemDoc } from "../models/index.ts";
@@ -54,9 +54,13 @@ export function matchesFilters(item: ItemDoc, f: Filters, now = Date.now()): boo
     if (created > agedBefore(f, now, item.teamId, item.severity)) return false;
   }
 
-  // Older item == earlier createdDate, so a *minimum age* is an *upper bound*.
-  if (f.minAgeDays != null && created >= floorDay(daysAgo(now, f.minAgeDays))) return false;
-  if (f.maxAgeDays != null && created < floorDay(daysAgo(now, f.maxAgeDays))) return false;
+  /*
+   * Older item == earlier createdDate, so a *minimum age* is an *upper bound*.
+   * In working days, like every other age on this board — a drill-down into an
+   * ageing bar has to ask the question the bar asked.
+   */
+  if (f.minAgeDays != null && created >= floorDay(businessDaysAgo(now, f.minAgeDays))) return false;
+  if (f.maxAgeDays != null && created < floorDay(businessDaysAgo(now, f.maxAgeDays))) return false;
 
   if (f.createdFrom && created < new Date(f.createdFrom).getTime()) return false;
   if (f.createdTo && created >= new Date(f.createdTo).getTime()) return false;

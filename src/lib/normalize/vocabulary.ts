@@ -6,6 +6,7 @@ import {
   type ValueMap,
 } from "../types.ts";
 import { canonical } from "../contracts/item-filters.ts";
+import { leadingSegment } from "./title.ts";
 
 /**
  * Turning a board's own words into ours.
@@ -53,6 +54,7 @@ export function resolve<T extends string>(
   defaults: Record<string, string>,
   allowed: readonly T[],
   fallback: T,
+  { strict = false }: { strict?: boolean } = {},
 ): T {
   const key = norm(raw);
   if (!key) return fallback;
@@ -101,6 +103,14 @@ export function resolve<T extends string>(
    * word inside a sentence is the accident above, and both still match exactly
    * through the passes before this one.
    */
+  /*
+   * `strict` stops here: the value must *be* one of our words, however it was
+   * spelled, not merely contain one. It is what lets a title be read for an
+   * environment — "Biz UAT - Investment. CLP" is one, "Fix regression in
+   * login" is a bug report, and only the substring pass cannot tell them apart.
+   */
+  if (strict) return fallback;
+
   const keys = [...Object.keys(table), ...allowed.filter((a) => a.length >= 3).map(norm)];
   const partial = [...new Set(keys)]
     .sort((a, b) => b.length - a.length)
@@ -156,14 +166,31 @@ export function resolveEnvironment(
   tags: string[],
   areaPath: string,
   valueMap: ValueMap,
+  title = "",
 ): Environment {
-  const fromField = resolve(fieldValue, valueMap?.environment, DEFAULT_VALUE_MAP.environment, ENVIRONMENTS, "Unknown");
+  const env = (raw: unknown, opts?: { strict?: boolean }) =>
+    resolve(raw, valueMap?.environment, DEFAULT_VALUE_MAP.environment, ENVIRONMENTS, "Unknown", opts);
+
+  const fromField = env(fieldValue);
   if (fromField !== "Unknown") return fromField;
 
   for (const tag of tags) {
-    const fromTag = resolve(tag, valueMap?.environment, DEFAULT_VALUE_MAP.environment, ENVIRONMENTS, "Unknown");
+    const fromTag = env(tag);
     if (fromTag !== "Unknown") return fromTag;
   }
 
-  return resolve(areaPath, valueMap?.environment, DEFAULT_VALUE_MAP.environment, ENVIRONMENTS, "Unknown");
+  /*
+   * The title's first segment.
+   *
+   * Neither of the boards this was written against has an environment field.
+   * One carries it in the tags; the other only in the title — `Biz UAT -
+   * Investment. CLP - Next js`. So the leading segment is read, and read
+   * **strictly**: it has to be an environment, not merely contain one. A loose
+   * match would turn every "Fix regression in login" into Regression, and
+   * every title mentioning production into Production.
+   */
+  const fromTitle = env(leadingSegment(title), { strict: true });
+  if (fromTitle !== "Unknown") return fromTitle;
+
+  return env(areaPath);
 }

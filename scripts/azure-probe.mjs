@@ -20,7 +20,7 @@ import { findAllTeams } from "../src/controllers/teams.controller.ts";
 import { credsFor, fetchWorkItems, isConnectable, queryChangedIds, resolveCreds } from "../src/lib/azure.ts";
 import { sourcesFor } from "../src/lib/contracts/azure-sources.ts";
 import { ALLOWED, LIVE, allows } from "../src/lib/contracts/item-filters.ts";
-import { buildSourceWiql } from "../src/lib/live/wiql.ts";
+import { planSource, viewFor } from "../src/lib/live/fetch.ts";
 import { satisfiesSource, valuesOf } from "../src/lib/live/verify.ts";
 import { queryIds, fetchByIds } from "../src/lib/azure.ts";
 import { redact } from "../src/lib/azure-debug.ts";
@@ -188,15 +188,31 @@ async function fields(team, needle) {
  * of two projects can have one of them silently matching nothing.
  */
 async function probeLive(team) {
-  const since = new Date(Date.now() - LIVE.windowDays * 86_400_000).toISOString();
-
   for (const source of sourcesFor(team)) {
     say(`\n${"─".repeat(72)}`);
-    say(`POD "${team.name}"  →  ${source.orgUrl}/${source.project}   [live source ${source.id}]`);
-    const query = buildSourceWiql(source, since);
-    say(`\n  WIQL (last ${LIVE.windowDays} days, mode "${source.windowMode ?? LIVE.windowMode}")\n   ${query}`);
+    say(`POD "${team.name}"  →  ${source.project}   [live source ${source.id}]`);
+    /*
+     * The same preparation the board itself does — connection, field names
+     * resolved from the form's labels, and the query built from them. Asking
+     * Azure with a query this script invented would describe a board nobody
+     * reads, and the labels would be rejected outright.
+     */
+    let plan;
+    try {
+      plan = await planSource(team, source);
+    } catch (err) {
+      say(`\n  could not prepare ${source.id}: ${err.message}`);
+      continue;
+    }
+    const { creds: c, fields, query } = plan;
 
-    const c = credsFor(team, { orgUrl: source.orgUrl, project: source.project });
+    say(`\n  WIQL (last ${LIVE.windowDays} days, mode "${source.windowMode ?? LIVE.windowMode}")\n   ${query}`);
+    const resolved = [...fields.entries()].filter(([k, v]) => k !== v);
+    if (resolved.length) {
+      say(`\n  Field names, as the form writes them -> as the query needs them`);
+      for (const [label, ref] of resolved) say(`     ${label.padEnd(20)} ${ref}`);
+    }
+
     let ids = [];
     try {
       ids = await queryIds(c, query);
@@ -218,7 +234,7 @@ async function probeLive(team) {
      * generously, so this is where a mismatch becomes visible rather than
      * being taken on trust.
      */
-    const offFilter = items.filter((wi) => !satisfiesSource(wi.fields ?? {}, source));
+    const offFilter = items.filter((wi) => !satisfiesSource(wi.fields ?? {}, source, fields));
     say(`\n  Filter check (src/lib/contracts/azure-sources.ts, verifyFilters=${LIVE.verifyFilters})`);
     say(`     ${items.length - offFilter.length} carry a filter value, ${offFilter.length} do not`);
     for (const wi of offFilter.slice(0, 8)) {
@@ -230,12 +246,9 @@ async function probeLive(team) {
     if (offFilter.length > 8) say(`       … and ${offFilter.length - 8} more`);
     if (offFilter.length) say(`     Those are dropped before they reach the board.`);
 
-    const view = {
-      ...team,
-      azure: { ...team.azure, orgUrl: source.orgUrl, project: source.project, areaPath: source.areaPath ?? "", workItemTypes: [...source.workItemTypes] },
-      fieldMap: { ...team.fieldMap, ...(source.fieldMap ?? {}) },
-    };
-    const mapped = items.filter((wi) => satisfiesSource(wi.fields ?? {}, source)).map((wi) => fromAzure(wi, view));
+    /* The same view the board maps through, so the tallies below are the real ones. */
+    const view = viewFor(team, source, c, fields);
+    const mapped = items.filter((wi) => satisfiesSource(wi.fields ?? {}, source, fields)).map((wi) => fromAzure(wi, view));
     const tally = (pick) => {
       const t = new Map();
       for (const m of mapped) t.set(pick(m), (t.get(pick(m)) ?? 0) + 1);

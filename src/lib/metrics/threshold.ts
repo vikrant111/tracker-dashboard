@@ -12,7 +12,7 @@
  * Pure: no clock, no store. The checks exercise these directly.
  */
 import { AGEING } from "../constants.ts";
-import { daysAgo } from "./dates.ts";
+import { businessDaysAgo } from "./dates.ts";
 
 export type ThresholdRules = {
   /** Fallback when nothing more specific applies. */
@@ -37,13 +37,28 @@ function usableDays(value: unknown): number | null {
   return Math.min(AGEING.max, Math.max(AGEING.min, Math.trunc(days)));
 }
 
-/** Days this item may sit before it counts as aged. */
+/**
+ * **Working days** this item may sit before it counts as aged.
+ *
+ * The order is the whole of the policy:
+ *
+ * 1. what this POD set for this severity, in Admin — somebody chose it;
+ * 2. the turnaround for the severity — Critical 1, Major 6, Minor 12;
+ * 3. the POD's own blanket threshold;
+ * 4. the board default.
+ *
+ * The severity turnaround sits **above** the POD's blanket threshold on
+ * purpose. It is the agreed policy, and a POD-wide "30 days" must not quietly
+ * give a Critical a month. A POD that genuinely needs a different number for a
+ * severity says so per severity, which is step 1.
+ */
 export function thresholdFor(rules: ThresholdRules, teamId: unknown, severity: unknown): number {
   const team = String(teamId ?? "");
   const sev = String(severity ?? "");
 
   return (
     usableDays(rules?.severityThresholds?.[team]?.[sev]) ??
+    usableDays(AGEING.bySeverity[sev]) ??
     usableDays(rules?.thresholdByTeam?.[team]) ??
     usableDays(rules?.thresholdDays) ??
     AGEING.defaultThresholdDays
@@ -51,14 +66,14 @@ export function thresholdFor(rules: ThresholdRules, teamId: unknown, severity: u
 }
 
 /**
- * The instant an item of this severity becomes aged.
+ * The instant an item of this severity becomes aged, counted in working days.
  *
  * Created at or before this counts. The bound is inclusive, matching `$lte` on
  * the Mongo side; an off-by-one here shows up as a drawer holding one more row
  * than the bar that opened it.
  */
 export const agedBefore = (rules: ThresholdRules, now: number, teamId: unknown, severity: unknown): number =>
-  daysAgo(now, thresholdFor(rules, teamId, severity));
+  businessDaysAgo(now, thresholdFor(rules, teamId, severity));
 
 /**
  * The rules per POD, for a query engine that cannot call a function per row.
@@ -77,7 +92,13 @@ export function teamThresholds(
   return teamIds.map((teamId) => ({
     teamId,
     days: usableDays(rules?.thresholdByTeam?.[teamId]) ?? fallback,
-    bySeverity: rules?.severityThresholds?.[teamId] ?? {},
+    /*
+     * The POD's own rules on top of the severity turnarounds, so Mongo's `$or`
+     * carries a branch for every severity that has one. Leaving the
+     * turnarounds out here made the query disagree with `thresholdFor` — the
+     * tile counted a Critical aged after one day and the drawer after seven.
+     */
+    bySeverity: { ...AGEING.bySeverity, ...(rules?.severityThresholds?.[teamId] ?? {}) },
   }));
 }
 
@@ -98,8 +119,8 @@ export function widestThreshold(rules: ThresholdRules, teamIds: string[], severi
 /** How to finish "aged means open …", so every panel says it the same way. */
 export const agedPhrase = (board: { thresholdDays: number; severityTuned: boolean }): string =>
   board?.severityTuned
-    ? "past the threshold set for its severity"
-    : `past ${usableDays(board?.thresholdDays) ?? AGEING.defaultThresholdDays} days`;
+    ? "past the working days allowed for its severity"
+    : `past ${usableDays(board?.thresholdDays) ?? AGEING.defaultThresholdDays} working days`;
 
 /**
  * The one number the "critical and open past N days" tile may print, or null

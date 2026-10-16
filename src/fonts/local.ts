@@ -6,9 +6,9 @@
  * include `fonts.googleapis.com`, or no internet at all.
  *
  * The `.woff2` files are committed to the repository. They are the `latin`
- * subset only, which is what the Google configuration asked for, and together
- * come to about 140 KB. Refresh them with `pnpm fonts:vendor` from a machine
- * that can reach Google.
+ * subset only and together come to about 140 KB. Nothing downloads them — not
+ * the build, not a script — so replacing one means dropping a new file into
+ * `files/` and naming it here.
  *
  * The declarations below mirror Google's own stylesheet exactly, including the
  * part that looks like a mistake: **IBM Plex Sans is one file declared at three

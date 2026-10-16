@@ -19,6 +19,31 @@ const BASE = process.env.CHECK_BASE || "http://localhost:3000";
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "admin@example.com";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "changeme";
 
+/*
+ * This suite WRITES. It creates PODs, plants pull requests, changes statuses
+ * and deletes by date — and it has to, because that is what it is checking.
+ *
+ * So it refuses to run against the repository's own `DB_store/`. `pnpm test`
+ * gives it a throwaway directory; running it by hand without one pointed it at
+ * real records, and the damage was quiet: a POD created, fifty-two work items
+ * deleted, and a green-looking run that had merely failed for a different
+ * reason. Set DB_STORE_DIR to somewhere disposable, or pass --i-mean-it.
+ */
+{
+  const { STORE_DIR } = await import("../src/db/store/json-paths.ts");
+  const { resolve } = await import("node:path");
+  const repoStore = resolve(new URL("../DB_store", import.meta.url).pathname);
+  if (resolve(STORE_DIR) === repoStore && !process.argv.includes("--i-mean-it")) {
+    console.error(
+      `\nRefusing to run: this suite writes, and DB_STORE_DIR points at the` +
+        `\nrepository's own store:\n\n  ${repoStore}\n\n` +
+        `Use "pnpm test", which gives it a throwaway store — or set DB_STORE_DIR\n` +
+        `yourself. "--i-mean-it" overrides this, and means what it says.\n`,
+    );
+    process.exit(2);
+  }
+}
+
 let failures = 0;
 let checks = 0;
 const only = process.argv[2];
@@ -267,6 +292,124 @@ async function invariants(session) {
     }
 
     check("createdFrom/To reject junk rather than 500", (await get("/api/items?createdFrom=nonsense&createdTo=x")).status === 200);
+  }
+
+
+  section("the trend's own window and slice, over the wire");
+  {
+    /*
+     * Everything above proves the aggregation. This proves the request reaches
+     * it: the params are read off the URL, the chart narrows, and — the part
+     * that matters — the rest of the board does not.
+     */
+    const plain = (await get("/api/metrics")).json;
+    const ENV = plain.environment.filter((b) => b.count > 0).map((b) => b.key);
+    const STATUS = plain.status.filter((b) => b.count > 0).map((b) => b.key);
+
+    const sum = (t, k) => t.daily.reduce((n, p) => n + p[k], 0);
+    const raisedPlain = sum(plain.trend, "raised");
+
+    // -- the window ---------------------------------------------------------
+    const wide = (await get("/api/metrics?trendFrom=2025-10-16")).json;
+    check("a picked window widens the daily series", wide.trend.daily.length > plain.trend.daily.length,
+      `${wide.trend.daily.length} vs ${plain.trend.daily.length}`);
+    check("...and it is echoed back after clamping", wide.trend.from === "2025-10-16", wide.trend.from);
+    check("...and reaches at least as much as the default did", sum(wide.trend, "raised") >= raisedPlain,
+      `${sum(wide.trend, "raised")} vs ${raisedPlain}`);
+
+    const narrow = (await get("/api/metrics?trendFrom=2026-01-01&trendTo=2026-01-31")).json;
+    check("a narrow window is honoured", narrow.trend.from === "2026-01-01" && narrow.trend.to === "2026-01-31",
+      `${narrow.trend.from} to ${narrow.trend.to}`);
+    check("...and still ascending with no negatives",
+      narrow.trend.daily.every((x, i, a) => x.raised >= 0 && x.closed >= 0 && (i === 0 || x.date > a[i - 1].date)));
+
+    /* Junk bounds answer with a chart, not a 500 and not a million points. */
+    for (const q of ["trendFrom=nonsense", "trendTo=nonsense", "trendFrom=1900-01-01", "trendTo=2099-01-01",
+                     "trendFrom=2026-10-10&trendTo=2026-01-01", "trendFrom=&trendTo=", "trendFacet=" + encodeURIComponent("status:<script>")]) {
+      const r = await get(`/api/metrics?${q}`);
+      check(`?${q} answers 200`, r.status === 200, `${r.status}`);
+      check(`...with a bounded series`, r.json?.trend?.daily?.length > 0 && r.json.trend.daily.length <= 366,
+        `${r.json?.trend?.daily?.length} points`);
+    }
+
+    // -- the slice ----------------------------------------------------------
+    /*
+     * Over the environments the *payload* reports, which is every value the
+     * board holds including `Unknown`. Slicing to a value the chart does not
+     * offer falls through to everything, and the sum below is what catches it.
+     */
+    let sliceTotal = 0;
+    for (const env of ENV) {
+      const r = (await get(`/api/metrics?trendFacet=${encodeURIComponent(`environment:${env}`)}`)).json;
+      sliceTotal += sum(r.trend, "raised");
+      check(`slicing to ${env} never exceeds the whole`, sum(r.trend, "raised") <= raisedPlain,
+        `${sum(r.trend, "raised")} vs ${raisedPlain}`);
+
+      /*
+       * The board beside the chart is untouched. This is the one that would
+       * have gone unnoticed: a leak here re-scopes every tile on the page.
+       */
+      for (const panel of ["totals", "severity", "environment", "status", "ageing", "teams"]) {
+        check(`...and leaves ${panel} alone`, JSON.stringify(r[panel]) === JSON.stringify(plain[panel]),
+          "the chart's slice leaked into the board");
+      }
+    }
+    check("the environment slices sum to the unsliced chart", sliceTotal === raisedPlain,
+      `${sliceTotal} vs ${raisedPlain} — a bug is being dropped or double-counted`);
+
+    for (const st of STATUS) {
+      const r = (await get(`/api/metrics?trendFacet=${encodeURIComponent(`status:${st}`)}`)).json;
+      check(`slicing to status ${st} never exceeds the whole`, sum(r.trend, "raised") <= raisedPlain);
+    }
+
+    /* A facet the vocabulary does not know widens rather than empties. */
+    const junk = (await get(`/api/metrics?trendFacet=${encodeURIComponent("environment:Mars")}`)).json;
+    check("an unknown facet shows everything, not nothing", sum(junk.trend, "raised") === raisedPlain,
+      `${sum(junk.trend, "raised")} vs ${raisedPlain}`);
+
+    // -- the board's range against the trend's period -----------------------
+    /*
+     * The board narrows the items before the trend sees them, so a period
+     * outside the chosen quarter draws a flat line. That has to be said, not
+     * left to read as "no bugs".
+     */
+    check("an unbounded board hides nothing", plain.trend.clipped === false, `${plain.trend.clipped}`);
+    const q = "createdFrom=2026-07-01&createdTo=2026-10-01";
+    const inside = (await get(`/api/metrics?${q}&trendFrom=2026-08-01&trendTo=2026-09-30`)).json;
+    check("a period inside the board's range is whole", inside.trend.clipped === false, `${inside.trend.clipped}`);
+    const outside = (await get(`/api/metrics?${q}&trendFrom=2026-01-01&trendTo=2026-02-01`)).json;
+    check("...and one outside it is flagged", outside.trend.clipped === true, `${outside.trend.clipped}`);
+    check("...while still answering 200 with a drawable series",
+      outside.trend.daily.length > 0 && outside.trend.daily.every((p) => p.raised >= 0 && p.closed >= 0));
+
+    // -- a point still equals the drawer it opens ---------------------------
+    /*
+     * The invariant this whole dashboard rests on, now that the chart can
+     * narrow itself. A trend point under a slice must drill to exactly its own
+     * count — the drawer re-states the slice as a real filter.
+     */
+    for (const env of ENV.slice(0, 3)) {
+      const facet = `environment:${env}`;
+      const r = (await get(`/api/metrics?trendFacet=${encodeURIComponent(facet)}&trendFrom=2025-10-16`)).json;
+      const pts = r.trend.daily.filter((p) => p.raised > 0).slice(0, 2);
+      for (const p of pts) {
+        const start = new Date(p.date);
+        const end = new Date(start.getTime() + 86400000);
+        const q = `environment=${encodeURIComponent(env)}&createdFrom=${encodeURIComponent(start.toISOString())}&createdTo=${encodeURIComponent(end.toISOString())}`;
+        check(`a sliced trend point drills to its own count (${env} ${p.date})`, (await count(q)) === p.raised,
+          `point plots ${p.raised}, drawer holds ${await count(q)}`);
+      }
+    }
+
+    /* And the slice combined with a POD, which is how it is actually read. */
+    const team = plain.teams[0]?.teamId;
+    if (team && ENV[0]) {
+      const both = (await get(`/api/metrics?teamId=${team}&trendFacet=${encodeURIComponent(`environment:${ENV[0]}`)}`)).json;
+      const podPlain = (await get(`/api/metrics?teamId=${team}`)).json;
+      check("a slice on a selected POD leaves that POD's totals alone",
+        JSON.stringify(both.totals) === JSON.stringify(podPlain.totals));
+      check("...and still narrows its chart", sum(both.trend, "raised") <= sum(podPlain.trend, "raised"));
+    }
   }
 
   section("invariants — trend and sort");

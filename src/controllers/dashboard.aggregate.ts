@@ -11,8 +11,9 @@
  * midnight and differ by a day.
  */
 import { PAGE } from "../lib/constants.ts";
-import { DAY_MS, daysAgo, floorDay, floorWeek } from "../lib/metrics/dates.ts";
-import type { Bucket, Dashboard, TrendPoint } from "../lib/metrics/types.ts";
+import { AGEING } from "../lib/constants.ts";
+import { businessDaysAgo, businessDaysBetween, floorDay } from "../lib/metrics/dates.ts";
+import type { Bucket, Dashboard } from "../lib/metrics/types.ts";
 import { SEVERITIES } from "../lib/types.ts";
 import type { ItemDoc } from "../db/models/index.ts";
 import { AGEING_KEYS } from "../db/query/stages.ts";
@@ -23,10 +24,12 @@ import {
   widestThreshold,
   type ThresholdRules,
 } from "../lib/metrics/threshold.ts";
-import { fillSeries, orderedBuckets, round1 } from "./dashboard.shape.ts";
-import { at, ageingKey, histogram, tally } from "./dashboard.parts.ts";
+import { orderedBuckets, round1 } from "./dashboard.shape.ts";
+import { at, ageingKey, tally } from "./dashboard.parts.ts";
+import { buildTrend, type TrendInput } from "./dashboard.trend.ts";
 
-export type AggregateInput = ThresholdRules & {
+export type AggregateInput = ThresholdRules &
+  TrendInput & {
   items: ItemDoc[];
   now: number;
   /** The selected POD's threshold, or the default when none is selected. */
@@ -55,7 +58,9 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
    */
   const agedBeforeFor = (item: { teamId?: unknown; severity?: unknown }): number =>
     agedBefore(input, now, item.teamId, item.severity);
-  const bound = (days: number) => floorDay(daysAgo(now, days));
+  /* Bucket edges in working days too, or the chart and the thresholds measure
+     different things and a bar and a tile disagree about the same item. */
+  const bound = (days: number) => floorDay(businessDaysAgo(now, days));
   const bounds = { d3: bound(3), d7: bound(7), d14: bound(14), d30: bound(30) };
 
   const open = items.filter((i) => i.isActive === true);
@@ -64,7 +69,7 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
   let criticalAged = 0;
   for (const item of open) {
     const created = at(item.createdDate) ?? now;
-    ageSum += (now - created) / DAY_MS;
+    ageSum += businessDaysBetween(created, now);
     if (item.severity === "Critical" && created <= agedBeforeFor(item)) criticalAged++;
   }
 
@@ -89,7 +94,7 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
   const assignees = [...people.entries()]
     .map(([name, rows]) => {
       const theirs = rows.filter((i) => i.isActive === true);
-      const sum = theirs.reduce((acc, i) => acc + (now - (at(i.createdDate) ?? now)) / DAY_MS, 0);
+      const sum = theirs.reduce((acc, i) => acc + businessDaysBetween(at(i.createdDate) ?? now, now), 0);
       return {
         name,
         email: String(rows.find((r) => r.assigneeEmail)?.assigneeEmail ?? ""),
@@ -115,7 +120,7 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
   const teams = [...teamRows.entries()]
     .map(([teamId, rows]) => {
       const theirs = rows.filter((i) => i.isActive === true);
-      const sum = theirs.reduce((acc, i) => acc + (now - (at(i.createdDate) ?? now)) / DAY_MS, 0);
+      const sum = theirs.reduce((acc, i) => acc + businessDaysBetween(at(i.createdDate) ?? now, now), 0);
       return {
         teamId,
         total: rows.length,
@@ -129,14 +134,6 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
     })
     .sort((a, b) => b.total - a.total || a.teamId.localeCompare(b.teamId))
     .slice(0, PAGE.teams);
-
-  const dailyFrom = floorDay(daysAgo(now, 30));
-  const weeklyFrom = floorWeek(daysAgo(now, 84));
-
-  const merge = (raised: Bucket[], closed: Bucket[]): TrendPoint[] => {
-    const closedBy = new Map(closed.map((b) => [b.key, b.count]));
-    return raised.map((b) => ({ date: b.key, raised: b.count, closed: closedBy.get(b.key) ?? 0 }));
-  };
 
   return {
     generatedAt: new Date(now).toISOString(),
@@ -152,7 +149,15 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
      * visible item shares one clock.
      */
     criticalThresholdDays: agreedThreshold(input, [...teamRows.keys()], "Critical"),
-    severityTuned: Object.values(input.severityThresholds ?? {}).some((m) => Object.keys(m).length > 0),
+    /*
+     * Severity decides the clock on every board now, not only on one an admin
+     * has tuned — a Critical gets one working day and a Minor twelve wherever
+     * they sit. Reporting `false` here made the ageing panel print a single
+     * number, which was right for nothing on the board.
+     */
+    severityTuned:
+      Object.keys(AGEING.bySeverity).length > 0 ||
+      Object.values(input.severityThresholds ?? {}).some((m) => Object.keys(m).length > 0),
     totals,
     severity: tally(items, (i) => String(i.severity)),
     environment: tally(items, (i) => String(i.environment)),
@@ -163,20 +168,13 @@ export function aggregateDashboard(input: AggregateInput): Omit<Dashboard, "heal
     ),
     assignees,
     teams,
-    trend: {
-      daily: merge(
-        fillSeries(histogram(items, "createdDate", "day", dailyFrom).map(toRow), dailyFrom, now, "day"),
-        fillSeries(histogram(items, "closedDate", "day", dailyFrom).map(toRow), dailyFrom, now, "day"),
-      ),
-      weekly: merge(
-        fillSeries(histogram(items, "createdDate", "week", weeklyFrom).map(toRow), weeklyFrom, now, "week"),
-        fillSeries(histogram(items, "closedDate", "week", weeklyFrom).map(toRow), weeklyFrom, now, "week"),
-      ),
-    },
+    /*
+     * Its own window and its own slice — see `buildTrend`. The rest of the
+     * board is untouched by them, which is the point: asking how Production
+     * bugs are flowing must not re-scope the severity donut beside it.
+     */
+    trend: buildTrend(items, input, now),
   };
 }
-
-/** `fillSeries` speaks the facet's `{date, count}`; the tally speaks `{key, count}`. */
-const toRow = (b: Bucket) => ({ date: b.key, count: b.count });
 
 export { SEVERITIES };

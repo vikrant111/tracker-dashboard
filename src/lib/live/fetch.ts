@@ -12,14 +12,16 @@
  * which is what made an earlier version slow and wrong at the same time —
  * items raised years ago arriving as though they were this year's.
  */
-import { credsFor, fetchByIds, queryIds, resolveCreds, type AzureWorkItem } from "../azure.ts";
+import { callJson, credsFor, fetchByIds, queryIds, resolveCreds, type AzureCreds, type AzureWorkItem } from "../azure.ts";
 import { sourcesFor, type AzureSource } from "../contracts/azure-sources.ts";
 import { LIVE, allows } from "../contracts/item-filters.ts";
 import { HttpError } from "../http-error.ts";
 import { fromAzure } from "../normalize.ts";
 import type { Item, Team } from "../types.ts";
-import { satisfiesSource } from "./verify.ts";
-import { buildSourceWiql } from "./wiql.ts";
+import { verifiedItems } from "./verify.ts";
+import { cached } from "./cache.ts";
+import { resolveFields } from "./fields.ts";
+import { buildSourceWiql, fieldsUsedBy, type FieldMap } from "./wiql.ts";
 
 /**
  * Whether this POD reads live. Naming it in the contract is the whole test.
@@ -48,17 +50,25 @@ export const windowStart = (now = Date.now()) => new Date(now - LIVE.windowDays 
  * item from the second project would be given the first project's URL and the
  * first project's status field — a link that 404s and a status that is blank.
  */
-function viewFor(team: Team, source: AzureSource): Team {
+export function viewFor(team: Team, source: AzureSource, creds: AzureCreds, fields: FieldMap): Team {
+  /*
+   * The field mapping is resolved too. `fieldMap` is written the way the form
+   * writes it — `Bug Status`, `Severity` — and `fromAzure` reads the raw item,
+   * where the keys are reference names.
+   */
+  const mapped = Object.fromEntries(
+    Object.entries(source.fieldMap ?? {}).map(([k, v]) => [k, fields.get(String(v)) ?? String(v)]),
+  );
   return {
     ...team,
     azure: {
       ...team.azure,
-      orgUrl: source.orgUrl,
+      orgUrl: creds.orgUrl,
       project: source.project,
       areaPath: source.areaPath ?? "",
       workItemTypes: [...source.workItemTypes],
     },
-    fieldMap: { ...team.fieldMap, ...(source.fieldMap ?? {}) },
+    fieldMap: { ...team.fieldMap, ...mapped },
   };
 }
 
@@ -101,50 +111,74 @@ export function keepAllowed(items: Item[], now: number): Item[] {
  * somebody to fill in an org URL and a project that this POD does not use.
  */
 function requirePat(team: Team): void {
-  if (resolveCreds(team).pat) return;
+  const { orgUrl, pat } = resolveCreds(team);
+  const missing = [
+    !orgUrl ? "an organisation URL (AZDO_ORG_URL)" : "",
+    !pat ? "a personal access token (AZDO_PAT, or the POD's own in Admin → Azure Boards)" : "",
+  ].filter(Boolean);
+  if (!missing.length) return;
+  /*
+   * Named precisely, because the project is **not** one of them — that comes
+   * from `contracts/azure-sources.ts`. The generic "add org URL, project and
+   * PAT on the team" sends somebody to fill in a project this POD does not use.
+   */
   throw new HttpError(
     503,
-    `${team.name} reads its items from Azure and has no personal access token. Add one on the POD in Admin → Azure Boards, or set AZDO_PAT. Nothing is shown from the store for this POD, because stored rows are not what the contract's filters matched.`,
+    `${team.name} reads its items from Azure and is missing ${missing.join(" and ")}. ` +
+      `Set it in .env.local and restart. Nothing is shown from the store for this POD, because stored rows are not what the contract's filters matched.`,
   );
 }
 
-async function fetchSource(team: Team, source: AzureSource, now: number): Promise<Item[]> {
+/**
+ * Everything needed to ask one board for one POD's work: the connection, the
+ * field names resolved from the form's labels, and the query itself.
+ *
+ * Exported because `pnpm azure:probe` reports on exactly this, and a probe
+ * building its own query would describe a board nobody reads.
+ */
+export async function planSource(team: Team, source: AzureSource, now = Date.now()) {
+  requirePat(team);
   const creds = credsFor(team, { orgUrl: source.orgUrl, project: source.project });
   const since = windowStart(now);
-  const ids = await queryIds(creds, buildSourceWiql(source, since), { types: source.workItemTypes, since });
+  const fields = await resolveFields(
+    creds,
+    [...fieldsUsedBy(source), ...Object.values(source.fieldMap ?? {})],
+    (url, pat) => callJson(url, pat),
+  );
+  return { creds, since, fields, query: buildSourceWiql(source, since, fields) };
+}
+async function fetchSource(team: Team, source: AzureSource, now: number): Promise<Item[]> {
+  const { creds, since, fields, query } = await planSource(team, source, now);
+  const ids = await queryIds(creds, query, { types: source.workItemTypes, since });
   if (!ids.length) return [];
 
-  // ponytail: batches are fetched in series, as sync has always done. A cold
-  // read of a few thousand items is a handful of seconds; if that stops being
-  // acceptable, this loop is the place to add bounded parallelism.
-  const workItems: AzureWorkItem[] = await fetchByIds(creds, ids.slice(0, LIVE.maxIds));
-
+  // ponytail: batches in series, as sync has always done. A cold read of a few
+  // thousand items is a handful of seconds; parallelise here if that changes.
   /*
-   * The filters, checked again against what came back.
+   * More than one board can hold: refused, never trimmed.
    *
-   * Azure matches an identity field generously — a clause naming an email can
-   * come back matched on a display name — so an item can arrive without
-   * carrying the value the contract asked for. Dropped here rather than
-   * trusted, and counted, because "the board shows only what the contract
-   * matched" is the whole promise and it should not rest on the query alone.
+   * This was `ids.slice(0, maxIds)` — a board returning one id past the cap
+   * lost it with nothing said, which is precisely the "where did that bug go"
+   * failure the window exists to avoid. An error naming the board and the
+   * count is something somebody can act on; a quietly shorter list is not.
    */
-  const verified = LIVE.verifyFilters
-    ? workItems.filter((wi) => satisfiesSource(wi.fields ?? {}, source))
-    : workItems;
-  const unverified = workItems.length - verified.length;
-  if (unverified) {
-    console.warn(
-      `[live] ${source.id}: ${unverified} of ${workItems.length} work items did not carry a filter value from src/lib/contracts/azure-sources.ts and were dropped. Run "pnpm azure:probe --days 365" to see which.`,
+  if (ids.length > LIVE.maxIds) {
+    throw new HttpError(
+      502,
+      `${source.project} returned ${ids.length} work items for ${team.name}, past the ${LIVE.maxIds} this can read in one query. ` +
+        `Narrow it in src/lib/contracts/ — a shorter window, or a tighter filter — rather than showing part of the board.`,
     );
   }
+  const workItems: AzureWorkItem[] = await fetchByIds(creds, ids);
 
-  const view = viewFor(team, source);
+  /* What the filters vouch for, and a count of what they did not. See verify.ts. */
+  const verified = verifiedItems(workItems, source, fields, { enabled: LIVE.verifyFilters });
+  const view = viewFor(team, source, creds, fields);
   return verified.map((wi) => fromAzure(wi, view));
 }
 
 /** Every live source for this POD, merged and deduplicated by item id. */
 async function fetchAll(team: Team, now: number): Promise<Item[]> {
-  requirePat(team);
   const byId = new Map<string, Item>();
   for (const source of sourcesFor(team)) {
     for (const item of await fetchSource(team, source, now)) byId.set(item.id, item);
@@ -152,46 +186,14 @@ async function fetchAll(team: Team, now: number): Promise<Item[]> {
   return keepAllowed([...byId.values()], now);
 }
 
-type Entry = { at: number; items: Item[] };
-/*
- * Per process, and stashed on `globalThis` for the same reason the store is:
- * Next re-evaluates modules on hot reload, and a fresh module would mean a
- * fresh empty cache on every edit — and a re-fetch of a whole year per
- * keystroke.
- */
-const KEY = Symbol.for("pod-tracker.live-cache");
-type Cached = { entries: Map<string, Entry>; inflight: Map<string, Promise<Item[]>> };
-const g = globalThis as typeof globalThis & { [KEY]?: Cached };
-const cache: Cached = (g[KEY] ??= { entries: new Map(), inflight: new Map() });
-
 /**
  * This POD's items, from cache when it is fresh.
  *
- * Concurrent callers share one request. A dashboard load fires the board and
- * its roster at once and the drawer follows immediately; without the in-flight
- * map that is three identical year-long fetches racing each other, and the
- * first two are thrown away.
+ * The cache itself is in `live/cache.ts`; what matters here is that a board
+ * load, its roster and the drawer that opens on top of it share one answer
+ * rather than each fetching a year.
  */
-export async function liveItems(team: Team, now = Date.now()): Promise<Item[]> {
-  const fresh = cache.entries.get(team.id);
-  if (fresh && now - fresh.at < LIVE.cacheSeconds * 1000) return fresh.items;
+export const liveItems = (team: Team, now = Date.now()) =>
+  cached(team.id, now, () => fetchAll(team, now));
 
-  const pending = cache.inflight.get(team.id);
-  if (pending) return pending;
-
-  const run = fetchAll(team, now)
-    .then((items) => {
-      cache.entries.set(team.id, { at: now, items });
-      return items;
-    })
-    .finally(() => cache.inflight.delete(team.id));
-
-  cache.inflight.set(team.id, run);
-  return run;
-}
-
-/** Drop a POD's cached answer, or every POD's. For the Refresh button. */
-export function forgetLive(teamId?: string): void {
-  if (teamId) cache.entries.delete(teamId);
-  else cache.entries.clear();
-}
+export { forgetLive } from "./cache.ts";

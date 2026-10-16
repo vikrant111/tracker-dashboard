@@ -22,6 +22,24 @@ export type Filters = {
    */
   createdFrom?: string;
   createdTo?: string;
+  /**
+   * The closure trend's **own** window and slice.
+   *
+   * Deliberately separate from `createdFrom`/`createdTo` and `environment`
+   * above: those narrow the whole board, and the trend answers a narrower
+   * question than the tiles beside it. Picking `Production` for the chart must
+   * not re-scope the severity donut.
+   *
+   * **The item matchers ignore these.** `matchesFilters` and `buildMatch` never
+   * read them — only `aggregateDashboard` does, when it builds the two series.
+   * A drill-down from a trend point re-states the slice as a real
+   * `environment`/`status` filter, which is what keeps the drawer equal to the
+   * point that opened it.
+   */
+  trendFrom?: string;
+  trendTo?: string;
+  trendEnvironment?: string;
+  trendStatus?: string;
   /** Days before an open item counts as aged. */
   thresholdDays?: number;
   /**
@@ -108,7 +126,26 @@ export type Dashboard = {
   status: Bucket[];
   assignees: AssigneeStat[];
   ageing: Bucket[];
-  trend: { daily: TrendPoint[]; weekly: TrendPoint[] };
+  /**
+   * The closure trend, plus the window it actually came out as.
+   *
+   * `from`/`to` are echoed back **after clamping**, as `yyyy-MM-dd`. The date
+   * pickers show these rather than what was typed, so a bound the board could
+   * not honour — a start before the year of data it holds — corrects itself on
+   * screen instead of leaving the control disagreeing with the axis.
+   */
+  trend: {
+    daily: TrendPoint[];
+    weekly: TrendPoint[];
+    from: string;
+    to: string;
+    /**
+     * True when the board's own date range hides part of the period the chart
+     * was asked for — the items are narrowed before the trend sees them, so
+     * the chart would otherwise draw a flat line that reads as "no bugs".
+     */
+    clipped: boolean;
+  };
   teams: TeamStat[];
   /** The percentage closed, or **null** when nothing matched — never a fake 100. */
   health: number | null;

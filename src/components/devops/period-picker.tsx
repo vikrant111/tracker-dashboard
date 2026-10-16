@@ -28,7 +28,7 @@ import { useMemo, useRef, useState } from "react";
 import { describePeriod, grainOf, periodsPresent } from "@/lib/devops/period";
 import { Button, Tooltip } from "@/components/ui";
 import { MonthGrid } from "./month-grid";
-import { Popover } from "./popover";
+import { Popover } from "../ui/popover";
 import { RangeFields } from "./range-fields";
 import { usePeriodSelection } from "./use-period-selection";
 import { parseTypedSpan } from "@/lib/devops/calendar";

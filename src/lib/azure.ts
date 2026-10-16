@@ -26,6 +26,8 @@ export function isConnectable(team: Team): boolean {
 }
 
 
+/** A GET returning JSON, for callers outside this file (the field resolver). */
+export const callJson = (url: string, pat: string) => call<unknown>(url, pat);
 async function call<T>(url: string, pat: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,

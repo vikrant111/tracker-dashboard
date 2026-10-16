@@ -14,7 +14,7 @@ import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import type { Repo } from "@/lib/devops/types";
 import { Button, Tooltip } from "@/components/ui";
-import { Popover } from "./popover";
+import { Popover } from "../ui/popover";
 
 export function SyncControl({
   repos,

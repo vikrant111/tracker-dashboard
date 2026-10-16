@@ -47,7 +47,7 @@ The flat form with a sibling `case_insensitive` key is a parse error.
 | Total | `hits.total.value` with `track_total_hits` |
 | Active | `filter` on `isActive` |
 | Average ageing | `filter` active → `avg` over the age script |
-| Critical aged | `filter` active + `severity: Critical` + `createdDate <= daysAgo(now, threshold)` |
+| Critical aged | `filter` active + `severity: Critical` + `createdDate <= businessDaysAgo(now, threshold)` |
 | Environments | `cardinality` on `environment` |
 | Severity / Environment / Status | `terms` |
 | Ageing | `filter` active → `date_range` on `createdDate` |
@@ -285,7 +285,159 @@ A **member** never sees "All PODs" as everything: `filtersFromRequest` narrows
 it to the PODs assigned to them, and one with none gets a 403 rather than an
 unscoped query.
 
-### Aged means what each POD says it means
+### The closure trend asks a narrower question
+
+The chart carries **its own window and its own slice**, in `trendFrom`,
+`trendTo` and `trendFacet` — not the board's `createdFrom`/`environment`.
+Asking how Production bugs are flowing must not re-scope the severity donut
+beside it, so the trend fields travel on `Filters` but the item matchers never
+read them. Only `buildTrend` does.
+
+| Control | Param | Default |
+|---|---|---|
+| Bug type | `trendFacet=environment:Production` | all bugs |
+| Period | `trendFrom` + `trendTo` | 30 days back (daily), 84 (weekly) |
+
+The period control is **`PeriodPicker`** — the same one the DevOps board clears
+work items with, reused rather than rebuilt. It already types a period, picks a
+range on a calendar, flips to stay on screen and escapes the card that would
+clip it; a second copy would be a second set of those bugs to find.
+
+It holds **one period string** — `2026-09`, `2026-09-01..2026-09-30`, or `""`
+for everything. The two dates the server wants are derived from it by
+[`periodBounds`](../src/lib/devops/period-bounds.ts), never stored beside it:
+two representations of one choice is how a control and a chart start
+disagreeing about which month is on screen.
+
+There is no Daily/Weekly toggle. The grain follows the window — above
+`TREND_WINDOW.dailyMaxDays` the chart draws weeks — because the toggle asked
+the reader to answer a question the dates already answer. Nine months of daily
+points is a smear; a fortnight of weekly ones is two columns.
+
+The dropdown is built from `ENVIRONMENTS` and `STATUSES` — the vocabulary
+**plus `Unknown`**, because an item whose field did not resolve is kept rather
+than dropped. Building it from the raw vocabulary left a bug the donut showed
+but the chart could not isolate, and asking for it fell through to *everything*:
+the slices then summed to nearly twice the unsliced chart.
+
+Every bound is clamped in [`dashboard.trend.ts`](../src/controllers/dashboard.trend.ts)
+rather than trusted. `trendFrom` arrives off a URL, and the series builder fills
+one bucket per step — a date in 1970 would have it grind through millions. `to`
+never passes now, `from` never starts before the year the board fetches, and a
+swapped pair falls back to the default window rather than drawing an empty chart
+that reads as a quiet quarter.
+
+### What the card says, beyond the two curves
+
+Two lines answer "how many, when". They do not answer the question the card is
+opened with — *are we keeping up?* — so four things do:
+
+| | What it adds |
+|---|---|
+| **Headline** | average raised per bucket, the busiest bucket, and the longest run of buckets that closed at least as much as they took in |
+| **Net strip** | `closed − raised` per bucket, under the curves |
+| **Weekend bands** | Sat/Sun shaded on the daily grain |
+| **Tooltip** | the net for the hovered bucket, signed |
+
+The **streak** counts only buckets with activity. An empty bucket breaks the
+run rather than extending it — counting quiet days as "keeping up" turned a
+fortnight of leave into a fourteen-day winning streak.
+
+The **net strip** is a strip rather than a third line. Net is signed and the
+two series are counts; one axis cannot honestly carry both, and a second
+y-axis is the one chart mistake this board does not make. It shares the
+chart's x scale, so a column sits exactly under its day, and it prints no
+scale of its own — direction and size are read against its zero line, and the
+figure is in the tooltip.
+
+**Weekend bands** only appear on the daily grain; a weekly bucket contains a
+weekend by definition. Nothing is raised at the weekend, and the sawtooth that
+causes looks like a problem until it is shaded — the same Mon–Fri rule ageing
+is counted by.
+
+Every figure comes from [`trendStats`](../src/lib/metrics/trend-stats.ts) over
+the points actually plotted, not a second query, so the headline cannot
+disagree with the curve under it.
+
+### What a change to those controls actually costs
+
+Nothing is re-fetched. The board pulls **a year per POD** and narrows it in
+memory, so changing the bug type or the period re-counts what is already in
+hand.
+
+The live cache is keyed on the **POD id alone** —
+[`liveItems`](../src/lib/live/fetch.ts) calls `cached(team.id, …)`. Putting the
+filters in that key would be invisible: every number would still be right, and
+every twitch of a dropdown would be a fresh year-long request to Azure.
+
+```
+change the bug type  ->  new SWR key  ->  GET /api/metrics?trendFacet=…
+                                            -> store.items.find()  -> cache hit (same POD)
+                                            -> aggregateDashboard() -> buildTrend() re-counts
+```
+
+Within `LIVE.cacheSeconds` the answer is reused; concurrent readers — the
+board, its roster, the drawer — share one in-flight request rather than racing
+three identical year-long fetches. **Refresh** calls `forgetLive` to drop it.
+
+### When the board's range and the trend's period disagree
+
+The board's own date filter narrows the items **before** the trend sees them.
+So a period outside the chosen quarter draws a flat line — which reads as "no
+bugs" rather than "you are looking outside the quarter". Two filters, one of
+them invisible, is the worst way for a dashboard to be wrong.
+
+`trend.clipped` says when that is happening and the card prints a line naming
+the way out. It changes no count; it is only the reason for them.
+
+Clicking a point still opens exactly what it plotted: the drawer re-states the
+chart's slice as a real `environment`/`status` filter alongside the bucket's
+exact date bounds.
+
+### Ageing is counted in working days
+
+Monday to Friday. A bug raised on a Friday afternoon is one working day old on
+Monday, not three — and a Critical held to one day would breach over every
+weekend it is open through if the weekend counted.
+
+`businessDaysAgo(now, n)` and `businessDaysBetween(start, end)` in
+[`metrics/dates.ts`](../src/lib/metrics/dates.ts) are **exact inverses by
+construction**, and that is load-bearing rather than tidy. A bar asks "created
+before this instant"; the drawer behind it asks "how many working days old". If
+the two disagreed by a day the drawer would hold a row the bar did not count.
+
+The unit is the same everywhere it appears: the age in the drawer, the average
+on the card, the ageing buckets, and the thresholds they are judged against.
+Only the **trend** chart stays on calendar days, because it is a timeline of
+dates rather than a measure of waiting.
+
+### The turnaround each severity is held to
+
+| Severity | Working days |
+|---|---|
+| Critical | 1 |
+| Major | 6 |
+| Minor | 12 |
+| anything else | the POD's own, or 7 |
+
+`AGEING.bySeverity` in [`constants/board.ts`](../src/lib/constants/board.ts).
+`thresholdFor` resolves in this order:
+
+1. what this POD set for this severity in Admin — somebody chose it;
+2. the turnaround above;
+3. the POD's own blanket threshold;
+4. the board default.
+
+The turnaround sits **above** the POD's blanket number on purpose: it is the
+agreed policy, and a POD-wide "30 days" must not quietly give a Critical a
+month. A POD that genuinely needs a different number says so per severity,
+which is step 1.
+
+The bound is **inclusive** — an item that has used its whole turnaround is
+aged, not one working day later. `$lte` on the Mongo side, `<=` in the
+predicate, and the two have to agree or the drawer holds a row the bar did not.
+
+### Aged also means what each POD says it means
 
 One board calls a week old, another a month, and `ageingThresholdDays` is per
 POD. With a POD selected that is simply its own setting. Across **all** PODs

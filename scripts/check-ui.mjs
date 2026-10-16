@@ -46,22 +46,34 @@ import { matchesFilters } from "../src/db/query/predicate.ts";
 import { buildMatch } from "../src/db/query/match.ts";
 import { dateFields, fromStored, fromStoredDoc, toDocument, toStoredRow } from "../src/db/document.ts";
 import { CycleModel, ItemModel, RepoModel, SyncStateModel, TeamModel, UserModel } from "../src/db/models/index.ts";
-import { agreedThreshold, teamThresholds, thresholdFor, widestThreshold } from "../src/lib/metrics/threshold.ts";
+import { agedPhrase, agreedThreshold, teamThresholds, thresholdFor, widestThreshold } from "../src/lib/metrics/threshold.ts";
+import { buildTrend, trendWindow } from "../src/controllers/dashboard.trend.ts";
+import { trendStats } from "../src/lib/metrics/trend-stats.ts";
+import { cached, cachedCount } from "../src/lib/live/cache.ts";
+import { TREND_SLICES, TREND_WINDOW, facetKey, grainFor, splitFacet, trendFacets, trendTitle } from "../src/lib/contracts/trend-view.ts";
+
+/** A facet as the two fields `buildTrend` reads it from. */
+const splitFacetToInput = (f) =>
+  f.slice === "environment" ? { trendEnvironment: f.value } : { trendStatus: f.value };
+import { businessDaysAgo, businessDaysBetween } from "../src/lib/metrics/dates.ts";
 import { SEVERITIES, clampSeverityThresholds } from "../src/lib/types.ts";
 import { ENVIRONMENTS, STATUSES, TERMINAL_STATUSES } from "../src/lib/types.ts";
 import { ALLOWED, LIVE, VOCABULARY, WINDOW_MODES, allowedBy, allows, canonical } from "../src/lib/contracts/item-filters.ts";
-import { AZURE_SOURCES, sourcesFor } from "../src/lib/contracts/azure-sources.ts";
+import { AZURE_SOURCES, sourcesFor, tagsFor } from "../src/lib/contracts/azure-sources.ts";
+import { BFL_IT_SPOC, DELIVERY_SPOC, POD_NAME, POD_TAG } from "../src/lib/contracts/filter-values.ts";
 import { FISCAL_START_MONTH, rangeById, rangeOptions } from "../src/lib/contracts/date-ranges.ts";
 import { createStore } from "../src/db/store/index.ts";
 import { withLiveItems } from "../src/db/store/live-items.ts";
 import { storesAnyItems } from "../src/db/store/json-store.ts";
-import { toDoc } from "../src/controllers/items.shape.ts";
+import { toDoc, withAge } from "../src/controllers/items.shape.ts";
 /** The store, with its items answered live wherever the contract says so. */
 const withLiveStore = (store) => ({ ...store, items: withLiveItems(store) });
 import { SourceConfigError, buildSourceWiql } from "../src/lib/live/wiql.ts";
 import { satisfiesClause, satisfiesSource, valuesOf } from "../src/lib/live/verify.ts";
 import { forgetLive, keepAllowed, liveItems, readsLive, windowStart } from "../src/lib/live/fetch.ts";
+import { forgetFields, looksLikeReference, resolveFields } from "../src/lib/live/fields.ts";
 import { ENV_COLOR, INK_MUTED, SERIES, SEVERITY_COLOR, STATUS_COLOR } from "../src/lib/palette.ts";
+import { leadingSegment } from "../src/lib/normalize/title.ts";
 import { aggregateDashboard } from "../src/controllers/dashboard.aggregate.ts";
 import { describeEmpty } from "../src/components/health-empty-copy.ts";
 import { filterRoster } from "../src/lib/roster.ts";
@@ -103,6 +115,7 @@ import { planMergedPulls } from "../src/lib/devops/github-plan.ts";
 import { isMerged, mergePull, toPullRecord } from "../src/lib/devops/pull-sync.ts";
 import { pullId, ticketFrom } from "../src/lib/devops/pull-record.ts";
 import { MAX_PERIOD_CHARS, cleanPeriod, cleanRange, cleanSpan, dayOf, describePeriod, grainOf, inPeriod, periodsPresent, rangeToSpan } from "../src/lib/devops/period.ts";
+import { periodBounds } from "../src/lib/devops/period-bounds.ts";
 import { DEVOPS_PURGE_TARGETS, POD_PURGE_TARGETS, PURGE_LABEL, PURGE_TARGETS as ALL_PURGE_TARGETS } from "../src/lib/devops/purge-targets.ts";
 import { LAYOUT } from "../src/lib/constants/layout.ts";
 import { TOOLTIP_GAP, TOOLTIP_MARGIN, anchorBox, placeTooltip, unionOf } from "../src/components/ui/tooltip-place.ts";
@@ -1134,6 +1147,30 @@ section("sky — weather is real or absent, never invented");
     check(`${label}: nothing is fetched`, fetches === before, `${fetches - before} request(s)`);
   }
   globalThis.fetch = realFetch;
+
+  // A point copied from Google Maps arrives as "12.910286°". It is accepted,
+  // and the degree sign never reaches the URL. Proven by reading the URL,
+  // because a silently-rejected point looks exactly like an unconfigured one.
+  {
+    let url = "";
+    globalThis.fetch = async (u) =>
+      ((url = String(u)),
+      new Response(JSON.stringify({ current: { temperature_2m: 27.4, weather_code: 3 } }), {
+        headers: { "content-type": "application/json" },
+      }));
+    process.env.WEATHER_LAT = "12.910286°";
+    process.env.WEATHER_LON = "77.645022°";
+    const got = await currentWeather();
+    globalThis.fetch = realFetch;
+    check("a degree-signed point is accepted", got !== null && got.temperature === 27, JSON.stringify(got));
+    check(
+      "the degree sign never reaches the provider",
+      /latitude=12\.910286&longitude=77\.645022/.test(url) && !url.includes("°"),
+      url,
+    );
+  }
+  delete process.env.WEATHER_LAT;
+  delete process.env.WEATHER_LON;
 
   // Every WMO code must map to something the scene can draw.
   const SKIES = ["clear", "cloudy", "overcast", "rain", "snow", "storm", "fog"];
@@ -3602,6 +3639,816 @@ section("a board's own words resolve, without false positives");
 }
 
 
+
+section("the suite that writes cannot reach the real store");
+{
+  /*
+   * `pnpm check` creates PODs, plants pull requests and deletes by date — it
+   * has to, because that is what it checks. Run by hand without a throwaway
+   * store it did all of that to real records: a POD created, fifty-two work
+   * items deleted, and the run merely looked like it had failed for an
+   * unrelated reason. The guard is the only thing standing between the two.
+   */
+  const src = readFileSync(new URL("../scripts/check.mjs", import.meta.url), "utf8");
+  check("the suite refuses the repository's own store", /Refusing to run/.test(src));
+  check("...by comparing resolved paths, not strings", /resolve\(STORE_DIR\) === repoStore/.test(src),
+    "a relative DB_STORE_DIR would slip past a string compare");
+  check("...and exits rather than carrying on", /process\.exit\(2\)/.test(src));
+  check("...before anything is written", src.indexOf("Refusing to run") < src.indexOf("await post("),
+    "the guard has to come first, or the damage is done before it speaks");
+  check("there is a deliberate override", /--i-mean-it/.test(src));
+  check("...which pnpm test does not use", !/--i-mean-it/.test(readFileSync(new URL("../scripts/test.mjs", import.meta.url), "utf8")));
+
+  /* And the harness still hands the suite a store of its own. */
+  const runner = readFileSync(new URL("../scripts/test.mjs", import.meta.url), "utf8");
+  check("the runner seeds a throwaway store", /DB_STORE_DIR: store/.test(runner));
+  check("...and passes it to the suite", /devStore \? \{ DB_STORE_DIR: devStore \}/.test(runner));
+
+  /*
+   * And it takes the port by **binding** it, not by asking over HTTP whether
+   * anything answers. A dev server that was merely slow to reply within the
+   * two-second probe was called absent; the spawned server then could not
+   * bind, the wait loop saw *the other one* answer, and the writing suite ran
+   * against a real store — a POD created and fifty-two items deleted, in a run
+   * that looked like an ordinary failure.
+   */
+  check("the runner binds a port rather than probing it", /probe\.listen\(port\)/.test(runner),
+    "an HTTP probe calls a slow server an absent one");
+  /*
+   * On every interface, as Next binds. Probing 127.0.0.1 succeeded against a
+   * server holding `:::3000`, so the port read as free and the spawn died on
+   * EADDRINUSE — while the suite carried on against the server that was there.
+   */
+  check("...on every interface, not just loopback", !/probe\.listen\(port, ["']127\.0\.0\.1["']\)/.test(runner));
+  check("...and distrusts an instant answer from a port it did not get",
+    /Something else is already serving that port/.test(runner));
+  check("...and does not ask over HTTP whether one is free", !/if \(!\(await aliveAt\(`http:\/\/localhost:\$\{port\}`\)\)\) return port/.test(runner));
+  check("...and notices a server that died on startup", /The dev server exited while starting/.test(runner),
+    "otherwise something else answering on that port passes for ours");
+}
+
+
+section("the filter values are arrays and nothing else");
+{
+  /*
+   * The point of `contracts/filter-values.ts` is that adding a SPOC to the
+   * tracker is adding a line to an array — not editing a query, a mapping or a
+   * component. These check that the arrays are what the sources actually use,
+   * so a value added there cannot fail to reach the board.
+   */
+  const arrays = { POD_NAME, BFL_IT_SPOC, DELIVERY_SPOC };
+  for (const [name, values] of Object.entries(arrays)) {
+    check(`${name} is an array`, Array.isArray(values), typeof values);
+    check(`${name} holds only non-empty strings`, values.every((v) => typeof v === "string" && v.trim()), JSON.stringify(values));
+    check(`${name} has no duplicates`, new Set(values.map((v) => v.toLowerCase())).size === values.length, JSON.stringify(values));
+  }
+
+  /*
+   * Every array is wired to a source, and no source carries a list of its own.
+   * An array nobody referenced would be edited and have no effect, which is
+   * worse than not having it; an inline list is one the arrays cannot change.
+   */
+  const used = AZURE_SOURCES.flatMap((s) => [...(s.all ?? []), ...(s.any ?? [])]).map((c) => c.values);
+  for (const [name, values] of Object.entries(arrays)) {
+    check(`${name} is used by a source`, used.includes(values), "the array is not wired to any board");
+  }
+  check("no source invents values of its own", used.every((v) => Object.values(arrays).includes(v)),
+    "a clause with an inline list is one the arrays cannot change");
+  /* Module Name is deliberately not a filter: an AMC_POD bug's module reads
+     `Banners`, so filtering on it drops the POD's own work. */
+  check("Module Name is not filtered on", !JSON.stringify(AZURE_SOURCES).includes("Module Name"));
+
+  /* The SPOC lists carry the people the board was set up for. */
+  const has = (list, who) => list.some((v) => v.toLowerCase().includes(who));
+  check("the IT SPOC list names Aravind", has(BFL_IT_SPOC, "aravind"), BFL_IT_SPOC.join(", "));
+  check("...and Vikrant", has(BFL_IT_SPOC, "vikrant"));
+  check("the delivery SPOC list names both too", has(DELIVERY_SPOC, "aravind") && has(DELIVERY_SPOC, "vikrant"));
+
+  /* -------------------------------------------------- POD_TAG, the map ---- */
+
+  /*
+   * The key is the POD as the dashboard names it; the value is the tag, or
+   * tags, its work carries on Azure. Adding a POD is a line; giving one a
+   * second tag is a word. Both boards follow, with nothing else to wire up.
+   */
+  const pod = (id, name) => ({ id, name });
+  check("the map is keyed by POD", Object.keys(POD_TAG).length > 0, JSON.stringify(POD_TAG));
+  check("every entry holds at least one tag",
+    Object.entries(POD_TAG).every(([, v]) => (Array.isArray(v) ? v : [v]).some((t) => String(t).trim())),
+    JSON.stringify(POD_TAG));
+
+  check("a POD in the map gets its tags", tagsFor(pod("amc-pod", "AMC POD")).includes("AMC_POD"), tagsFor(pod("amc-pod", "AMC POD")).join(", "));
+  check("...matched as a word inside the POD's name", tagsFor(pod("x", "AMC POD")).length > 0, "the key AMC must find the POD AMC POD");
+  check("...and by id as well as name", tagsFor(pod("amc", "Something else")).length > 0);
+  check("a POD not in the map gets none", tagsFor(pod("payments-pod", "Payments POD")).length === 0);
+
+  /* A single tag may be written plainly, as a string — the example in the file. */
+  const single = Object.values(POD_TAG).find((v) => !Array.isArray(v));
+  check("a lone tag may be written without brackets",
+    single === undefined || typeof single === "string", String(single));
+
+  /* Both boards get the POD's tags, prepended to whatever else identifies it. */
+  const live = sourcesFor(pod("amc-pod", "AMC POD"));
+  check("a POD in the map reads both boards", live.length === AZURE_SOURCES.length, `${live.length} sources`);
+  for (const s of live) {
+    const tagClause = (s.any ?? [])[0];
+    check(`${s.id} is filtered by the POD's tags`, tagClause?.field === "Tags" && tagClause.values.includes("AMC_POD"), JSON.stringify(tagClause));
+    check(`...with contains, since Tags holds several`, tagClause?.op === "contains");
+  }
+  check("the sources themselves name no POD", !JSON.stringify(AZURE_SOURCES).includes("AMC_POD"),
+    "a tag written into a source is one POD_TAG cannot move");
+
+  /*
+   * A POD matching two keys is refused rather than guessed at — picking one
+   * would quietly put another POD's work on this board.
+   */
+  const ambiguous = (() => {
+    const saved = { ...POD_TAG };
+    POD_TAG.AMC = ["A_POD"];
+    POD_TAG["AMC POD"] = ["B_POD"];
+    try { tagsFor(pod("amc-pod", "AMC POD")); return false; } catch { return true; }
+    finally { for (const k of Object.keys(POD_TAG)) delete POD_TAG[k]; Object.assign(POD_TAG, saved); }
+  })();
+  check("a POD matching two keys is refused", ambiguous);
+  check("...and the map is left as it was", JSON.stringify(Object.keys(POD_TAG)) === JSON.stringify(["AMC"]), JSON.stringify(POD_TAG));
+}
+
+section("ageing is counted in working days");
+{
+  /*
+   * A bug raised on a Friday afternoon is one working day old on Monday, not
+   * three. Without that, a Critical held to one day breaches over every weekend
+   * it is open through, and the turnaround means nothing.
+   */
+  const FRI = Date.UTC(2026, 9, 16, 10); // Friday 16 Oct 2026
+  const d = (y, m, day, h = 10) => Date.UTC(y, m, day, h);
+
+  check("Friday to Monday is one working day", businessDaysBetween(FRI, d(2026, 9, 19)) === 1, String(businessDaysBetween(FRI, d(2026, 9, 19))));
+  check("Friday to Tuesday is two", businessDaysBetween(FRI, d(2026, 9, 20)) === 2);
+  check("a whole weekend on its own is none", businessDaysBetween(d(2026, 9, 17), d(2026, 9, 18)) === 0);
+  check("Monday to the Monday after is five", businessDaysBetween(d(2026, 9, 12), d(2026, 9, 19)) === 5);
+  check("the same instant is none", businessDaysBetween(FRI, FRI) === 0);
+  check("a future date is none, never negative", businessDaysBetween(d(2026, 9, 20), FRI) === 0);
+  check("an unparseable instant is none", businessDaysBetween(NaN, FRI) === 0 && businessDaysBetween(FRI, NaN) === 0);
+
+  /*
+   * The two directions are exact inverses, and that is load-bearing rather
+   * than tidy: a bar asks "created before this instant" and the drawer behind
+   * it asks "how many working days old". If they disagree by a day the drawer
+   * holds a row the bar did not count.
+   */
+  for (const now of [d(2026, 9, 19), d(2026, 9, 17), d(2026, 9, 18), d(2026, 0, 1), d(2026, 11, 31)]) {
+    for (const n of [0, 1, 2, 5, 6, 12, 30, 260]) {
+      const was = businessDaysAgo(now, n);
+      check(`${n} working days back from ${new Date(now).toUTCString().slice(0, 11)} counts back as ${n}`,
+        businessDaysBetween(was, now) === n, `${businessDaysBetween(was, now)}`);
+    }
+  }
+  check("...and the time of day survives the trip",
+    new Date(businessDaysAgo(d(2026, 9, 19, 14), 3)).getUTCHours() === 14);
+  check("a weekend is never the answer",
+    [1, 2, 3, 4, 5].every((n) => ![0, 6].includes(new Date(businessDaysAgo(d(2026, 9, 19), n)).getUTCDay())),
+    "a cutoff landing on a Saturday would include the whole weekend");
+
+  /* Rubbish must not spin the loop or poison the date. */
+  check("a negative count is treated as none", businessDaysAgo(FRI, -5) === FRI);
+  check("a non-number is treated as none", businessDaysAgo(FRI, "soon") === FRI);
+  check("an absurd count is capped rather than hanging", Number.isFinite(businessDaysAgo(FRI, 1e9)));
+
+  /* ------------------------------------------- what the reader is shown --- */
+
+  /*
+   * The age in the drawer is the same unit as the threshold beside it. Counting
+   * calendar days here while judging in working ones put rows in front of
+   * somebody that looked comfortably inside their turnaround.
+   */
+  const aged = (createdMs, nowMs) => withAge({ createdDate: new Date(createdMs).toISOString(), closedDate: null }, nowMs).ageDays;
+  check("a Friday bug reads as one day old on Monday", aged(FRI, d(2026, 9, 19)) === 1, String(aged(FRI, d(2026, 9, 19))));
+  check("...and not three", aged(FRI, d(2026, 9, 19)) !== 3);
+  check("a bug raised and closed over a weekend reads as none",
+    withAge({ createdDate: new Date(d(2026, 9, 17)).toISOString(), closedDate: new Date(d(2026, 9, 18)).toISOString() }, d(2026, 10, 1)).ageDays === 0);
+  check("age is measured to the close date, not to now",
+    withAge({ createdDate: new Date(FRI).toISOString(), closedDate: new Date(d(2026, 9, 19)).toISOString() }, d(2026, 11, 1)).ageDays === 1);
+  check("an unparseable created date reads as zero, not NaN",
+    withAge({ createdDate: "not a date", closedDate: null }, FRI).ageDays === 0);
+
+  /* ------------------------------------- the turnaround, end to end ------ */
+
+  /*
+   * The whole point, stated once: a Critical raised on Friday is not in breach
+   * on Monday — it has had one working day, which is exactly what it is
+   * allowed. It breaches on Tuesday.
+   */
+  const bug = (severity, createdMs) => ({
+    teamId: "amc-pod", severity, isActive: true,
+    createdDate: new Date(createdMs), workItemId: "1", title: "", assignee: "",
+  });
+  const rules = { agedOnly: true, thresholdByTeam: { "amc-pod": 7 } };
+
+  /*
+   * The bound is **inclusive**: an item that has used its whole turnaround is
+   * aged, not one working day later. That is the rule everywhere on this board
+   * — `$lte` on the Mongo side, `<=` in the predicate — and the two have to say
+   * the same thing or the drawer holds a row the bar did not.
+   */
+  check("a Critical raised Friday is aged on Monday", matchesFilters(bug("Critical", FRI), rules, d(2026, 9, 19)),
+    "one working day used, and one is all it had");
+  check("...but not still on the Friday", !matchesFilters(bug("Critical", FRI), rules, d(2026, 9, 16, 18)));
+  /*
+   * The weekend adds nothing. A Critical raised on Friday is one working day
+   * old from the moment Friday is over, and stays one working day old all
+   * through Saturday and Sunday — it does not reach two until Monday is spent.
+   * That is the whole difference from counting calendar days, where the same
+   * bug would read three days old on Monday morning.
+   */
+  check("the weekend adds nothing to its age",
+    businessDaysBetween(FRI, d(2026, 9, 18)) === 1 && businessDaysBetween(FRI, d(2026, 9, 19)) === 1,
+    `${businessDaysBetween(FRI, d(2026, 9, 18))} then ${businessDaysBetween(FRI, d(2026, 9, 19))}`);
+  check("...and it is two only once Monday is spent", businessDaysBetween(FRI, d(2026, 9, 20)) === 2);
+
+  check("a Major raised Friday is not aged five working days later",
+    !matchesFilters(bug("Major", FRI), rules, d(2026, 9, 23)), "five working days of six");
+  check("...and is aged on the sixth", matchesFilters(bug("Major", FRI), rules, d(2026, 9, 26)));
+
+  check("a Minor is not aged after eleven working days",
+    !matchesFilters(bug("Minor", FRI), rules, d(2026, 10, 2)));
+  check("...and is aged on the twelfth", matchesFilters(bug("Minor", FRI), rules, d(2026, 10, 3)));
+
+  /*
+   * And the same item read through the drawer agrees. This is the pairing the
+   * whole dashboard rests on: a cutoff and a count, asked of one item.
+   */
+  for (const [sev, days] of Object.entries(AGEING.bySeverity)) {
+    const created = businessDaysAgo(d(2026, 9, 19), days);
+    check(`a ${sev} at exactly its ${days} working days is aged`, matchesFilters(bug(sev, created), rules, d(2026, 9, 19)));
+    check(`...and the drawer shows it as ${days}`,
+      withAge({ createdDate: new Date(created).toISOString(), closedDate: null }, d(2026, 9, 19)).ageDays === days,
+      String(withAge({ createdDate: new Date(created).toISOString(), closedDate: null }, d(2026, 9, 19)).ageDays));
+  }
+}
+
+section("a period, as the two days it covers");
+{
+  /*
+   * `PeriodPicker` speaks period strings — `2026-09`, `2026-09-01..2026-09-30`.
+   * The trend wants the two ends, because a histogram is built by stepping
+   * from one to the other. `periodBounds` is the only place that converts;
+   * doing the month-end arithmetic again at the call site is how a chart ends
+   * up a day short of the filter beside it.
+   *
+   * The typed forms themselves are `parseTypedSpan`'s job and are checked with
+   * it — this is only the seam.
+   */
+  const b = (p) => periodBounds(p);
+  const is = (p, from, to) => check(`"${p}" covers ${from} to ${to}`,
+    b(p)?.from === from && b(p)?.to === to, JSON.stringify(b(p)));
+
+  is("2026", "2026-01-01", "2026-12-31");
+  is("2026-09", "2026-09-01", "2026-09-30");
+  is("2026-04", "2026-04-01", "2026-04-30");
+  is("2026-09-04", "2026-09-04", "2026-09-04");
+  is("2026-09-01..2026-09-30", "2026-09-01", "2026-09-30");
+
+  /* Month ends are computed, not assumed — February is the one that bites. */
+  is("2026-02", "2026-02-01", "2026-02-28");
+  is("2024-02", "2024-02-01", "2024-02-29");
+  is("2100-02", "2100-02-01", "2100-02-28");
+  for (const m of ["01", "03", "05", "07", "08", "10", "12"]) is(`2026-${m}`, `2026-${m}-01`, `2026-${m}-31`);
+  for (const m of ["04", "06", "09", "11"]) is(`2026-${m}`, `2026-${m}-01`, `2026-${m}-30`);
+
+  /* A backwards range is swapped, matching `cleanRange` — somebody who clicks
+     the 30th then the 1st has said what they mean. */
+  is("2026-09-30..2026-09-01", "2026-09-01", "2026-09-30");
+
+  /* And "everything" is null rather than a span of nothing. */
+  for (const none of ["", "   ", "junk", "2026-13", "2026-00", null, undefined, "..", "2026-09..", "<script>"]) {
+    check(`${JSON.stringify(none)} covers everything`, b(none) === null, JSON.stringify(b(none)));
+  }
+
+  /* Every bound it returns is a real, forward, parseable day. */
+  for (const p of ["2026", "2026-09", "2026-02", "2026-09-04", "2026-09-01..2026-09-30"]) {
+    const r = b(p);
+    check(`"${p}" yields two real days in order`,
+      /^\d{4}-\d{2}-\d{2}$/.test(r.from) && /^\d{4}-\d{2}-\d{2}$/.test(r.to) && r.from <= r.to &&
+      new Date(`${r.to}T00:00:00Z`).toISOString().slice(0, 10) === r.to,
+      JSON.stringify(r));
+  }
+
+  /*
+   * And it agrees with `inPeriod`, which is what the rest of the board filters
+   * by. If the ends disagreed with the test, the chart and the list behind it
+   * would hold different days.
+   */
+  for (const p of ["2026", "2026-09", "2026-02", "2024-02", "2026-09-04", "2026-09-01..2026-09-30"]) {
+    const r = b(p);
+    const dayBefore = new Date(Date.parse(`${r.from}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const dayAfter = new Date(Date.parse(`${r.to}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    check(`"${p}" agrees with inPeriod at both ends`,
+      inPeriod(r.from, p) && inPeriod(r.to, p) && !inPeriod(dayBefore, p) && !inPeriod(dayAfter, p),
+      `${dayBefore} / ${r.from}..${r.to} / ${dayAfter}`);
+  }
+}
+
+section("the trend's grain follows its window");
+{
+  /*
+   * There is no Daily/Weekly toggle any more. It asked the reader to answer a
+   * question the dates already answer: nine months of daily points is a smear,
+   * and a fortnight of weekly ones is two columns.
+   */
+  const g = (from, to) => grainFor({ from, to });
+  check("a month is drawn daily", g("2026-09-16", "2026-10-16") === "daily");
+  check("...and so is exactly the threshold",
+    g("2026-08-17", "2026-10-16") === "daily", `${TREND_WINDOW.dailyMaxDays} days`);
+  check("a quarter is drawn weekly", g("2026-07-16", "2026-10-16") === "weekly");
+  check("a year is drawn weekly", g("2025-10-16", "2026-10-16") === "weekly");
+  check("a single day is daily", g("2026-10-16", "2026-10-16") === "daily");
+
+  /* The boundary, read off the constant rather than written again here. */
+  const day = 86_400_000;
+  const end = Date.UTC(2026, 9, 16);
+  const at = (n) => new Date(end - n * day).toISOString().slice(0, 10);
+  check("the switch happens at the constant, not a day either side",
+    g(at(TREND_WINDOW.dailyMaxDays), at(0)) === "daily" && g(at(TREND_WINDOW.dailyMaxDays + 1), at(0)) === "weekly",
+    `${g(at(TREND_WINDOW.dailyMaxDays), at(0))} / ${g(at(TREND_WINDOW.dailyMaxDays + 1), at(0))}`);
+
+  /* Junk falls to daily rather than throwing — this runs on every render. */
+  for (const bad of [["", ""], ["bad", "worse"], ["2026-10-16", "2026-01-01"], [null, null], [undefined, undefined]]) {
+    check(`a bad window (${JSON.stringify(bad)}) still names a grain`, ["daily", "weekly"].includes(g(bad[0], bad[1])));
+  }
+  check("no window at all is daily", grainFor({}) === "daily" && grainFor(null) === "daily");
+
+  /* And the card no longer offers the choice. */
+  const chart = readFileSync(new URL("../src/components/trend-chart.tsx", import.meta.url), "utf8");
+  check("the Daily/Weekly toggle is gone", !/trend-grain/.test(chart) && !/SegmentedControl/.test(chart),
+    "two ways to answer the same question");
+  check("...and the grain is derived instead", /grainFor\(plotted\)/.test(chart));
+}
+
+section("changing the trend's controls costs no Azure call");
+{
+  /*
+   * The board fetches a year per POD and narrows it in memory. Nothing a
+   * reader does to the two controls on the trend card changes **what is
+   * fetched** — only what is counted from what is already in hand.
+   *
+   * Keyed on the POD id alone. Putting the filters in that key would be
+   * invisible: every number would still be right, and every twitch of a
+   * dropdown would be a fresh year-long request to Azure.
+   */
+  let fetches = 0;
+  const load = async () => { fetches++; return []; };
+  const now = Date.UTC(2026, 9, 16);
+  forgetLive();
+
+  const combos = [
+    {}, { trendFacet: "environment:Production" }, { trendFacet: "status:CR" },
+    { trendFrom: "2026-09-01", trendTo: "2026-09-30" },
+    { trendFacet: "environment:IT-UAT", trendFrom: "2026-01-01", trendTo: "2026-12-31" },
+    { trendFacet: "environment:DR" }, { trendFacet: "status:Open" },
+  ];
+  for (const _ of combos) await cached("amc-pod", now, load);
+  check(`${combos.length} different trend selections cost one fetch`, fetches === 1, `${fetches} fetches`);
+  check("...and hold one entry, not one per selection", cachedCount() === 1, `${cachedCount()}`);
+
+  await cached("other-pod", now, load);
+  check("a second POD is its own entry", fetches === 2 && cachedCount() === 2, `${fetches}/${cachedCount()}`);
+
+  /* Fresh for a minute, then read again — the window is the contract's. */
+  await cached("amc-pod", now + (LIVE.cacheSeconds * 1000 - 1000), load);
+  check("still one answer inside the cache window", fetches === 2, `${fetches}`);
+  await cached("amc-pod", now + (LIVE.cacheSeconds * 1000 + 1000), load);
+  check("...and a fresh one after it", fetches === 3, `${fetches}`);
+
+  /*
+   * Concurrent readers share one request. A dashboard load fires the board and
+   * its roster at once with the drawer following: three identical year-long
+   * fetches racing, two thrown away.
+   */
+  forgetLive();
+  fetches = 0;
+  await Promise.all([1, 2, 3, 4, 5].map(() => cached("amc-pod", now, load)));
+  check("five simultaneous readers share one fetch", fetches === 1, `${fetches}`);
+  forgetLive();
+
+  /* And the key really is the POD id, in the source as well as in behaviour. */
+  const fetchSrc = readFileSync(new URL("../src/lib/live/fetch.ts", import.meta.url), "utf8");
+  check("the cache key is the POD, not the filters", /cached\(team\.id, now/.test(fetchSrc),
+    "a filter in the key means a year-long fetch per keystroke");
+}
+
+section("the board's range and the trend's period, when they disagree");
+{
+  /*
+   * The board narrows the items **before** the trend sees them. A period
+   * outside the chosen quarter therefore draws a flat line — which reads as
+   * "no bugs" rather than "you are looking outside the quarter". Two filters,
+   * one of them invisible, is the worst way for a dashboard to be wrong.
+   *
+   * `clipped` changes no count. It is only what lets the card say so.
+   */
+  const now = Date.UTC(2026, 9, 16);
+  const Q3 = { createdFrom: "2026-07-01T00:00:00Z", createdTo: "2026-10-01T00:00:00Z" };
+  const clipped = (f) => buildTrend([], f, now).clipped;
+
+  check("no board range hides nothing", clipped({}) === false);
+  check("...whatever period is asked for", clipped({ trendFrom: "2026-06-01", trendTo: "2026-06-30" }) === false);
+  check("a period inside the quarter is whole", clipped({ ...Q3, trendFrom: "2026-09-01", trendTo: "2026-09-30" }) === false);
+  check("a period outside it is flagged", clipped({ ...Q3, trendFrom: "2026-06-01", trendTo: "2026-06-30" }) === true);
+  check("...and so is one that straddles the end", clipped({ ...Q3, trendFrom: "2026-08-01", trendTo: "2026-10-31" }) === true);
+  check("...or the start", clipped({ ...Q3, trendFrom: "2026-06-01", trendTo: "2026-08-31" }) === true);
+  check("the quarter's own dates are not flagged", clipped({ ...Q3, trendFrom: "2026-07-01", trendTo: "2026-09-30" }) === false,
+    "an exact match must not warn");
+  /*
+   * The default window too. A board on an old quarter with no period picked
+   * plots the last 30 days — of which the quarter holds none.
+   */
+  check("the default window is flagged on an old quarter", clipped({ ...Q3 }) === true,
+    "a flat line with nothing said about why");
+
+  /* It is a note, not a filter: the counts are identical either way. */
+  const bug = (m, d) => ({ teamId: "amc", severity: "Major", environment: "Production", status: "Open",
+    isActive: true, createdDate: new Date(Date.UTC(2026, m, d)), closedDate: null,
+    workItemId: `${m}-${d}`, title: "", assignee: "" });
+  const items = [bug(9, 14), bug(9, 15)];
+  const withRange = buildTrend(items, { ...Q3, trendFrom: "2026-10-01", trendTo: "2026-10-16" }, now);
+  const without = buildTrend(items, { trendFrom: "2026-10-01", trendTo: "2026-10-16" }, now);
+  check("flagging changes no count", JSON.stringify(withRange.daily) === JSON.stringify(without.daily),
+    "the note must not also filter");
+  check("...only the note differs", withRange.clipped === true && without.clipped === false);
+
+  /* And the card says it rather than drawing a flat line in silence. */
+  const chart = readFileSync(new URL("../src/components/trend-chart.tsx", import.meta.url), "utf8");
+  const headline = readFileSync(new URL("../src/components/trend-headline.tsx", import.meta.url), "utf8");
+  check("the card is told when part of the period is hidden", /clipped=\{plotted\.clipped\}/.test(chart),
+    "the flag never reaches the headline");
+  /* Anchored to the opener, so a stray mention of `clipped` elsewhere in the
+     file cannot stand in for the warning actually being rendered. */
+  check("...and says so", /\{clipped && \(/.test(headline), "an empty chart with no reason given");
+  check("...naming the way out", /Widen the range/.test(headline), "a warning with nothing to do about it");
+  /*
+   * In readable ink. The warning yellow is 1.74:1 as text, which is why
+   * `STATUS_INK` exists separately from `STATUS`.
+   */
+  check("...in ink meant for reading", /STATUS_INK\.warning/.test(headline) && !/STATUS\.warning/.test(headline),
+    "the mark colour is 1.74:1 as text");
+}
+
+section("what the trend adds up to");
+{
+  /*
+   * Two curves answer "how many, when". They do not answer the question the
+   * card is opened with — *are we keeping up?* — and a reader was left to
+   * eyeball which line sat higher across thirty points.
+   */
+  const p = (date, raised, closed) => ({ date, raised, closed });
+  const week = [p("2026-10-12", 2, 1), p("2026-10-13", 0, 3), p("2026-10-14", 1, 1),
+                p("2026-10-15", 5, 0), p("2026-10-16", 0, 0), p("2026-10-17", 1, 2)];
+  const s = trendStats(week);
+
+  check("it totals what was raised", s.raised === 9, `${s.raised}`);
+  check("...and what was closed", s.closed === 7, `${s.closed}`);
+  check("...and the net between them", s.net === -2, `${s.net}`);
+  check("the totals match the points, not a second query",
+    s.raised === week.reduce((n, x) => n + x.raised, 0) && s.closed === week.reduce((n, x) => n + x.closed, 0),
+    "the headline could disagree with the curve under it");
+
+  check("it names the busiest bucket", s.busiest?.date === "2026-10-15" && s.busiest?.raised === 5, JSON.stringify(s.busiest));
+  check("...and the average per bucket", s.perBucket === 1.5, `${s.perBucket}`);
+
+  /*
+   * The streak is the run of buckets that closed at least as much as they took
+   * in. A bucket with nothing at all **breaks** it: counting empty days as
+   * "keeping up" turned a fortnight of leave into a fourteen-day winning
+   * streak, which is the opposite of informative.
+   */
+  check("a streak counts buckets that kept up", s.streak === 2, `${s.streak}`);
+  check("an empty bucket breaks the streak, not extends it",
+    trendStats([p("1", 0, 1), p("2", 0, 0), p("3", 0, 1)]).streak === 1,
+    "a quiet fortnight would read as a winning run");
+  check("a fully quiet window has no streak at all",
+    trendStats([p("1", 0, 0), p("2", 0, 0), p("3", 0, 0)]).streak === 0);
+  check("...and no busiest day", trendStats([p("1", 0, 0)]).busiest === null, "a zero would be named as the peak");
+  check("an unbroken run is the whole window",
+    trendStats([p("1", 1, 2), p("2", 1, 1), p("3", 0, 4)]).streak === 3);
+  check("the longest run is reported, not the last",
+    trendStats([p("1", 1, 2), p("2", 1, 2), p("3", 5, 0), p("4", 1, 2)]).streak === 2, "the final run was shorter");
+
+  /* It runs on every render, over data from a board. Nothing here may throw. */
+  for (const junk of [[], null, undefined, [{}], [{ date: "1", raised: "x", closed: null }], [{ raised: NaN, closed: Infinity }]]) {
+    const out = trendStats(junk);
+    check(`${JSON.stringify(junk)} still answers`,
+      Number.isFinite(out.raised) && Number.isFinite(out.closed) && Number.isFinite(out.net) && Number.isFinite(out.perBucket),
+      JSON.stringify(out));
+  }
+
+  // -- and the card shows it -----------------------------------------------
+  const head = readFileSync(new URL("../src/components/trend-headline.tsx", import.meta.url), "utf8");
+  check("the headline is built from the plotted points", /stats\.perBucket/.test(head) && /stats\.busiest/.test(head),
+    "a headline that could disagree with its own chart");
+  check("...naming the busiest bucket", /busiest/.test(head));
+  check("...and a streak only when there is one", /stats\.streak > 1/.test(head),
+    "'1 day running' is not news");
+  check("...in readable ink", /STATUS_INK\.good/.test(head), "the mark colour is not meant for text");
+
+  /*
+   * Net per bucket is its own strip, sharing the chart's x scale — never a
+   * second y-axis. Net is signed and the two series are counts; one axis
+   * cannot honestly carry both.
+   */
+  const net = readFileSync(new URL("../src/components/trend-net.tsx", import.meta.url), "utf8");
+  check("net is drawn as its own strip", /closed - p\.raised/.test(net) || /p\.closed - p\.raised/.test(net));
+  check("...against a zero line", /y1=\{MID\} y2=\{MID\}/.test(net), "a strip with nothing to read it against");
+  check("...sharing the chart's x scale", /x\(i\)/.test(net), "a second timeline that could drift from the first");
+  check("...coloured by direction", /STATUS\.good : STATUS\.serious/.test(net));
+  /*
+   * And it carries **no scale of its own** — no ticks, no numbers up the side.
+   * A labelled second vertical scale beside the chart's is the one mistake
+   * this board does not make; the strip is read as direction and size against
+   * its zero line, and the exact figure is in the tooltip.
+   */
+  check("...with no second y-scale printed beside it", !/<text/.test(net),
+    "two y-scales is the one chart mistake this board does not make");
+
+  /*
+   * Weekends are shaded on the daily grain. Nothing is raised at the weekend,
+   * and the sawtooth that causes looks like a problem until it is explained —
+   * the same Mon–Fri rule ageing is counted by.
+   */
+  const we = readFileSync(new URL("../src/components/trend-weekends.tsx", import.meta.url), "utf8");
+  check("weekends are shaded", /WEEKEND = new Set\(\[0, 6\]\)/.test(we), "Saturday and Sunday, UTC");
+  check("...only on the daily grain", /grain !== "daily"/.test(we),
+    "a weekly bucket contains a weekend by definition");
+
+  /* And the tooltip gives the net rather than leaving it to be subtracted. */
+  /* The tooltip's net is checked by rendering it — see check:render. Grepping
+     for the expression matched the colour rule beside it and passed with the
+     number itself removed. */
+}
+
+section("a build compiles, it does not fetch");
+{
+  /*
+   * `next build` imports every route module to read its exports, and
+   * `startPoller()` is called at the top of the metrics route — so the build
+   * started a poller, `tick()` ran immediately, and real work items were
+   * written into whatever `DB_STORE_DIR` pointed at. During `pnpm test` that
+   * is the developer's own `DB_store/`: the suite rewrote the data it exists
+   * to leave alone. Caught by `git status` after a green run, which is exactly
+   * how the last one of these was caught too.
+   */
+  const poller = readFileSync(new URL("../src/lib/poller.ts", import.meta.url), "utf8");
+  check("the poller refuses to run during a build",
+    /phase-production-build/.test(poller), "a build would sync into the real store");
+  /*
+   * Before `g[KEY]` is set and before the interval is armed, or the guard is
+   * decorative — `void tick()` is the call that actually writes.
+   */
+  const guardAt = poller.indexOf("phase-production-build");
+  check("...before it arms anything", guardAt > 0 && guardAt < poller.indexOf("setInterval"),
+    "the guard sits after the poller has already started");
+  check("...and before the first immediate tick", guardAt > 0 && guardAt < poller.indexOf("void tick()"));
+
+  /* And the suite gives the build a store of its own regardless. */
+  const test = readFileSync(new URL("../scripts/test.mjs", import.meta.url), "utf8");
+  const buildCall = test.slice(test.indexOf('"build", "--no-lint"') - 400, test.indexOf('"build", "--no-lint"') + 300);
+  check("the build step gets a throwaway store", /DB_STORE_DIR: buildStore/.test(buildCall),
+    "a route calling out at import time would reach DB_store/");
+  check("...and the poller switched off outright", /SYNC_POLL_SECONDS: "0"/.test(buildCall));
+}
+
+section("the closure trend has its own window and its own slice");
+{
+  /*
+   * The trend answers a narrower question than the tiles beside it: "how is
+   * *this* kind of bug flowing, over *these* dates". So it carries its own
+   * window and slice, and the rule that makes that safe is that neither
+   * touches anything else on the board.
+   */
+  const now = Date.UTC(2026, 9, 16); // Friday 16 Oct 2026
+  const D = 86_400_000;
+  const bug = (agoDays, environment, status, closedAgo = null) => ({
+    teamId: "amc",
+    severity: "Major",
+    environment,
+    status,
+    isActive: closedAgo === null,
+    createdDate: new Date(now - agoDays * D),
+    closedDate: closedAgo === null ? null : new Date(now - closedAgo * D),
+    workItemId: String(agoDays),
+    title: "",
+    assignee: "",
+  });
+
+  const items = [
+    bug(2, "Production", "Closed", 1),
+    bug(2, "IT-UAT", "Open"),
+    bug(40, "Production", "CR"),
+    bug(200, "Production", "Open"),
+    bug(5, "BIZ-UAT", "Open"),
+  ];
+  const raisedIn = (t) => t.daily.reduce((n, p) => n + p.raised, 0);
+  const closedIn = (t) => t.daily.reduce((n, p) => n + p.closed, 0);
+
+  // -- the default window ---------------------------------------------------
+  const plain = buildTrend(items, {}, now);
+  check("the default daily window is 30 days", plain.daily.length === TREND_WINDOW.dailyDays + 1, `${plain.daily.length}`);
+  check("...and the weekly one 12 weeks", plain.weekly.length === Math.round(TREND_WINDOW.weeklyDays / 7) + 1, `${plain.weekly.length}`);
+  check("it plots what was raised inside it", raisedIn(plain) === 3, `${raisedIn(plain)}`);
+  check("...and nothing from outside it", raisedIn(plain) !== items.length, "the 40- and 200-day bugs are not in a 30-day window");
+  check("and what was closed inside it", closedIn(plain) === 1, `${closedIn(plain)}`);
+
+  // -- the slice ------------------------------------------------------------
+  check("slicing by environment keeps only that environment",
+    raisedIn(buildTrend(items, { trendEnvironment: "Production" }, now)) === 1, "the Closed Production bug, 2 days old");
+  check("...and by status only that status",
+    raisedIn(buildTrend(items, { trendStatus: "Open" }, now)) === 2, "IT-UAT and BIZ-UAT");
+  check("an unmatched slice plots an empty chart, not every bug",
+    raisedIn(buildTrend(items, { trendEnvironment: "N2P" }, now)) === 0);
+  check("the series still spans the window when the slice is empty",
+    buildTrend(items, { trendEnvironment: "N2P" }, now).daily.length === TREND_WINDOW.dailyDays + 1,
+    "an empty chart must still show its dates, or it reads as broken rather than quiet");
+  check("slicing never invents a bug",
+    TREND_SLICES.every((slice) =>
+      trendFacets().filter((f) => f.slice === slice)
+        .every((f) => raisedIn(buildTrend(items, splitFacetToInput(f), now)) <= raisedIn(plain))),
+    "a slice can only ever narrow");
+
+  /*
+   * The slices sum to the whole — nothing dropped, nothing double-counted.
+   *
+   * This is what caught the gap: the options were built from `VOCABULARY`,
+   * which has no `Unknown`, so a bug whose environment did not resolve was
+   * unreachable and asking for it fell through to *everything*. The slices then
+   * summed to nearly twice the unsliced chart.
+   */
+  const bySlice = trendFacets().filter((f) => f.slice === "environment")
+    .reduce((n, f) => n + raisedIn(buildTrend(items, splitFacetToInput(f), now)), 0);
+  check("the environment slices sum to the unsliced chart", bySlice === raisedIn(plain), `${bySlice} vs ${raisedIn(plain)}`);
+  check("...and an unresolved environment is one of them",
+    trendFacets().some((f) => f.slice === "environment" && f.value === "Unknown"),
+    "a bug the donut shows could not be picked in the chart");
+
+  // -- the window the reader picks -----------------------------------------
+  const picked = buildTrend(items, { trendFrom: "2026-09-01", trendTo: "2026-09-30" }, now);
+  check("a picked window is the one plotted", picked.from === "2026-09-01" && picked.to === "2026-09-30", `${picked.from} to ${picked.to}`);
+  check("...and it reaches bugs the default window misses",
+    raisedIn(buildTrend(items, { trendFrom: "2026-08-01" }, now)) === 4, "the 40-day-old CR comes into view");
+  check("...while the 200-day one still needs a wider pick",
+    raisedIn(buildTrend(items, { trendFrom: "2026-01-01" }, now)) === 5);
+
+  /*
+   * A slice and a window together, which is the whole feature: "show me CR
+   * bugs over the last two months".
+   */
+  const both = buildTrend(items, { trendStatus: "CR", trendFrom: "2026-08-01" }, now);
+  check("a slice and a window compose", raisedIn(both) === 1, `${raisedIn(both)}`);
+
+  // -- bounds, because these are query params ------------------------------
+  /*
+   * `trendFrom` arrives off a URL. A swapped pair, a date in 1970 or one in
+   * 2090 reaching the series builder would have it fill a bucket per day
+   * through millions of them.
+   */
+  const win = (f) => trendWindow(f, now, "day");
+  const iso = (ms) => new Date(ms).toISOString().slice(0, 10);
+  check("a start before the data is clamped to the year held",
+    iso(win({ trendFrom: "1970-01-01" }).from) === "2025-10-16", iso(win({ trendFrom: "1970-01-01" }).from));
+  check("an end in the future is clamped to now", win({ trendTo: "2090-01-01" }).to === now);
+  check("a swapped pair falls back instead of plotting nothing",
+    win({ trendFrom: "2026-10-10", trendTo: "2026-09-01" }).from < win({ trendFrom: "2026-10-10", trendTo: "2026-09-01" }).to);
+  check("junk dates fall back to the default window",
+    iso(win({ trendFrom: "nonsense", trendTo: "also nonsense" }).from) === iso(win({}).from));
+  for (const bad of [{ trendFrom: "1970-01-01" }, { trendTo: "2090-01-01" }, { trendFrom: "2026-10-10", trendTo: "2026-09-01" }]) {
+    const t = buildTrend(items, bad, now);
+    check(`a bad window still yields a bounded chart (${JSON.stringify(bad)})`,
+      t.daily.length > 0 && t.daily.length <= TREND_WINDOW.maxDays + 1, `${t.daily.length} points`);
+  }
+
+  // -- it must not touch the rest of the board -----------------------------
+  /*
+   * The point of carrying its own fields. If the slice leaked into the board's
+   * filters, asking about Production bugs would silently re-scope the severity
+   * donut, the ageing chart and every total beside it.
+   */
+  const base = aggregateDashboard({ items, now, thresholdDays: 7 });
+  const sliced = aggregateDashboard({ items, now, thresholdDays: 7, trendEnvironment: "Production", trendFrom: "2026-09-01" });
+  for (const panel of ["totals", "severity", "environment", "status", "ageing", "teams", "assignees"]) {
+    check(`slicing the trend leaves ${panel} alone`,
+      JSON.stringify(sliced[panel]) === JSON.stringify(base[panel]),
+      "the chart's filter leaked into the board");
+  }
+  check("...and the trend itself did change", JSON.stringify(sliced.trend) !== JSON.stringify(base.trend));
+
+  // -- the matchers ignore the trend fields entirely ------------------------
+  /*
+   * They are on `Filters` for the ride, nothing more. A matcher reading them
+   * would filter the drawer by the chart's slice twice over.
+   */
+  const anyBug = bug(2, "IT-UAT", "Open");
+  check("matchesFilters ignores a trend slice",
+    matchesFilters(anyBug, { trendEnvironment: "Production", trendStatus: "CR" }, now) === true);
+  check("buildMatch ignores one too",
+    JSON.stringify(buildMatch({ trendEnvironment: "Production", trendFrom: "2026-01-01" }, now)) === "{}",
+    JSON.stringify(buildMatch({ trendEnvironment: "Production" }, now)));
+
+  // -- the facet key, which is what travels over the wire -------------------
+  for (const f of trendFacets()) {
+    check(`${f.key} round-trips`, facetKey(splitFacet(f.key)) === f.key, facetKey(splitFacet(f.key)));
+  }
+  /*
+   * Every value the board can *hold*, not every value the vocabulary lists —
+   * `ENVIRONMENTS` and `STATUSES` carry `Unknown` because unresolved items are
+   * kept rather than dropped, and a value the donut can show must be one the
+   * chart can isolate.
+   */
+  check("every environment the board can hold is offered",
+    ENVIRONMENTS.every((v) => trendFacets().some((f) => f.slice === "environment" && f.value === v)),
+    "a value the board can hold but the chart cannot show");
+  check("...and every status", STATUSES.every((v) => trendFacets().some((f) => f.slice === "status" && f.value === v)));
+  check("CR is offered, since it is a status rather than an environment",
+    trendFacets().some((f) => f.key === "status:CR"));
+  check("Production is offered as an environment", trendFacets().some((f) => f.key === "environment:Production"));
+
+  /* Anything not in the vocabulary widens the chart rather than emptying it. */
+  for (const junk of ["environment:'; DROP TABLE items--", "status:<script>", "nope:Production", "Production", "", ":", "environment:", null, undefined]) {
+    const out = splitFacet(junk);
+    check(`a junk facet (${JSON.stringify(junk)}) selects everything`, Object.keys(out).length === 0, JSON.stringify(out));
+  }
+
+  // -- the params actually being read off the request -----------------------
+  /*
+   * The chart can slice perfectly and still show the wrong thing if the route
+   * never reads the params. Dropping `trendFrom` here passed every check above
+   * — the aggregation was correct, it was simply never told.
+   */
+  const apiSrc = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+  for (const [param, reader] of [
+    ["trendFrom", /trendFrom: isoParam\(p, "trendFrom"\)/],
+    ["trendTo", /trendTo: isoParam\(p, "trendTo"\)/],
+    ["trendFacet", /splitFacetParams\(p\.get\("trendFacet"\)\)/],
+  ]) {
+    check(`the route reads ${param}`, reader.test(apiSrc), "the chart would ask and the server would not hear");
+  }
+  check("...and the facet is split into the two fields Filters carries",
+    /trendEnvironment: environment, trendStatus: status/.test(apiSrc));
+
+  /* And the client offers them — a control wired to nothing looks like it works. */
+  const ctrl = readFileSync(new URL("../src/components/trend-controls.tsx", import.meta.url), "utf8");
+  /*
+   * The **same** picker the DevOps board clears work items with, not a second
+   * one built for this card. It already types a period, picks a range on a
+   * calendar, flips to stay on screen and escapes the card that would clip it;
+   * a copy would be a second set of those bugs to find.
+   */
+  check("the window uses the shared period picker", /<PeriodPicker/.test(ctrl), "a second date control");
+  /*
+   * The row wraps and hugs the right. It lives in the card header's corner
+   * where the Daily/Weekly toggle was, and on a narrow screen two controls
+   * beside a title have nowhere to go — without this they squeezed the heading
+   * out instead of dropping onto their own line.
+   */
+  const row = ctrl.match(/<div className="([^"]*)">/)?.[1] ?? "";
+  check("...on a row that wraps", row.includes("flex-wrap"), row || "no wrapper found");
+  check("...and hugs the right of the header", row.includes("justify-end"), row);
+  check("...imported rather than reimplemented", /from "\.\/devops\/period-picker"/.test(ctrl));
+  check("...and it speaks period strings, not a pair of dates",
+    /period: string;/.test(ctrl) && /onPeriod: \(period: string\) => void;/.test(ctrl),
+    "two representations of one choice drift apart");
+
+  /*
+   * The two dates the server wants are derived from that one string by
+   * `periodBounds`, in the hook — never stored beside it.
+   */
+  const view = readFileSync(new URL("../src/components/use-trend-view.ts", import.meta.url), "utf8");
+  check("the dates are derived from the period, not held beside it",
+    /periodBounds\(period\)/.test(view) && !/useState\(""\)[\s\S]{0,80}useState\(""\)[\s\S]{0,80}useState\(""\)/.test(view),
+    "a control and a chart that disagree about which month is on screen");
+  check("...and the slice is a grouped select", /optgroup/.test(ctrl) && /trendFacetGroups\(\)/.test(ctrl));
+  check("...listing an explicit everything option", /value=""[\s\S]{0,40}All bugs/.test(ctrl));
+
+  const chartSrc = readFileSync(new URL("../src/components/trend-chart.tsx", import.meta.url), "utf8");
+  check("a drilled trend point carries the chart's slice", /\.\.\.splitFacet\(controls\.facet\)/.test(chartSrc),
+    "the drawer would list every environment for a point that plotted one");
+  check("...alongside the exact bucket bounds", /createdFrom: start\.toISOString\(\)/.test(chartSrc));
+
+  // -- what the card says it is showing -------------------------------------
+  /*
+   * A title still reading "last 30 days" over a picked range is the kind of
+   * quiet lie a dashboard does not recover from.
+   */
+  check("the default title names the default window",
+    trendTitle("daily", false, plain, "") === "Raised vs closed, last 30 days", trendTitle("daily", false, plain, ""));
+  check("...and the weekly one its own", /12 weeks/.test(trendTitle("weekly", false, plain, "")));
+  check("a picked window is named in the title",
+    trendTitle("daily", true, picked, "").includes("2026-09-01") && trendTitle("daily", true, picked, "").includes("2026-09-30"),
+    trendTitle("daily", true, picked, ""));
+  check("a slice is named too", trendTitle("daily", false, plain, "environment:Production").startsWith("Production "),
+    trendTitle("daily", false, plain, "environment:Production"));
+  check("...and a junk slice names nothing rather than echoing it",
+    trendTitle("daily", false, plain, "status:<script>") === "Raised vs closed, last 30 days");
+}
+
 section("the contract tables are the only place a filter is written");
 {
   /*
@@ -3719,7 +4566,9 @@ section("the contract tables are the only place a filter is written");
   check("a POD named in the contract has sources", sourcesFor(pod("amc-pod", "AMC POD")).length === 2);
   check("...matched by name as well as id", sourcesFor(pod("renamed-id", "AMC POD")).length === 2);
   check("...case-insensitively, either way round", sourcesFor(pod("AMC-POD", "x")).length === 2 && sourcesFor(pod("x", "amc pod")).length === 2);
-  check("...but not by a partial name", sourcesFor(pod("x", "AMC")).length === 0, "a name is matched whole, not as a prefix");
+  /* The key is a whole word in the POD's name, so `AMC` finds `AMC POD`. */
+  check("...and as a word inside a longer POD name", sourcesFor(pod("x", "AMC")).length === 2);
+  check("...but not inside another word", sourcesFor(pod("x", "AMCTrading")).length === 0, "AMC must not match AMCTrading");
   check("a POD not in the contract has none", sourcesFor(pod("payments-pod", "Payments POD")).length === 0);
   check("a POD with no id or name has none", sourcesFor(pod("", "")).length === 0);
 
@@ -3730,7 +4579,7 @@ section("the contract tables are the only place a filter is written");
    * once, which is precisely the data the filters exist to exclude. A POD
    * carries contract data or says why it cannot.
    */
-  const bare = { id: "amc-pod", name: "AMC POD", azure: { orgUrl: "", project: "", pat: "", areaPath: "", workItemTypes: [] } };
+  const bare = { id: "amc-pod", name: "AMC POD", azure: { orgUrl: "https://dev.azure.com/BFLDevOpsOrg", project: "", pat: "", areaPath: "", workItemTypes: [] } };
   check("a contract POD reads live with no PAT configured", readsLive(bare) === true, "a PAT must not decide where data comes from");
   check("...and with one", readsLive({ ...bare, azure: { ...bare.azure, pat: "x" } }) === true);
   check("a POD outside the contract never reads live", readsLive({ ...bare, id: "payments-pod", name: "Payments POD", azure: { ...bare.azure, pat: "x" } }) === false);
@@ -3893,7 +4742,17 @@ section("the quarter the board shows is the quarter the drawer opens");
    * keeps the first quarter it was given however many times you change the
    * dropdown.
    */
-  check("the memo depends on the range", /\}, \[teamId, kind, search, range\.from, range\.to\]\)/.test(dash), dash.match(/\}, \[teamId[^\]]*\]\)/)?.[0] ?? "no deps found");
+  const deps = dash.match(/\}, \[teamId[^\]]*\]\)/)?.[0] ?? "";
+  for (const dep of ["range.from", "range.to", "trend.params"]) {
+    check(`the memo depends on ${dep}`, deps.includes(dep), deps || "no deps found");
+  }
+  /*
+   * And the trend's own params ride in the same query, so the chart's slice
+   * reaches the server and the drawer a point opens is built from the same
+   * object the board was.
+   */
+  check("the trend's params join the shared query", /\.\.\.trend\.params/.test(dash),
+    "the chart would ask for one window and the board fetch another");
 
   /*
    * The options are built **once per mount**. The oldest quarter's start is
@@ -3916,17 +4775,108 @@ section("the quarter the board shows is the quarter the drawer opens");
   check("...with distinct ids", !/id="board-range"[\s\S]*id="board-range"[\s\S]*onChange/.test(bar.replace(/board-range-menu/g, "x")));
 }
 
+
+section("a field is found by the name on the form");
+{
+  /*
+   * The form says **POD Name**; WIQL wants `Custom.PODName`. Nobody can read
+   * the second off a work item, and a wrong guess fails the whole query — so
+   * the contract names fields the way the board does and the project is asked
+   * what they are really called. It is the difference between filling in four
+   * reference names you cannot see and the thing working once a PAT is set.
+   */
+  const FIELDS = { value: [
+    { name: "Tags", referenceName: "System.Tags" },
+    { name: "POD Name", referenceName: "Custom.PODName" },
+    { name: "BFL IT Spoc", referenceName: "Custom.BFLITSpoc" },
+    { name: "Bug Status", referenceName: "Custom.BugStatus" },
+    { name: "Severity", referenceName: "Microsoft.VSTS.Common.Severity" },
+  ] };
+  const creds = { orgUrl: "https://dev.azure.com/Org", project: "3in1 IT Requests", pat: "p" };
+
+  let calls = 0;
+  const fetcher = async () => { calls++; return FIELDS; };
+
+  forgetFields();
+  const map = await resolveFields(creds, ["POD Name", "BFL IT Spoc", "Tags"], fetcher);
+  check("a form label resolves to its reference name", map.get("POD Name") === "Custom.PODName", map.get("POD Name"));
+  check("...however it is spaced or cased", (await resolveFields(creds, ["pod name"], fetcher)).get("pod name") === "Custom.PODName");
+  check("...and an identity field too", map.get("BFL IT Spoc") === "Custom.BFLITSpoc");
+
+  /* One request per project, however many fields are asked for or how often. */
+  check("the field list is fetched once", calls === 1, `${calls} requests`);
+  await resolveFields(creds, ["Bug Status", "Severity"], fetcher);
+  check("...and reused for later lookups", calls === 1, `${calls} requests`);
+
+  /*
+   * A reference name still works, and never costs a round trip — which is what
+   * lets a contract name one directly when a project has two fields sharing a
+   * label.
+   */
+  forgetFields();
+  calls = 0;
+  const direct = await resolveFields(creds, ["Custom.Something", "System.Tags"], fetcher);
+  check("a reference name passes through untouched", direct.get("Custom.Something") === "Custom.Something");
+  check("...without asking Azure at all", calls === 0, `${calls} requests`);
+  check("a label is told apart from a reference name", looksLikeReference("Custom.PODName") && !looksLikeReference("POD Name"));
+  check("...and a bare word is not one", !looksLikeReference("Severity"));
+
+  /*
+   * A field that does not exist fails loudly, naming the near misses. Azure's
+   * own TF51005 names the field but not the alternatives, and the alternatives
+   * are the whole of what somebody needs.
+   */
+  forgetFields();
+  const bad = await resolveFields(creds, ["POD Nme"], fetcher).then(() => null, (e) => e);
+  check("an unknown field is refused", bad !== null, "it was accepted");
+  check("...naming the project and the field", /3in1 IT Requests/.test(bad?.message ?? "") && /POD Nme/.test(bad?.message ?? ""), bad?.message);
+  check("...and the file to fix it in", /azure-sources\.ts/.test(bad?.message ?? ""), bad?.message);
+
+  /* A failed lookup must not be cached, or one bad moment poisons the process. */
+  forgetFields();
+  let failing = true;
+  const flaky = async () => { if (failing) throw new Error("network"); return FIELDS; };
+  await resolveFields(creds, ["POD Name"], flaky).catch(() => {});
+  failing = false;
+  const after = await resolveFields(creds, ["POD Name"], flaky);
+  check("a failed lookup is not remembered", after.get("POD Name") === "Custom.PODName");
+  forgetFields();
+}
+
 section("the live WIQL is bounded on every axis");
 {
   const SINCE = "2025-10-09T00:00:00.000Z";
-  const source = AZURE_SOURCES.find((s) => s.any?.length);
-  const both = AZURE_SOURCES.find((s) => s.all?.length);
-  check("the contract has a source with an OR group", Boolean(source));
-  check("the contract has a source with an AND group", Boolean(both));
+  /*
+   * What a POD actually reads: the board's own clauses with that POD's tags
+   * from `POD_TAG` in front. The raw entry in `AZURE_SOURCES` names no POD, so
+   * asking it for a query would check something nobody runs.
+   */
+  const source = sourcesFor({ id: "amc-pod", name: "AMC POD" })[0];
+  check("a POD's source carries an OR group", Boolean(source?.any?.length));
+  /*
+   * An AND source, built here rather than taken from the contract: the shipped
+   * contract uses OR on both boards (the POD tag, the POD field and the SPOC
+   * each identify the POD on their own), and the builder still has to get AND
+   * right for whoever tightens it.
+   */
+  const both = {
+    ...source,
+    any: undefined,
+    all: [
+      { field: "Custom.DeliverySPOC", values: ["Aravind.i@bajajfinserv.in", "vikrant.tiwari2@bajajfinserv.in"] },
+      { field: "Custom.ModuleName", values: ["AMC"] },
+    ],
+  };
 
   const q = buildSourceWiql(source, SINCE);
   check("the project is bounded", q.includes("[System.TeamProject] = '3in1 IT Requests'"), q);
-  check("the work item types are bounded", /\[System\.WorkItemType\] IN \('Bug', 'Issue'/.test(q));
+  check("the work item types are bounded", /\[System\.WorkItemType\] IN \('[^']+'(, '[^']+')*\)/.test(q), q);
+  /*
+   * This board's items are `3IN1 IT REQUEST`, not `Bug`. A query listing only
+   * the usual defaults matches none of them and still succeeds — it just finds
+   * nothing, which is the quietest way for a board to be empty.
+   */
+  check("...including the board's own type name", q.includes("'3IN1 IT REQUEST'"), q);
   check("the window is bounded", q.includes("[System.CreatedDate] >= '2025-10-09T00:00:00Z'"), "and without milliseconds, which WIQL rejects");
 
   /*
@@ -3954,9 +4904,30 @@ section("the live WIQL is bounded on every axis");
    * an unbracketed OR group lets an item through on the OR branch alone — no
    * project bound, no date bound, no type bound. That is the whole project.
    */
-  check("the OR group is bracketed", /AND \(\[Custom\.PODName\] = 'AMC POD' OR \[Custom\.BFLITSpoc\] IN \(/.test(q), q);
-  check("a single value uses = rather than IN", q.includes("[Custom.PODName] = 'AMC POD'"));
-  check("a list uses IN", /\[Custom\.BFLITSpoc\] IN \('Aravind I', '/.test(q));
+  check("the OR group is bracketed", /AND \(\[Tags\] CONTAINS 'AMC_POD' OR /.test(q), q);
+  check("...and the POD's tag leads it", q.indexOf("[Tags] CONTAINS") < q.indexOf("[POD Name]"));
+  check("a list uses IN", /\[BFL IT Spoc\] IN \('Aravind I', '/.test(q));
+  check("a single value uses = rather than IN", buildSourceWiql({ ...both, all: [{ field: "X", values: ["one"] }] }, SINCE).includes("[X] = 'one'"));
+
+  /*
+   * A field holding several things at once needs CONTAINS, not equality. A real
+   * POD Name reads `AMC, Investment mall, Learning Centre` and Tags read
+   * `AMC_POD; App; Production`; `=` matches neither, and a board filtered that
+   * way looks exactly like a POD with no work.
+   */
+  check("a multi-value field is matched with CONTAINS", q.includes("[POD Name] CONTAINS 'AMC'"), q);
+  check("...and never with equality", !/\[POD Name\] =/.test(q));
+  const twoValues = buildSourceWiql({ ...both, all: [{ field: "T", values: ["a", "b"], op: "contains" }] }, SINCE);
+  check("...with each value its own CONTAINS, ORed", twoValues.includes("([T] CONTAINS 'a' OR [T] CONTAINS 'b')"), twoValues);
+
+  /*
+   * And the names the contract writes are the names on the form. The reference
+   * name a query needs is resolved from the project itself — nobody can read
+   * `Custom.PODName` off a work item, and a wrong guess fails the whole query.
+   */
+  const resolved = buildSourceWiql(source, SINCE, new Map([["Tags", "System.Tags"], ["POD Name", "Custom.PODName"]]));
+  check("a resolved field is used in the query", resolved.includes("[System.Tags] CONTAINS 'AMC_POD'"), resolved);
+  check("...and one with no mapping is left as written", resolved.includes("[BFL IT Spoc]"), "so a reference name still works");
   check("newest first, so truncation keeps the recent end", /ORDER BY \[System\.ChangedDate\] DESC$/.test(q), q);
 
   const q2 = buildSourceWiql(both, SINCE);
@@ -3981,18 +4952,38 @@ section("the live WIQL is bounded on every axis");
       return err instanceof SourceConfigError;
     }
   };
-  check("an empty value list refuses to build a query", threw({ all: [{ field: "Custom.ModuleName", values: [] }] }));
+
+  /*
+   * **An empty array removes its filter.** That is how one is taken off the
+   * board — the arrays in `filter-values.ts` are named and separate precisely
+   * so that emptying one is the whole edit. It is safe because the clause is
+   * dropped, not widened: the others still bound the query.
+   */
+  const oneEmptied = buildSourceWiql(
+    { ...both, all: [{ field: "Custom.ModuleName", values: [] }, { field: "Custom.DeliverySPOC", values: ["a@b.c"] }] },
+    SINCE,
+  );
+  check("an emptied array drops its filter", !oneEmptied.includes("Custom.ModuleName"), oneEmptied);
+  check("...and the others still bound the query", oneEmptied.includes("[Custom.DeliverySPOC] = 'a@b.c'"));
+  check("...as does the project and the window", oneEmptied.includes("[System.TeamProject]") && oneEmptied.includes("System.CreatedDate"));
+  check("whitespace counts as empty", !buildSourceWiql({ ...both, all: [{ field: "M", values: ["  ", ""] }, { field: "D", values: ["x"] }] }, SINCE).includes("[M]"));
+
+  /*
+   * But emptying **every** array is refused. A source with filters that all
+   * resolve to nothing would ask for the entire project, which is the failure
+   * the arrays exist to prevent.
+   */
+  check("emptying every array is refused", threw({ all: [{ field: "Custom.ModuleName", values: [] }, { field: "Custom.DeliverySPOC", values: [] }] }));
   check("...and says which file to edit", (() => {
     try {
-      buildSourceWiql({ ...both, all: [{ field: "Custom.ModuleName", values: [] }] }, SINCE);
+      buildSourceWiql({ ...both, all: [{ field: "M", values: [] }] }, SINCE);
       return false;
     } catch (err) {
-      return err.message.includes("azure-sources.ts") && err.message.includes("Custom.ModuleName");
+      return err.message.includes("azure-sources.ts") && /whole project/.test(err.message);
     }
   })());
   check("a blank field name refuses too", threw({ all: [{ field: "  ", values: ["AMC"] }] }));
   check("no work item types refuses too", threw({ workItemTypes: [] }));
-  check("values that are only whitespace count as empty", threw({ all: [{ field: "Custom.ModuleName", values: ["  ", ""] }] }));
 
   /* An area path is optional, and narrows rather than replaces. */
   const scoped = buildSourceWiql({ ...both, areaPath: "Proj\\AMC" }, SINCE);
@@ -4018,7 +5009,7 @@ section("a live POD, end to end, against a stubbed Azure");
     name: "AMC POD",
     description: "",
     members: [],
-    azure: { orgUrl: "", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
+    azure: { orgUrl: "https://dev.azure.com/BFLDevOpsOrg", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
     fieldMap: { severity: "Microsoft.VSTS.Common.Severity", environment: "Custom.Environment", status: "System.State" },
     valueMap: { severity: {}, environment: {}, status: {} },
     ageingThresholdDays: 7,
@@ -4029,26 +5020,26 @@ section("a live POD, end to end, against a stubbed Azure");
   const ago = (days) => new Date(NOW - days * 86_400_000).toISOString();
 
   /**
-   * One Azure work item, as `workitemsbatch` returns it — **carrying the filter
-   * fields**, because the fetch checks them again against the contract. An
-   * identity arrives as an object rather than a string, which is the shape that
-   * matters here.
+   * One Azure work item, as `workitemsbatch` returns it — shaped like the real
+   * boards: reference names for keys, an identity as an object, a POD Name
+   * holding several PODs at once, and the environment only in the tags and the
+   * title because neither board has a field for it.
    */
   const wi = (id, over = {}) => ({
     id,
     fields: {
       "System.WorkItemType": "Bug",
-      "System.Title": `Item ${id}`,
+      "System.Title": "Production | PDP | Web & Mweb | Investment Mall | OTP screen is zoomed",
       "System.State": "Active",
+      "System.Tags": "AMC_POD; App; Investment Mall; Production",
       "System.CreatedDate": ago(10),
       "System.ChangedDate": ago(1),
-      "Microsoft.VSTS.Common.Severity": "1-Critical",
-      "Custom.BugEnvironment": "BIZ UAT",
-      "Custom.BugStatus": "Open",
-      "Custom.PODName": "AMC POD",
+      "Microsoft.VSTS.Common.Severity": "Minor",
+      "Custom.PODName": "AMC, Investment mall, Learning Centre",
       "Custom.BFLITSpoc": { displayName: "Aravind I", uniqueName: "aravind.i@bajajfinserv.in" },
       "Custom.DeliverySPOC": { displayName: "Aravind I", uniqueName: "Aravind.i@bajajfinserv.in" },
       "Custom.ModuleName": "AMC",
+      "Custom.BugStatus": "Open",
       ...over,
     },
     _links: { html: { href: `https://example.invalid/${id}` } },
@@ -4058,20 +5049,21 @@ section("a live POD, end to end, against a stubbed Azure");
   const PLANNED = {
     "3in1 IT Requests": [
       wi(101),
-      wi(102, { "Custom.BugEnvironment": "PTPaaS", "Custom.BugStatus": "CR" }),
+      wi(102, { "System.Tags": "AMC_POD; PTPaaS", "Custom.BugStatus": "CR", "System.State": "CR" }),
       /*
        * Kept, in its own section. The board's status list does not name "For PO
        * Validation", and `dropOutside` is off — a value nobody expected showing
        * up under its own heading is a question somebody can answer, where a
        * missing item is invisible.
        */
-      wi(103, { "Custom.BugStatus": "For PO Validation" }),
+      wi(103, { "System.State": "For PO Validation", "Custom.BugStatus": "For PO Validation" }),
       // Kept: raised outside the window but still open, which is the oldest and
       // most important row an ageing board has.
       wi(104, { "System.CreatedDate": ago(400) }),
       // Dropped: finished history. Raised and closed before the window.
       wi(105, {
         "System.CreatedDate": ago(500),
+        "System.State": "Closed",
         "Custom.BugStatus": "Closed",
         "Microsoft.VSTS.Common.ClosedDate": ago(450),
       }),
@@ -4081,20 +5073,43 @@ section("a live POD, end to end, against a stubbed Azure");
        * generously and this is the item that proves the second check is doing
        * something — a stub can return anything, and so can a real org.
        */
-      wi(106, { "Custom.PODName": "TM POD", "Custom.BFLITSpoc": { displayName: "Someone Else", uniqueName: "someone@bajajfinserv.in" } }),
+      wi(106, {
+        "System.Tags": "TM_POD; App",
+        "Custom.PODName": "TM, Trading mall",
+        "Custom.BFLITSpoc": { displayName: "Someone Else", uniqueName: "someone@bajajfinserv.in" },
+        "Custom.ModuleName": "Banners",
+        "Custom.DeliverySPOC": { displayName: "Aditya D", uniqueName: "aditya.d@bajajfinserv.in" },
+      }),
     ],
     "3in1_Agile_Projects": [
-      wi(201, { "Custom.BugEnvironment": "DR", "Microsoft.VSTS.Common.Severity": "3-Minor" }),
+      wi(201, { "System.Title": "Biz UAT - Investment. CLP - Next js", "System.Tags": "AMC_POD; Banners",
+                "Microsoft.VSTS.Common.Severity": "2 – Major", "Custom.BugStatus": "Resolved" }),
       // The same work item id reaching both projects must land once, not twice.
       wi(101),
     ],
   };
 
-  const seen = { wiql: [], batch: 0 };
+  const seen = { wiql: [], batch: 0, fields: 0 };
   const real = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init?.body ?? "{}");
     const ok = (json) => new Response(JSON.stringify(json), { status: 200, headers: { "Content-Type": "application/json" } });
+
+    if (String(url).includes("/_apis/wit/fields")) {
+      seen.fields++;
+      /* What the two boards really call these, from their work item forms. */
+      return ok({ value: [
+        { name: "Tags", referenceName: "System.Tags" },
+        { name: "POD Name", referenceName: "Custom.PODName" },
+        { name: "POD Number", referenceName: "Custom.PODNumber" },
+        { name: "BFL IT Spoc", referenceName: "Custom.BFLITSpoc" },
+        { name: "Module Name", referenceName: "Custom.ModuleName" },
+        { name: "Delivery SPOC", referenceName: "Custom.DeliverySPOC" },
+        { name: "Bug Status", referenceName: "Custom.BugStatus" },
+        { name: "Severity", referenceName: "Microsoft.VSTS.Common.Severity" },
+        { name: "State", referenceName: "System.State" },
+      ] });
+    }
 
     if (String(url).includes("/_apis/wit/wiql")) {
       seen.wiql.push({ url: String(url), query: body.query });
@@ -4114,6 +5129,7 @@ section("a live POD, end to end, against a stubbed Azure");
 
   try {
     forgetLive();
+    forgetFields();
     const items = await liveItems(team, NOW);
 
     check("both projects were queried", seen.wiql.length === 2, `${seen.wiql.length} WIQL calls`);
@@ -4139,10 +5155,33 @@ section("a live POD, end to end, against a stubbed Azure");
     check("...and an unlisted one still maps to its real section", byId.get("103").status === "For QA Validation", byId.get("103").status);
     check("a long-open item reads as open", byId.get("104").isActive === true);
     check("environment came from the source's own field", byId.get("102").environment === "PTPaaS", byId.get("102").environment);
-    check("the board's severity spelling resolves", byId.get("101").severity === "Critical", byId.get("101").severity);
-    check("...and the second source's too", byId.get("201").severity === "Minor", byId.get("201").severity);
-    check("a spaced environment resolves", byId.get("101").environment === "BIZ-UAT", byId.get("101").environment);
-    check("DR resolves without a value-map key", byId.get("201").environment === "DR", byId.get("201").environment);
+    /* `Minor` plain on one board, `2 – Major` with an en dash on the other. */
+    check("a plain severity word resolves", byId.get("101").severity === "Minor", byId.get("101").severity);
+    check("...and a numbered one with an en dash", byId.get("201").severity === "Major", byId.get("201").severity);
+
+    /*
+     * Neither board has an environment field. One carries it in the tags, the
+     * other only in the first segment of the title — and both have to work, or
+     * every item on one of them lands in Unknown.
+     */
+    check("the environment comes from a tag", byId.get("101").environment === "Production", byId.get("101").environment);
+    check("...and from the title when there is no tag for it", byId.get("201").environment === "BIZ-UAT", byId.get("201").environment);
+    check("a tagged PTPaaS resolves", byId.get("102").environment === "PTPaaS", byId.get("102").environment);
+
+    /*
+     * And the title is read **strictly**. A loose match turns every ordinary
+     * bug report into an environment: "Fix regression in login" is not
+     * Regression, and a title mentioning production is not Production.
+     */
+    const titled = (t) => fromAzure({ id: 9, fields: {
+      "System.WorkItemType": "Bug", "System.Title": t, "System.State": "Active",
+      "System.CreatedDate": ago(5), "System.Tags": "AMC_POD",
+    } }, { ...team, fieldMap: { severity: "S", environment: "E", status: "System.State" } }).environment;
+    check("a title that IS an environment is read", titled("IT UAT - Portfolio page") === "IT-UAT", titled("IT UAT - Portfolio page"));
+    for (const t of ["Fix regression in login", "Regression seen after release",
+                     "Production data missing on page", "CUG-like behaviour in staging"]) {
+      check(`"${t}" is not read as an environment`, titled(t) === "Unknown", titled(t));
+    }
     check("the item id is namespaced by POD", byId.get("101").id === "amc-pod:101", byId.get("101").id);
     check("an open item is active", byId.get("101").isActive === true);
     check("the link is the one Azure gave", byId.get("101").url === "https://example.invalid/101");
@@ -4209,15 +5248,33 @@ section("a fetched item is checked against the filter that asked for it");
 
   /* ------------------------------------------- the source's own clause shape */
 
-  const anySource = AZURE_SOURCES.find((s) => s.any?.length);
-  const allSource = AZURE_SOURCES.find((s) => s.all?.length);
+  const anySource = sourcesFor({ id: "amc-pod", name: "AMC POD" })[0];
+  /* Built here: the shipped contract matches on OR, and the builder still has
+     to get AND right for whoever tightens it. */
+  const allSource = {
+    ...anySource,
+    any: undefined,
+    all: [
+      { field: "Custom.DeliverySPOC", values: ["Aravind.i@bajajfinserv.in"] },
+      { field: "Custom.ModuleName", values: ["AMC"] },
+    ],
+  };
 
-  const podField = anySource.any[0].field;
-  const spocField = anySource.any[1].field;
-  check("an OR source is satisfied by its first branch", satisfiesSource({ [podField]: "AMC POD" }, anySource));
-  check("...or by its second", satisfiesSource({ [spocField]: "Aravind I" }, anySource));
-  check("...and not by neither", !satisfiesSource({ [podField]: "TM POD" }, anySource));
-  check("...nor by an item carrying no filter field at all", !satisfiesSource({ "System.Title": "x" }, anySource));
+  /*
+   * Verified against the **resolved** names, because that is what the payload
+   * is keyed by. Looking a clause up under its form label found nothing, so
+   * every item failed verification and the board came back empty.
+   */
+  const RESOLVED = new Map([["Tags", "System.Tags"], ["POD Name", "Custom.PODName"],
+                            ["BFL IT Spoc", "Custom.BFLITSpoc"]]);
+  const satSource = (fields) => satisfiesSource(fields, anySource, RESOLVED);
+  check("an OR source is satisfied by its tag", satSource({ "System.Tags": "AMC_POD; App; Production" }));
+  check("...or by the POD field it shares with other PODs", satSource({ "Custom.PODName": "AMC, Investment mall, Learning Centre" }));
+  check("...or by the SPOC", satSource({ "Custom.BFLITSpoc": { displayName: "Aravind I" } }));
+  check("...and not by none of them", !satSource({ "System.Tags": "TM_POD", "Custom.PODName": "TM, Trading mall" }));
+  check("...nor by an item carrying no filter field at all", !satSource({ "System.Title": "x" }));
+  /* A near miss must not pass: AMC is a whole word in that list, AMCX is not. */
+  check("a longer word that merely starts the same is refused", !satSource({ "Custom.PODName": "AMCX, something" }));
 
   const spoc = allSource.all[0];
   const module = allSource.all[1];
@@ -4228,7 +5285,159 @@ section("a fetched item is checked against the filter that asked for it");
   /* A source that filters on nothing is bounded by its project and types only. */
   check("a source with no clauses accepts anything", satisfiesSource({}, { ...allSource, all: undefined, any: undefined }));
 
+  /*
+   * An emptied array is a removed filter **here too**.
+   *
+   * The query leaves that clause out, so every item Azure returns is missing
+   * the field it named — and a verifier that still demanded it would throw all
+   * of them away on arrival. The board would come back empty with the query
+   * looking perfectly correct, which is the hardest version of this to find.
+   */
+  const emptied = {
+    ...allSource,
+    all: [{ field: "Custom.ModuleName", values: [] }, { field: "Custom.DeliverySPOC", values: ["a@b.c"] }],
+  };
+  check("an emptied clause is not enforced on arrival",
+    satisfiesSource({ "Custom.DeliverySPOC": "a@b.c" }, emptied),
+    "the item matched the query and was then thrown away");
+  check("...while the clause beside it still is",
+    !satisfiesSource({ "Custom.ModuleName": "AMC" }, emptied));
+  const emptiedAny = { ...allSource, all: undefined, any: [{ field: "Tags", values: [] }, { field: "M", values: ["x"] }] };
+  check("...and the same inside an OR group", satisfiesSource({ M: "x" }, emptiedAny));
+  check("an OR group emptied to nothing stops gating", satisfiesSource({}, { ...allSource, all: undefined, any: [{ field: "Tags", values: [] }] }),
+    "no filter left means the project and type bounds are the filter");
+
   check("verification is on", LIVE.verifyFilters === true, "an unverified item would reach the board");
+}
+
+section("every board a POD has is read, and nothing is dropped quietly");
+{
+  /*
+   * The question this answers: can the dashboard show one board's work and
+   * silently miss the other's? Every way that could happen is checked here,
+   * because each one looks identical from the outside — a board that is simply
+   * quieter than you expected.
+   */
+  const team = {
+    id: "amc-pod", name: "AMC POD", description: "", members: [],
+    azure: { orgUrl: "https://dev.azure.com/BFLDevOpsOrg", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
+    fieldMap: { severity: "Microsoft.VSTS.Common.Severity", environment: "Custom.Environment", status: "System.State" },
+    valueMap: { severity: {}, environment: {}, status: {} },
+    ageingThresholdDays: 7, createdAt: "2026-01-01T00:00:00Z",
+  };
+  const NOW = Date.UTC(2026, 9, 16);
+  const ago = (d) => new Date(NOW - d * 86_400_000).toISOString();
+
+  /* One source per board, and the contract has both. */
+  const mine = sourcesFor(team);
+  check("the POD reads every board in the contract", mine.length === AZURE_SOURCES.length, `${mine.length} of ${AZURE_SOURCES.length}`);
+  check("...and they are different projects", new Set(mine.map((s) => s.project)).size === mine.length,
+    mine.map((s) => s.project).join(", "));
+  check("...the two the boards actually are",
+    mine.map((s) => s.project).sort().join(" | ") === ["3in1 IT Requests", "3in1_Agile_Projects"].sort().join(" | "),
+    mine.map((s) => s.project).join(", "));
+
+  const FIELDS = { value: [
+    { name: "Tags", referenceName: "System.Tags" },
+    { name: "POD Name", referenceName: "Custom.PODName" },
+    { name: "BFL IT Spoc", referenceName: "Custom.BFLITSpoc" },
+    { name: "Delivery SPOC", referenceName: "Custom.DeliverySPOC" },
+    { name: "Bug Status", referenceName: "Custom.BugStatus" },
+    { name: "Severity", referenceName: "Microsoft.VSTS.Common.Severity" },
+  ] };
+  const wi = (id) => ({
+    id,
+    fields: {
+      "System.WorkItemType": "Bug", "System.Title": "Production | a thing", "System.State": "Active",
+      "System.Tags": "AMC_POD", "System.CreatedDate": ago(5), "System.ChangedDate": ago(1),
+      "Microsoft.VSTS.Common.Severity": "Minor", "Custom.BugStatus": "Open",
+    },
+    _links: { html: { href: `https://x.invalid/${id}` } },
+  });
+
+  /** A stub that gives each project its own ids, so their work is told apart. */
+  const stub = (perProject, { failProject = null, idsFor = null } = {}) => {
+    const seen = { projects: [], batched: [] };
+    const real = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init?.body ?? "{}");
+      const ok = (j) => new Response(JSON.stringify(j), { status: 200, headers: { "Content-Type": "application/json" } });
+      if (String(url).includes("/_apis/wit/fields")) return ok(FIELDS);
+      if (String(url).includes("/wiql")) {
+        const project = /\[System\.TeamProject\] = '([^']+)'/.exec(body.query)?.[1];
+        seen.projects.push(project);
+        if (project === failProject) throw new Error(`TF51005: ${project} rejected the query`);
+        const ids = idsFor ? idsFor(project) : (perProject[project] ?? []);
+        return ok({ workItems: ids.map((id) => ({ id })) });
+      }
+      if (String(url).includes("/workitemsbatch")) {
+        seen.batched.push(...body.ids);
+        return ok({ value: body.ids.map(wi) });
+      }
+      throw new Error(`the stub was asked for ${url}`);
+    };
+    return { seen, restore: () => { globalThis.fetch = real; } };
+  };
+
+  /* ---- both boards contribute, and both reach the board ---------------- */
+  {
+    const { seen, restore } = stub({ "3in1 IT Requests": [11, 12], "3in1_Agile_Projects": [21, 22, 23] });
+    try {
+      forgetLive(); forgetFields();
+      const items = await liveItems(team, NOW);
+      const ids = items.map((i) => Number(i.workItemId)).sort((a, b) => a - b);
+      check("both projects were asked", new Set(seen.projects).size === 2, seen.projects.join(", "));
+      check("every id from the first board arrived", [11, 12].every((id) => ids.includes(id)), ids.join(","));
+      check("every id from the second board arrived", [21, 22, 23].every((id) => ids.includes(id)), ids.join(","));
+      check("and nothing else", ids.length === 5, ids.join(","));
+      /* Each id is hydrated exactly once — a second fetch would be a second cost
+         and a chance to merge the same work twice. */
+      check("each work item is fetched once", new Set(seen.batched).size === seen.batched.length, seen.batched.join(","));
+    } finally { restore(); forgetLive(); forgetFields(); }
+  }
+
+  /* ---- one empty board must not look like a failure -------------------- */
+  {
+    const { seen, restore } = stub({ "3in1 IT Requests": [], "3in1_Agile_Projects": [31] });
+    try {
+      forgetLive(); forgetFields();
+      const items = await liveItems(team, NOW);
+      check("a board with nothing in it is still asked", seen.projects.length === 2, seen.projects.join(", "));
+      check("...and the other board's work still arrives", items.map((i) => i.workItemId).join() === "31", items.map((i) => i.workItemId).join());
+    } finally { restore(); forgetLive(); forgetFields(); }
+  }
+
+  /* ---- a board that fails must not leave half a dashboard -------------- */
+  {
+    const { restore } = stub({ "3in1 IT Requests": [41], "3in1_Agile_Projects": [51] }, { failProject: "3in1_Agile_Projects" });
+    try {
+      forgetLive(); forgetFields();
+      const err = await liveItems(team, NOW).then(() => null, (e) => e);
+      /*
+       * Half a board is the worst outcome: every number looks plausible and
+       * every one is wrong. The POD fails loudly instead, naming the project.
+       */
+      check("one board failing fails the POD", err !== null, "it returned the other board's work as if it were everything");
+      check("...naming the board that failed", /3in1_Agile_Projects/.test(err?.message ?? ""), err?.message);
+    } finally { restore(); forgetLive(); forgetFields(); }
+  }
+
+  /* ---- more work than one query can carry is refused, not trimmed ------ */
+  {
+    const tooMany = Array.from({ length: LIVE.maxIds + 1 }, (_, i) => i + 1);
+    const { restore } = stub({}, { idsFor: (p) => (p === "3in1 IT Requests" ? tooMany : []) });
+    try {
+      forgetLive(); forgetFields();
+      const err = await liveItems(team, NOW).then(() => null, (e) => e);
+      check("a board past the query ceiling is refused", err !== null, "it quietly showed part of the board");
+      check("...saying which board and how many", /3in1 IT Requests/.test(err?.message ?? "") && /\d{4,}/.test(err?.message ?? ""), err?.message);
+      check("...and how to narrow it", /contracts\//.test(err?.message ?? ""), err?.message);
+    } finally { restore(); forgetLive(); forgetFields(); }
+  }
+
+  /* The ceiling itself must not be set below what Azure will answer, or the
+     board refuses work Azure was perfectly willing to return. */
+  check("the ceiling matches what one WIQL query can return", LIVE.maxIds >= 20_000, String(LIVE.maxIds));
 }
 
 section("a live POD cannot be written to the store, by anybody");
@@ -4246,7 +5455,7 @@ section("a live POD cannot be written to the store, by anybody");
 
   const team = {
     id: "amc-pod", name: "AMC POD", description: "", members: [],
-    azure: { orgUrl: "", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
+    azure: { orgUrl: "https://dev.azure.com/BFLDevOpsOrg", project: "", pat: "test-pat", areaPath: "", workItemTypes: [] },
     fieldMap: { severity: "Microsoft.VSTS.Common.Severity", environment: "Custom.Environment", status: "System.State" },
     valueMap: { severity: {}, environment: {}, status: {} },
     ageingThresholdDays: 7, createdAt: "2026-01-01T00:00:00Z",
@@ -4275,6 +5484,15 @@ section("a live POD cannot be written to the store, by anybody");
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init?.body ?? "{}");
     const ok = (json) => new Response(JSON.stringify(json), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (String(url).includes("/_apis/wit/fields")) return ok({ value: [
+      { name: "Tags", referenceName: "System.Tags" },
+      { name: "POD Name", referenceName: "Custom.PODName" },
+      { name: "BFL IT Spoc", referenceName: "Custom.BFLITSpoc" },
+      { name: "Module Name", referenceName: "Custom.ModuleName" },
+      { name: "Delivery SPOC", referenceName: "Custom.DeliverySPOC" },
+      { name: "Bug Status", referenceName: "Custom.BugStatus" },
+      { name: "Severity", referenceName: "Microsoft.VSTS.Common.Severity" },
+    ] });
     if (String(url).includes("/wiql")) return ok({ workItems: [{ id: 700 }, { id: 701 }] });
     if (String(url).includes("/workitemsbatch")) return ok({ value: body.ids.map((id) => wi(id)) });
     throw new Error(String(url));
@@ -4282,6 +5500,7 @@ section("a live POD cannot be written to the store, by anybody");
 
   try {
     forgetLive();
+    forgetFields();
     const filters = { teamId: "amc-pod", thresholdDays: 7, thresholdByTeam: { "amc-pod": 7 } };
     const found = await store.items.find(filters, NOW);
 
@@ -4402,10 +5621,12 @@ section("a live board borrows the stored board's logic, never a copy of it");
   check("the scope comes from the caller's visible PODs", /thresholdByTeam/.test(live), "never a fresh unscoped team list");
 
   const fetch = readFileSync(new URL("../src/lib/live/fetch.ts", import.meta.url), "utf8");
+  const cache = readFileSync(new URL("../src/lib/live/cache.ts", import.meta.url), "utf8");
   check("a live fetch writes nothing", !/bulkUpsert|saveSyncState|writeFile/.test(fetch));
-  check("concurrent readers share one fetch", /inflight/.test(fetch), "or a dashboard load fires three year-long queries");
-  check("the cache is keyed per POD", /entries\.set\(team\.id/.test(fetch));
-  check("the normaliser sees each source's own project", /orgUrl: source\.orgUrl/.test(fetch));
+  check("neither does the cache", !/bulkUpsert|saveSyncState|writeFile|readFile/.test(cache));
+  check("concurrent readers share one fetch", /inflight/.test(cache), "or a dashboard load fires three year-long queries");
+  check("the cache is keyed per POD", /cached\(team\.id/.test(fetch) && /entries\.set\(key/.test(cache));
+  check("the normaliser sees each source's own project", /project: source\.project/.test(fetch));
 
   const syncSrc = readFileSync(new URL("../src/lib/sync.ts", import.meta.url), "utf8");
   check("sync refuses to store a live POD's items", /if \(readsLive\(team\)\)/.test(syncSrc));
@@ -4413,6 +5634,22 @@ section("a live board borrows the stored board's logic, never a copy of it");
 
   const upload = readFileSync(new URL("../src/app/api/upload/route.ts", import.meta.url), "utf8");
   check("an upload into a live POD is refused, not dropped", /readsLive\(team\)/.test(upload));
+
+  /*
+   * The probe reports on what the board reads, so it must ask the same way.
+   * It built its own query once, without resolving the form's labels into
+   * reference names — against a real org that is rejected outright, and the
+   * one tool for checking the filters would have been the one thing that
+   * could not run.
+   */
+  const probe = readFileSync(new URL("../scripts/azure-probe.mjs", import.meta.url), "utf8");
+  check("the probe uses the same plan as the board", /planSource\(team, source\)/.test(probe));
+  check("...rather than building a query of its own", !/buildSourceWiql\(/.test(probe));
+  check("...and verifies with the resolved field names", /satisfiesSource\(wi\.fields \?\? \{\}, source, fields\)/.test(probe));
+  check("...and maps through the same view", /viewFor\(team, source, c, fields\)/.test(probe));
+  check("the plan resolves labels before building the query",
+    fetch.indexOf("resolveFields(") < fetch.indexOf("buildSourceWiql(source, since, fields)"),
+    "a query built from form labels is rejected by Azure");
 }
 
 section("every word the board can show has a colour of its own");
@@ -5253,11 +6490,19 @@ section("aged means what each POD says it means");
    */
   const now = Date.UTC(2026, 0, 31);
   const DAY = 86_400_000;
-  const item = (teamId, ageDays) => ({
+  /*
+   * On `Unknown`, deliberately. Every named severity now carries its own
+   * turnaround — a Critical is aged after one working day whatever a POD says —
+   * so the only severity a POD's *blanket* threshold still governs is the one
+   * with no turnaround of its own. That is what this block is about.
+   *
+   * Ages are given in working days and converted, because the thresholds are.
+   */
+  const item = (teamId, workDays) => ({
     teamId,
     isActive: true,
-    severity: "Critical",
-    createdDate: new Date(now - ageDays * DAY),
+    severity: "Unknown",
+    createdDate: new Date(businessDaysAgo(now, workDays)),
     workItemId: "1",
     title: "",
     assignee: "",
@@ -5270,6 +6515,18 @@ section("aged means what each POD says it means");
   check("...and the same item on a 30-day POD is not", !matchesFilters(item("slow", 10), unscoped, now));
   check("...until it passes that POD's own line", matchesFilters(item("slow", 40), unscoped, now));
   check("a fresh item is aged nowhere", !matchesFilters(item("fast", 3), unscoped, now));
+
+  /*
+   * And the turnaround is what a named severity is judged by, on either POD.
+   * A Critical on the 30-day POD is aged after one working day.
+   */
+  const crit = (teamId, workDays) => ({ ...item(teamId, workDays), severity: "Critical" });
+  check("a Critical ages after one working day", matchesFilters(crit("slow", 1), unscoped, now));
+  check("...and not before", !matchesFilters(crit("slow", 0), unscoped, now));
+  check("a Major ages after six", matchesFilters({ ...crit("slow", 6), severity: "Major" }, unscoped, now));
+  check("...and not at five", !matchesFilters({ ...crit("slow", 5), severity: "Major" }, unscoped, now));
+  check("a Minor ages after twelve", matchesFilters({ ...crit("slow", 12), severity: "Minor" }, unscoped, now));
+  check("...and not at eleven", !matchesFilters({ ...crit("slow", 11), severity: "Minor" }, unscoped, now));
 
   /* A POD the map does not mention falls back rather than vanishing. */
   check("an unknown POD uses the default", matchesFilters(item("mystery", 10), unscoped, now));
@@ -5285,22 +6542,24 @@ section("aged means what each POD says it means");
    * The aggregation has to agree with the filter, or the tile and the drawer it
    * opens disagree — which is the whole thing this dashboard is for.
    */
-  const board = aggregateDashboard({
-    items: [item("fast", 10), item("slow", 10), item("slow", 40), item("fast", 3)],
-    now,
-    thresholdDays: 7,
-    thresholdByTeam: byTeam,
-  });
+  /*
+   * Criticals on both PODs, judged by the one-working-day turnaround rather
+   * than by either POD's blanket number — `slow` allows 30 days and that must
+   * not reach a Critical.
+   */
+  const crits = [crit("fast", 2), crit("fast", 0), crit("slow", 3), crit("slow", 0)];
+  const board = aggregateDashboard({ items: crits, now, thresholdDays: 7, thresholdByTeam: byTeam });
   check("the tile counts the same two", board.totals.criticalAged === 2, `${board.totals.criticalAged}`);
 
-  const matched = [item("fast", 10), item("slow", 10), item("slow", 40), item("fast", 3)].filter((i) =>
-    matchesFilters(i, unscoped, now),
-  );
+  const matched = crits.filter((i) => matchesFilters(i, unscoped, now));
   check("...and the drill-down returns exactly those", matched.length === board.totals.criticalAged, `${matched.length}`);
 
-  /* Per-POD rows use their own line too. */
+  /* Per-POD rows use the same rule, so the parts sum to the whole. */
   const slow = board.teams.find((t) => t.teamId === "slow");
-  check("a POD's own row uses its own threshold", slow?.criticalAged === 1, `${slow?.criticalAged}`);
+  check("a POD's own row counts its own aged criticals", slow?.criticalAged === 1, `${slow?.criticalAged}`);
+  check("...and the rows sum to the tile",
+    board.teams.reduce((n, t) => n + t.criticalAged, 0) === board.totals.criticalAged,
+    `${board.teams.map((t) => `${t.teamId}:${t.criticalAged}`).join(" ")}`);
 
   /* And the request layer has to supply the map at all. */
   const api = readFileSync(new URL("../src/lib/api.ts", import.meta.url), "utf8");
@@ -5324,11 +6583,12 @@ section("aged means what each POD says it means");
    */
   const now = Date.UTC(2026, 0, 31);
   const DAY = 86_400_000;
-  const it = (teamId, severity, ageDays) => ({
+  /* Ages in **working days**, because that is the unit every threshold is in. */
+  const it = (teamId, severity, workDays) => ({
     teamId,
     severity,
     isActive: true,
-    createdDate: new Date(now - ageDays * DAY),
+    createdDate: new Date(businessDaysAgo(now, workDays)),
     workItemId: "1",
     title: "",
     assignee: "",
@@ -5342,14 +6602,38 @@ section("aged means what each POD says it means");
     severityThresholds: { fast: { Critical: 2 } },
   };
 
+  // -- the turnarounds ----------------------------------------------------
+  /*
+   * The agreed policy, in working days: a Critical has one, a Major six, a
+   * Minor twelve. Read from `AGEING.bySeverity` rather than written out again
+   * here — a check holding its own copy of the numbers would pass while the
+   * board used different ones.
+   */
+  check("a Critical is held to one working day", AGEING.bySeverity.Critical === 1, String(AGEING.bySeverity.Critical));
+  check("a Major to six", AGEING.bySeverity.Major === 6, String(AGEING.bySeverity.Major));
+  check("a Minor to twelve", AGEING.bySeverity.Minor === 12, String(AGEING.bySeverity.Minor));
+  for (const [sev, days] of Object.entries(AGEING.bySeverity)) {
+    check(`${sev} uses its turnaround with no POD rules at all`, thresholdFor({}, "any", sev) === days);
+  }
+
   // -- precedence, at the source ------------------------------------------
-  check("a tuned severity beats the POD's threshold", thresholdFor(rules, "fast", "Critical") === 2);
-  check("an untuned severity uses the POD's", thresholdFor(rules, "fast", "Minor") === 7);
-  check("an untuned POD uses its own", thresholdFor(rules, "slow", "Critical") === 30);
-  check("an unknown POD falls back to the board", thresholdFor(rules, "nobody", "Critical") === 7);
+  check("a tuned severity beats everything", thresholdFor(rules, "fast", "Critical") === 2);
+  /*
+   * And the turnaround beats the POD's blanket threshold. `slow` allows 30 days
+   * across the board; that must not quietly give a Critical a month, because
+   * the turnaround is the policy and the blanket number is a default for
+   * whatever has none.
+   */
+  check("a POD's blanket threshold does not loosen a Critical", thresholdFor(rules, "slow", "Critical") === 1,
+    String(thresholdFor(rules, "slow", "Critical")));
+  check("...nor a Major", thresholdFor(rules, "slow", "Major") === 6);
+  check("...nor tighten a Minor", thresholdFor(rules, "slow", "Minor") === 12);
+  /* A severity with no turnaround — Unknown — still falls through as before. */
+  check("a severity with no turnaround uses the POD's", thresholdFor(rules, "slow", "Unknown") === 30);
+  check("an unknown POD falls back to the board", thresholdFor(rules, "nobody", "Unknown") === 7);
   check(
     "a severity nobody tuned falls back, not to zero",
-    thresholdFor({ thresholdDays: 7, severityThresholds: {} }, "fast", "Critical") === 7,
+    thresholdFor({ thresholdDays: 7, severityThresholds: {} }, "fast", "Unknown") === 7,
   );
 
   // -- a stored value that should not be there -----------------------------
@@ -5360,6 +6644,8 @@ section("aged means what each POD says it means");
    * open item aged, which is a silently wrong board rather than an error.
    */
   const junk = { thresholdDays: 7, thresholdByTeam: { fast: 7 }, severityThresholds: { fast: {} } };
+  /* On `Unknown`, which has no turnaround of its own — so a bad stored value
+     is the only thing between the rules and the fallback. */
   for (const [label, bad] of [
     ["a string", "soon"],
     ["a NaN", NaN],
@@ -5369,17 +6655,17 @@ section("aged means what each POD says it means");
     ["null", null],
     ["an object", {}],
   ]) {
-    junk.severityThresholds.fast.Critical = bad;
-    const days = thresholdFor(junk, "fast", "Critical");
+    junk.severityThresholds.fast.Unknown = bad;
+    const days = thresholdFor(junk, "fast", "Unknown");
     check(`${label} threshold falls back instead of poisoning the maths`, days === 7, `${days}`);
   }
-  junk.severityThresholds.fast.Critical = 400;
-  check("an out-of-range stored value is clamped, not used raw", thresholdFor(junk, "fast", "Critical") === AGEING.max);
+  junk.severityThresholds.fast.Unknown = 400;
+  check("an out-of-range stored value is clamped, not used raw", thresholdFor(junk, "fast", "Unknown") === AGEING.max);
   check("a fractional stored value is truncated", thresholdFor({ ...rules, severityThresholds: { fast: { Critical: 2.9 } } }, "fast", "Critical") === 2);
 
   /* And nothing here throws on rubbish it was never meant to see. */
-  check("no rules at all still answers", thresholdFor({}, "fast", "Critical") === AGEING.defaultThresholdDays);
-  check("a null team id still answers", thresholdFor(rules, null, "Critical") === 7);
+  check("no rules at all still answers", thresholdFor({}, "fast", "Unknown") === AGEING.defaultThresholdDays);
+  check("a null team id still answers", thresholdFor(rules, null, "Critical") === AGEING.bySeverity.Critical);
   check("a missing severity still answers", thresholdFor(rules, "fast", undefined) === 7);
   check("a non-array team list is handled", teamThresholds(rules, null).length === 0);
   check("...and so is an empty one in widestThreshold", widestThreshold(rules, [], SEVERITIES) === 7);
@@ -5388,20 +6674,23 @@ section("aged means what each POD says it means");
   // -- the predicate the JSON driver runs ---------------------------------
   const aged = { agedOnly: true, ...rules };
   check("a 3-day critical is aged on a 2-day rule", matchesFilters(it("fast", "Critical", 3), aged, now));
-  check("...but a 3-day minor on the same POD is not", !matchesFilters(it("fast", "Minor", 3), aged, now));
-  check("...and that minor ages on the POD's own line", matchesFilters(it("fast", "Minor", 9), aged, now));
-  check(
-    "a POD that tunes nothing is untouched by another's rule",
-    !matchesFilters(it("slow", "Critical", 3), aged, now),
-  );
+  check("...but a 3-day minor on the same POD is not", !matchesFilters(it("fast", "Minor", 3), aged, now),
+    "a Minor is allowed twelve working days");
+  check("...and that minor ages past twelve", matchesFilters(it("fast", "Minor", 13), aged, now));
+  /*
+   * `slow` tunes nothing, but a Critical is not its blanket 30 days to give —
+   * the turnaround governs, on every POD.
+   */
+  check("a POD that tunes nothing still holds a Critical to one day",
+    matchesFilters(it("slow", "Critical", 3), aged, now));
 
   // -- the tile, and the drawer behind it ---------------------------------
   const sample = [
-    it("fast", "Critical", 3), // aged: past fast's 2-day critical rule
+    it("fast", "Critical", 3), // aged: past fast's own 2-day critical rule
     it("fast", "Critical", 1), // not: inside it
-    it("fast", "Minor", 3), // not: minors wait 7
-    it("slow", "Critical", 3), // not: slow waits 30
-    it("slow", "Critical", 40), // aged
+    it("fast", "Minor", 3), // not: a Minor is allowed twelve
+    it("slow", "Critical", 0), // not: raised today
+    it("slow", "Critical", 3), // aged: the turnaround, not slow's 30 days
   ];
   const board = aggregateDashboard({ items: sample, now, ...rules });
   check("the critical tile counts two", board.totals.criticalAged === 2, `${board.totals.criticalAged}`);
@@ -5416,6 +6705,9 @@ section("aged means what each POD says it means");
   const fastRow = board.teams.find((t) => t.teamId === "fast");
   check("a POD's row carries the severity's own clock", fastRow?.criticalThresholdDays === 2, `${fastRow?.criticalThresholdDays}`);
   check("...and counts by it", fastRow?.criticalAged === 1, `${fastRow?.criticalAged}`);
+  const slowRow = board.teams.find((t) => t.teamId === "slow");
+  check("an untuned POD's row carries the turnaround", slowRow?.criticalThresholdDays === AGEING.bySeverity.Critical,
+    `${slowRow?.criticalThresholdDays}`);
 
   // -- what the tile is allowed to *say* ----------------------------------
   check("the tile names no number when PODs disagree", board.criticalThresholdDays === null);
@@ -5429,8 +6721,18 @@ section("aged means what each POD says it means");
   check("...and names one when only one POD has items", agreed.criticalThresholdDays === 2, `${agreed.criticalThresholdDays}`);
 
   const plain = aggregateDashboard({ items: [it("slow", "Critical", 40)], now, thresholdDays: 7, thresholdByTeam: { slow: 30 } });
-  check("an untuned board says so", plain.severityTuned === false);
-  check("...and names its POD's number", plain.criticalThresholdDays === 30, `${plain.criticalThresholdDays}`);
+  /*
+   * Every board is severity-tuned now: a Critical gets one working day and a
+   * Minor twelve wherever they sit. Saying otherwise made the ageing panel
+   * print one number for a board where no severity used it.
+   */
+  check("a board is severity-tuned even when no admin touched it", plain.severityTuned === true);
+  check("...so the copy describes the rule rather than naming a number",
+    /allowed for its severity/.test(agedPhrase(plain)), agedPhrase(plain));
+  /* The turnaround, not the POD's blanket 30 — that is the number a Critical
+     is actually judged by, so it is the number the tile may print. */
+  check("...and names the turnaround a Critical is held to",
+    plain.criticalThresholdDays === AGEING.bySeverity.Critical, `${plain.criticalThresholdDays}`);
 
   /*
    * A POD with no items must not make the number ambiguous — otherwise adding
@@ -5481,10 +6783,21 @@ section("aged means what each POD says it means");
    */
   const catchAll = (agedClause.$or ?? []).find((b) => b.teamId === "fast" && b.severity?.$nin);
   check("a tuned POD's catch-all excludes what it tuned", catchAll?.severity?.$nin?.includes("Critical") === true);
-  check(
-    "...and an untuned POD needs no exclusion",
-    (agedClause.$or ?? []).some((b) => b.teamId === "slow" && b.severity === undefined),
-  );
+  /*
+   * Every POD now carries severity branches, because every named severity has
+   * a turnaround — so every POD has a catch-all with a `$nin` too. Leaving the
+   * turnarounds out of the Mongo clause made it disagree with `thresholdFor`:
+   * the tile counted a Critical aged after one working day and the drawer
+   * after seven.
+   */
+  const slowCatchAll = (agedClause.$or ?? []).find((b) => b.teamId === "slow" && b.severity?.$nin);
+  check("...and an untuned POD excludes the turnarounds too",
+    Object.keys(AGEING.bySeverity).every((sev) => slowCatchAll?.severity?.$nin?.includes(sev)),
+    JSON.stringify(slowCatchAll?.severity?.$nin));
+  check("...with a branch per severity that has one",
+    Object.keys(AGEING.bySeverity).every((sev) =>
+      (agedClause.$or ?? []).some((b) => b.teamId === "slow" && b.severity === sev)),
+    "a severity with no branch is judged by the POD's blanket number");
 
   /* One POD selected: the picker's POD is the only one asked about. */
   const scopedStage = buildMatch({ agedOnly: true, teamId: "fast", ...rules }, now);
@@ -5564,8 +6877,14 @@ section("aged means what each POD says it means");
   const monthlyBoard = aggregateDashboard({ items: [it("slow", "Critical", 3)], now, ...monthly });
   check("the board reports the widest rule in play", monthlyBoard.thresholdDays === 30, `${monthlyBoard.thresholdDays}`);
   check("...and an untuned board still reports its own", plain.thresholdDays === 30, `${plain.thresholdDays}`);
+  /*
+   * A board that tunes nothing reports the widest turnaround in play — a Minor's
+   * twelve working days. Reporting the old blanket 7 would tint a Minor
+   * "serious" five days before anything on the board judged it so.
+   */
   const sevenBoard = aggregateDashboard({ items: [it("fast", "Minor", 3)], now, thresholdDays: 7, thresholdByTeam: { fast: 7 } });
-  check("...and a default board still says 7", sevenBoard.thresholdDays === 7, `${sevenBoard.thresholdDays}`);
+  check("...and an untuned board reports the widest turnaround",
+    sevenBoard.thresholdDays === Math.max(...Object.values(AGEING.bySeverity)), `${sevenBoard.thresholdDays}`);
 
   /*
    * The controller has to forward what the request layer sent.
@@ -7134,17 +8453,25 @@ section("aged means what each POD says it means");
   /* Counting must never be the thing that deletes. */
   check("counting is read-only", !/deleteById|\.remove\(/.test(purgeLib.slice(purgeLib.indexOf("countInPeriod"), purgeLib.indexOf("purgePeriod"))), "the count deleted something");
 
-  const podPanel = readFileSync(new URL("../src/components/pod-purge.tsx", import.meta.url), "utf8");
-  check("the POD board offers only work items", /targets=\{POD_PURGE_TARGETS\}/.test(podPanel), "it could delete announcements");
-  check("...with its own POD picker", /aria-label="Which POD to clear"/.test(podPanel), "the delete's scope was inherited from a filter");
-  /* Deliberately not seeded from the board's filter: deleting is not filtering,
-     and a delete's scope has to be stated rather than inherited. */
-  check("...not seeded from the board's filter", /useState\(""\)/.test(podPanel));
-  check("...offering every POD", /<option value="">Every POD<\/option>/.test(podPanel));
-  check("...and saying so in the title", /every POD/.test(podPanel), "a clear-everything with no warning in the title");
-
+  /*
+   * The POD dashboard has **no** clear control. It was removed as housekeeping:
+   * the DevOps board keeps its own, and one screen for destructive work is
+   * easier to reason about than two.
+   *
+   * Checked rather than assumed. A deleted component that stays mounted — or
+   * comes back through a stray import — puts a delete button in front of
+   * everybody reading a bug board.
+   */
   const dash = readFileSync(new URL("../src/components/dashboard-client.tsx", import.meta.url), "utf8");
-  check("the POD board shows it only to those who may", /canClearData && <PodPurgePanel/.test(dash), "a member could see the clear control");
+  check("the POD board carries no clear control", !/PodPurgePanel|pod-purge/.test(dash),
+    "a delete button on the bug board");
+  check("...and nothing is left importing it",
+    !readdirSync(new URL("../src/components/", import.meta.url)).includes("pod-purge.tsx"),
+    "the component is still on disk");
+  /* The permission itself stays — the DevOps board and the API still use it. */
+  check("the clear permission still exists for the board that has one",
+    /canClearData/.test(readFileSync(new URL("../src/components/devops/devops-client.tsx", import.meta.url), "utf8")),
+    "removing the panel must not remove the grant");
 
 
   const shared = readFileSync(new URL("../src/components/devops/purge-panel.tsx", import.meta.url), "utf8");
@@ -7245,13 +8572,27 @@ section("aged means what each POD says it means");
    * absolutely-positioned popover inside one is cut at the panel edge and can
    * paint under the table it covers. That is what the date picker did.
    */
-  const popover = readFileSync(new URL("../src/components/devops/popover.tsx", import.meta.url), "utf8");
+  const popover = readFileSync(new URL("../src/components/ui/popover.tsx", import.meta.url), "utf8");
   check("the popover escapes through a portal", /createPortal\(/.test(popover));
   check("...positioned fixed, not absolute", /className="fixed z-\[90\]/.test(popover));
   check("...above the panels it covers", /z-\[90\]/.test(popover));
   check("...on an opaque background", /bg-\[var\(--panel\)\]/.test(popover));
   check("...flipping up when there is no room below", /fitsBelow \? below :/.test(popover));
-  check("...pulled back from the window edge", /window\.innerWidth - width - MARGIN/.test(popover));
+  check("...pulled back from the window edge", /window\.innerWidth - w - MARGIN/.test(popover));
+  /*
+   * And never wider than the window. A 304px panel on a 320px phone is fine;
+   * one that keeps its asked-for width while the screen shrinks hangs off the
+   * side with no way to scroll to it.
+   */
+  check("...and never wider than the screen",
+    /Math\.min\(width, window\.innerWidth - MARGIN \* 2\)/.test(popover) && /calc\(100vw - \$\{MARGIN \* 2\}px\)/.test(popover),
+    "a panel wider than the phone it is on");
+  /*
+   * Rendered only once the client has mounted. `createPortal` throws in a
+   * static render, and every card that merely *contains* a picker reached it.
+   */
+  check("...and only after mount, so a static render never portals",
+    /if \(!mounted\) return null;/.test(popover), "Portals are not currently supported by the server renderer");
   check("...closing on Escape", /e\.key === "Escape"/.test(popover));
   check("...and on a click outside", /mousedown/.test(popover));
 

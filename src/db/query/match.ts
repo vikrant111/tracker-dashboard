@@ -10,7 +10,7 @@
  * what stops a drill-down returning one more row than the bar it came from.
  */
 import type { Filters } from "../../lib/metrics/types.ts";
-import { daysAgo, floorDay } from "../../lib/metrics/dates.ts";
+import { businessDaysAgo, floorDay } from "../../lib/metrics/dates.ts";
 import { teamThresholds } from "../../lib/metrics/threshold.ts";
 import { DEFAULT_THRESHOLD_DAYS } from "../../lib/types.ts";
 
@@ -58,7 +58,7 @@ export function stripControl(input: string): string {
  * `severity` is compared as stored, matching `thresholdFor`.
  */
 function agedClause(f: Filters, now: number): MatchStage {
-  const bound = (days: number) => ({ createdDate: { $lte: new Date(daysAgo(now, days)) } });
+  const bound = (days: number) => ({ createdDate: { $lte: new Date(businessDaysAgo(now, days)) } });
 
   const teamIds = f.teamId ? [f.teamId] : Object.keys(f.thresholdByTeam ?? {});
   // No POD scope to speak of — a caller with no accessible teams, or a filter
@@ -104,8 +104,8 @@ export function buildMatch(f: Filters, now = Date.now()): MatchStage {
    */
   if (f.minAgeDays != null || f.maxAgeDays != null) {
     const range: Record<string, Date> = {};
-    if (f.minAgeDays != null) range.$lt = new Date(floorDay(daysAgo(now, f.minAgeDays)));
-    if (f.maxAgeDays != null) range.$gte = new Date(floorDay(daysAgo(now, f.maxAgeDays)));
+    if (f.minAgeDays != null) range.$lt = new Date(floorDay(businessDaysAgo(now, f.minAgeDays)));
+    if (f.maxAgeDays != null) range.$gte = new Date(floorDay(businessDaysAgo(now, f.maxAgeDays)));
     and.push({ createdDate: range });
   }
 

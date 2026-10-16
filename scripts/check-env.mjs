@@ -138,33 +138,25 @@ section("Network and certificates");
        internal mirror, point pnpm at it:  pnpm config set registry https://your-mirror/`,
   );
 
-  const fonts = await probe("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap");
-  const fontsOk = fonts.kind === "http" && fonts.status === 200;
-  report(
-    fontsOk ? "ok" : "warn",
-    "Google Fonts reachable",
-    fontsOk ? "HTTP 200" : `${fonts.kind}${fonts.detail ? ` — ${fonts.detail}` : ` ${fonts.status ?? ""}`}`,
-    fontsOk
-      ? null
-      : `The build downloads fonts from here when FONT_SOURCE=google (the default),
-       so this will fail the build. You do not have to fix it — build with the
-       fonts already in the repository instead:
-
-         echo 'FONT_SOURCE=local' >> .env.local
-
-       ${fonts.kind === "tls" ? "(This is the same certificate problem as above, if you would rather fix it properly.)" : ""}`,
-  );
+  /*
+   * Deliberately not probed any more: the build does not download a typeface,
+   * so whether this machine can reach Google says nothing about whether it can
+   * build. The typefaces are committed, and nothing downloads them.
+   */
 }
 
 section("Fonts");
 {
-  const source = (env.FONT_SOURCE || "google").toLowerCase();
-  const known = ["google", "local", "system"].includes(source);
+  const source = (env.FONT_SOURCE || "local").toLowerCase();
+  const known = ["local", "system"].includes(source);
   report(
     known ? "ok" : "bad",
     `FONT_SOURCE = ${source}`,
-    known ? "" : "unknown value",
-    "Use google, local or system.",
+    known ? "nothing is downloaded" : "unknown value",
+    source === "google"
+      ? `The google mode is gone — the typefaces ship with the repository.
+       Remove FONT_SOURCE from .env.local, or set it to local.`
+      : "Use local or system.",
   );
 
   const dir = join(ROOT, "src/fonts/files");
@@ -179,8 +171,8 @@ section("Fonts");
       files.length >= 5
         ? null
         : `FONT_SOURCE=local needs the .woff2 files in src/fonts/files/.
-       Run \`pnpm fonts:vendor\` on a machine that can reach Google and commit
-       the result — or set FONT_SOURCE=system, which needs no files at all.`,
+       They are committed, so restore them from git — or set
+       FONT_SOURCE=system, which needs no files at all.`,
     );
   } else {
     report("ok", "Vendored font files", `${files.length} present (unused at FONT_SOURCE=${source})`);

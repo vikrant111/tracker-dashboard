@@ -18,7 +18,17 @@ export const AZURE = {
 // --------------------------------------------------------------------- ageing
 
 export const AGEING = {
-  /** Days open before an item counts as aged, unless a POD overrides it. */
+  /**
+   * The turnaround each severity is held to, in **working days** — Monday to
+   * Friday, weekends not counted. A Critical raised on Friday afternoon is one
+   * working day old on Monday, and a one-day turnaround means nothing if the
+   * weekend counts against it.
+   *
+   * These are the policy. A POD may still set its own per severity in Admin,
+   * and that wins; this is what applies when it has not.
+   */
+  bySeverity: { Critical: 1, Major: 6, Minor: 12 } as Record<string, number>,
+  /** For a severity with no turnaround of its own — `Unknown`, in practice. */
   defaultThresholdDays: 7,
   min: 1,
   max: 365,

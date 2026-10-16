@@ -229,12 +229,24 @@ A POD can read its items straight from Azure on every request and store
 work items are fetched, filtered and counted in memory, cached in the process
 for a minute, and gone on restart.
 
-Two tables decide it, and no filter logic reads a hardcoded list anywhere:
+**Two lines of `.env.local` are all it takes to stand up:**
+
+```bash
+AZDO_ORG_URL=https://dev.azure.com/YourOrg
+AZDO_PAT=<a token with Work Items (Read)>
+```
+
+Everything about *what* is read is in two tables, and no filter logic reads a
+hardcoded list anywhere:
 
 | File | Holds |
 |---|---|
 | [`src/lib/contracts/azure-sources.ts`](src/lib/contracts/azure-sources.ts) | which PODs read live, from which projects, under which field filters |
 | [`src/lib/contracts/item-filters.ts`](src/lib/contracts/item-filters.ts) | the vocabulary, the allowlists, the 365-day window, the cache |
+
+The filters name fields **the way the work item form names them** — `POD Name`,
+`BFL IT Spoc`, `Module Name`. The reference name a query needs is looked up
+from the project itself, so nobody has to go hunting for `Custom.PODName`.
 
 One POD can be made of several projects, and each source carries its own
 filters — a POD field, a SPOC list, a module. The window is why it is
@@ -433,12 +445,12 @@ This project's favourite thing. Seven suites, one command.
 ```mermaid
 graph LR
     T["pnpm test"] --> TS["✅ typecheck"]
-    T --> DOC["📚 563 doc checks<br/><i>links · counts · every module mentioned</i>"]
-    T --> TH["🎨 1372 theme checks<br/><i>contrast · tokens · source rules</i>"]
-    T --> UI["🧠 3183 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
+    T --> DOC["📚 577 doc checks<br/><i>links · counts · every module mentioned</i>"]
+    T --> TH["🎨 1413 theme checks<br/><i>contrast · tokens · source rules</i>"]
+    T --> UI["🧠 3579 UI checks<br/><i>pure logic, run not pattern-matched</i>"]
     T --> RN["🖱️ 138 render checks<br/><i>mounted in jsdom, then clicked</i>"]
     T --> BLD["📦 production build"]
-    T --> E2E["🌐 691 end-to-end checks<br/><i>own server · own store · own build dir</i>"]
+    T --> E2E["🌐 765 end-to-end checks<br/><i>own server · own store · own build dir</i>"]
 ```
 
 ```bash

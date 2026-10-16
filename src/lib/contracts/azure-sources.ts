@@ -7,8 +7,10 @@
  * list, pointing a filter at a renamed field: all of it is a change to the table
  * at the bottom of this file, and no query-building code has to move.
  *
- * Credentials are **not** here, on purpose. The PAT is read from the POD in
- * Admin, or from `AZDO_PAT` — tokens stay where tokens live.
+ * Neither the organisation nor the token is here, on purpose. Both live in the
+ * environment — `AZDO_ORG_URL` and `AZDO_PAT` — so standing this up against a
+ * real board is a change to `.env.local` and nothing else, and tokens stay
+ * where tokens live. A POD may still carry its own PAT in Admin.
  *
  * ## Finding a field's reference name
  *
@@ -23,23 +25,46 @@
  * ```
  */
 
+import { BFL_IT_SPOC, DELIVERY_SPOC, POD_NAME, POD_TAG } from "./filter-values.ts";
 import type { WindowMode } from "./item-filters.ts";
 
-/** One `field IN (values)` test. An empty `values` makes the clause match nothing. */
+/** One test against a field. An empty `values` is a half-filled contract and throws. */
 export type SourceClause = {
-  /** Azure reference name, e.g. `Custom.PODName`. */
+  /**
+   * The field, **named the way the work item form names it** — `POD Name`,
+   * `BFL IT Spoc`, `Module Name`. The reference name a query needs is looked
+   * up from the project itself, so nobody has to find `Custom.PODName` by
+   * hand. A reference name still works if you would rather write one.
+   */
   field: string;
   values: readonly string[];
+  /**
+   * How to compare.
+   *
+   * `equals` (the default) for a field holding one value. **`contains` for a
+   * field holding several** — a real POD Name reads `AMC, Investment mall,
+   * Learning Centre` and Tags read `AMC_POD; App; Production`, and equality
+   * against either matches nothing while looking exactly like a POD with no
+   * work.
+   */
+  op?: "equals" | "contains";
 };
 
 export type AzureSource = {
   id: string;
   /**
-   * The PODs this source feeds, by id **or** name, compared case-insensitively.
-   * Both are accepted because an id is a slug of a name somebody can rename.
+   * The field carrying the POD tags. `Tags` on both of these boards, and named
+   * here rather than assumed because a board could record the POD elsewhere.
    */
-  pods: readonly string[];
-  orgUrl: string;
+  tagField?: string;
+  /**
+   * The organisation, when it is not the one in `AZDO_ORG_URL`.
+   *
+   * Normally left out: the organisation and the token are the two things that
+   * differ between one deployment and the next, so they live in the
+   * environment and this file stays about *which work*, not *which server*.
+   */
+  orgUrl?: string;
   project: string;
   /**
    * Matched **exactly** by WIQL. A project whose types are called `3IN1 TASK`
@@ -66,59 +91,106 @@ export type AzureSource = {
   fieldMap?: { severity?: string; environment?: string; status?: string };
 };
 
-/**
- * The AMC POD, which is two projects rather than one.
+/* ----------------------------------------------------------------- sources
  *
- * `3in1 IT Requests` is matched on **either** the POD field or the IT SPOC,
- * because a request raised against the POD and a request assigned to its SPOC
- * are both the POD's work. `3in1_Agile_Projects` is matched on **both** the
- * delivery SPOC and the module, because that project carries every module and
- * the SPOC alone would pull in the others.
+ * The wiring: which board, which work item types, and which of the arrays
+ * above identify this POD's work on it.
+ *
+ * Each source matches on **any** of them, because each one on its own means
+ * "this is the POD's". Requiring all three would drop the POD's own bugs — a
+ * real AMC_POD bug on the Agile board has module `Banners` and a Delivery SPOC
+ * from another team. Change `any` to `all` to tighten it.
  */
 export const AZURE_SOURCES: readonly AzureSource[] = [
   {
     id: "amc-it-requests",
-    pods: ["amc-pod", "AMC POD"],
-    orgUrl: "https://dev.azure.com/BFLDevOpsOrg",
     project: "3in1 IT Requests",
-    workItemTypes: ["Bug", "Issue", "Task", "User Story"],
+    /*
+     * This board's work items are `3IN1 IT REQUEST`, not `Bug`. The usual
+     * defaults match none of them, and a query that matches none of them
+     * succeeds — it just finds nothing. `pnpm azure:probe --fields "*"` and
+     * the Test button both list what a project really calls its types.
+     */
+    workItemTypes: ["3IN1 IT REQUEST", "Bug", "Issue", "Task", "User Story"],
     any: [
-      { field: "Custom.PODName", values: ["AMC POD"] },
-      {
-        field: "Custom.BFLITSpoc",
-        values: ["Aravind I", "Aravind.i@bajajfinserv.in", "vikrant.tiwari2@bajajfinserv.in"],
-      },
+      { field: "POD Name", values: POD_NAME, op: "contains" },
+      { field: "BFL IT Spoc", values: BFL_IT_SPOC },
     ],
-    fieldMap: { status: "Custom.BugStatus", environment: "Custom.BugEnvironment" },
+    /*
+     * This board has no Bug Status field — its state is the built-in one, and
+     * its Severity reads as a plain word (`Minor`) rather than `3 - Minor`.
+     * Environment is not a field at all here: it is the tag and the first
+     * segment of the title, which `normalize` already falls back through.
+     */
+    fieldMap: { severity: "Severity", status: "System.State" },
   },
   {
     id: "amc-agile-projects",
-    pods: ["amc-pod", "AMC POD"],
-    orgUrl: "https://dev.azure.com/BFLDevOpsOrg",
     project: "3in1_Agile_Projects",
     workItemTypes: ["Bug", "Issue", "Task", "User Story"],
-    all: [
-      {
-        field: "Custom.DeliverySPOC",
-        values: ["Aravind.i@bajajfinserv.in", "vikrant.tiwari2@bajajfinserv.in"],
-      },
-      { field: "Custom.ModuleName", values: ["AMC"] },
-    ],
-    fieldMap: { status: "Custom.BugStatus", environment: "Custom.BugEnvironment" },
+    any: [{ field: "Delivery SPOC", values: DELIVERY_SPOC }],
+    /*
+     * This one does have Bug Status — `Resolved`, `Closed` and the rest — and
+     * its Severity reads `2 – Major`, with an en dash. Both resolve through
+     * `value-map.ts`.
+     */
+    fieldMap: { severity: "Severity", status: "Bug Status" },
   },
 ];
 
+/** The spelling a POD name is matched as: letters and digits only. */
+const squash = (v: string) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/** Does `key` name this POD — as the whole of its name or id, or a word within? */
+function namesPod(key: string, team: { id: string; name: string }): boolean {
+  if (!squash(key)) return false;
+  if ([team.id, team.name].some((v) => squash(v) === squash(key))) return true;
+  /*
+   * A whole word within, so the key `AMC` finds the POD called `AMC POD` —
+   * which is what somebody writing the map expects. Bounded on the original
+   * text rather than the squashed form, or `AMC` would also find `AMCTrading`.
+   */
+  const safe = key.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const bounded = new RegExp(`(^|[^a-z0-9])${safe}($|[^a-z0-9])`);
+  return [team.id, team.name].some((v) => bounded.test(String(v ?? "").toLowerCase()));
+}
+
 /**
- * The sources a POD reads, or an empty list when it has none and should keep
- * reading the store.
+ * The Azure tags that identify this POD's work, from `POD_TAG`.
+ *
+ * Empty when the POD is not in the map, which is how a POD goes on reading the
+ * store instead. A POD matching two keys is refused rather than guessed at:
+ * silently picking one would put another POD's work on this board.
+ */
+export function tagsFor(team: { id: string; name: string }): string[] {
+  const hits = Object.keys(POD_TAG).filter((key) => namesPod(key, team));
+  if (hits.length > 1) {
+    throw new Error(
+      `POD "${team.name}" matches more than one entry in POD_TAG (${hits.join(", ")}). ` +
+        `Make the keys distinct in src/lib/contracts/filter-values.ts.`,
+    );
+  }
+  if (!hits.length) return [];
+  const value = POD_TAG[hits[0]];
+  return (Array.isArray(value) ? value : [value]).map((v) => String(v ?? "").trim()).filter(Boolean);
+}
+
+/**
+ * The sources this POD reads, each carrying that POD's own tags.
+ *
+ * The tag clause is built here rather than written into a source, because
+ * which tags apply depends on which POD is being read — and that is what lets
+ * one line in `POD_TAG` put a new POD on both boards with nothing else to wire
+ * up. Empty when the POD is not in the map, and that POD reads the store.
  */
 export function sourcesFor(team: { id: string; name: string }): AzureSource[] {
-  const wanted = [team.id, team.name].map((v) => String(v ?? "").trim().toLowerCase()).filter(Boolean);
-  if (!wanted.length) return [];
-  return AZURE_SOURCES.filter((s) =>
-    s.pods.some((p) => wanted.includes(String(p).trim().toLowerCase())),
-  );
+  const tags = tagsFor(team);
+  if (!tags.length) return [];
+  return AZURE_SOURCES.map((source) => ({
+    ...source,
+    any: [{ field: source.tagField ?? "Tags", values: tags, op: "contains" as const }, ...(source.any ?? [])],
+  }));
 }
 
 /** Whether any POD at all is configured to read live. */
-export const hasLiveSources = AZURE_SOURCES.length > 0;
+export const hasLiveSources = AZURE_SOURCES.length > 0 && Object.keys(POD_TAG).length > 0;

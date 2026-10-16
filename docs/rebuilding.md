@@ -244,7 +244,7 @@ fetches `/api/metrics` through SWR.
 | `health-ring` + `health-dial` | the score, its drivers, the greeting |
 | `stat-rail` | the five headline numbers |
 | `breakdown-card` | severity / environment / status / ageing bars |
-| `trend-chart` | raised vs closed, daily or weekly |
+| `trend-chart` | raised vs closed, daily or weekly, over a chosen window and bug type |
 | `leaderboard` | who is holding the board |
 | `team-rollup` | every POD, one row each |
 | `drill-drawer` | the one detail surface every panel opens |

@@ -94,16 +94,14 @@ echo 'FONT_SOURCE=local' >> .env.local
 
 | `FONT_SOURCE` | Fetches at build | Ships font files | Looks like |
 |---|---|---|---|
-| `google` *(default)* | yes | yes, after download | the design |
-| **`local`** | **no** | yes, from `src/fonts/files/` | **identical** |
+| **`local`** *(default)* | **no** | yes, from `src/fonts/files/` | the design |
 | `system` | no | no | plainer, fully usable |
 
-`local` renders identically to `google` because the committed files *are* the
-Google files — the same `latin` subset, about 140 KB, refreshed with:
-
-```bash
-pnpm fonts:vendor     # run on a machine that CAN reach Google, then commit
-```
+**Nothing downloads a typeface.** There was a `google` mode and it was the
+default; it is gone, along with the script that fetched the files. The `latin`
+subset — about 140 KB — is committed, so there is nothing for a proxy to
+intercept and nothing to configure. Replacing a face means dropping a new
+`.woff2` into `src/fonts/files/` and naming it in `src/fonts/local.ts`.
 
 `system` is the floor. It ships no fonts and cannot fail, because there is
 nothing for a proxy to intercept. Every rule in `globals.css` already names a
@@ -209,7 +207,6 @@ Build the dependency store on a machine that does, and carry it over:
 ```bash
 # on the connected machine
 pnpm install
-pnpm fonts:vendor
 tar czf tracker-offline.tgz node_modules src/fonts/files
 
 # on the locked-down machine, in the repo
@@ -249,7 +246,7 @@ pnpm dev
 | Symptom | Cause | Fix |
 |---|---|---|
 | `pnpm install` hangs, no error | Proxy needs authentication | `export HTTPS_PROXY=http://user:pass@proxy:port` |
-| Build succeeds, fonts look wrong | `FONT_SOURCE=local` with no files committed | `pnpm fonts:vendor`, or use `system` |
+| Build succeeds, fonts look wrong | the `.woff2` files are missing from `src/fonts/files/` | restore them from git, or use `FONT_SOURCE=system` |
 | `pnpm seed` fails instantly | The database is unreachable | Run `pnpm check:env` — it names which of the four things is wrong |
 | `mongodb+srv://` will not resolve | The network blocks DNS SRV | Use the plain `mongodb://host1,host2,host3/…` form Atlas also offers |
 | Works in dev, fails in `pnpm build` | `FONT_SOURCE` set in the shell but not `.env.local` | Put it in `.env.local` |

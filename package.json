@@ -19,7 +19,6 @@
     "check:theme": "node scripts/check-theme.mjs",
     "check:ui": "node scripts/check-ui.mjs",
     "check:docs": "node scripts/check-docs.mjs",
-    "fonts:vendor": "node scripts/vendor-fonts.mjs",
     "check:env": "node scripts/check-env.mjs",
     "mongo:local": "node scripts/mongo-local.mjs",
     "azure:probe": "node --env-file=.env.local scripts/azure-probe.mjs",

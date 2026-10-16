@@ -16,6 +16,18 @@ export function startPoller() {
   const g = globalThis as Global;
   if (g[KEY]) return;
 
+  /*
+   * Never during a build.
+   *
+   * `next build` imports every route module to read its exports, and this is
+   * called at the top of the metrics route — so the build started a poller and
+   * `tick()` synced immediately, writing real work items into whatever
+   * `DB_STORE_DIR` pointed at. In `pnpm test` that is the developer's own
+   * `DB_store/`: the suite quietly rewrote the data it was meant to leave
+   * alone. A build compiles; it does not fetch.
+   */
+  if (process.env.NEXT_PHASE === "phase-production-build") return;
+
   const seconds = Number(process.env.SYNC_POLL_SECONDS ?? 120);
   if (!Number.isFinite(seconds) || seconds <= 0) return;
 

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "pulls",
-  "updatedAt": "2026-09-14T09:51:51.766Z",
+  "updatedAt": "2026-10-16T10:27:16.379Z",
   "rows": [
     {
       "_id": "conzumex-3in1cms-812",
@@ -714,40 +714,6 @@
       "syncedAt": "2026-12-20T00:00:00.000Z"
     },
     {
-      "_id": "vikrant111-tracker-dashboard-9202",
-      "id": "vikrant111-tracker-dashboard-9202",
-      "repoId": "vikrant111-tracker-dashboard",
-      "teamId": "tes",
-      "cycleId": "vikrant111-tracker-dashboard-2026-06",
-      "number": 9202,
-      "title": "[41202] release/123456-test — missing QA — a risk",
-      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9202",
-      "author": "seed-dev",
-      "baseBranch": "release/123456-test",
-      "mergedAt": "2026-12-21T00:00:00.000Z",
-      "mergedOn": "2026-12-21",
-      "deployedOn": "2026-12-24",
-      "environment": "CUG",
-      "ticket": "41202",
-      "signoffs": {
-        "biz": {
-          "by": "seed@example.com",
-          "at": "2026-12-22T00:00:00.000Z"
-        },
-        "pod": {
-          "by": "seed@example.com",
-          "at": "2026-12-22T00:00:00.000Z"
-        }
-      },
-      "movedToScope": false,
-      "returned": {
-        "at": "",
-        "by": "",
-        "remarks": ""
-      },
-      "syncedAt": "2026-12-21T00:00:00.000Z"
-    },
-    {
       "_id": "vikrant111-tracker-dashboard-9203",
       "id": "vikrant111-tracker-dashboard-9203",
       "repoId": "vikrant111-tracker-dashboard",
@@ -870,6 +836,44 @@
       "syncedAt": "2027-01-01T00:00:00.000Z"
     },
     {
+      "_id": "vikrant111-tracker-dashboard-9202",
+      "id": "vikrant111-tracker-dashboard-9202",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "tes",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "number": 9202,
+      "title": "[41202] release/123456-test — missing QA — a risk",
+      "url": "https://github.com/vikrant111/tracker-dashboard/pull/9202",
+      "author": "seed-dev",
+      "baseBranch": "release/123456-test",
+      "mergedAt": "2026-12-21T00:00:00.000Z",
+      "mergedOn": "2026-12-21",
+      "deployedOn": "2026-12-24",
+      "environment": "CUG",
+      "ticket": "41202",
+      "signoffs": {
+        "biz": {
+          "by": "seed@example.com",
+          "at": "2026-12-22T00:00:00.000Z"
+        },
+        "pod": {
+          "by": "seed@example.com",
+          "at": "2026-12-22T00:00:00.000Z"
+        },
+        "qa": {
+          "by": "admin@example.com",
+          "at": "2026-10-16T10:26:15.706Z"
+        }
+      },
+      "movedToScope": false,
+      "returned": {
+        "at": "",
+        "by": "",
+        "remarks": ""
+      },
+      "syncedAt": "2026-12-21T00:00:00.000Z"
+    },
+    {
       "_id": "vikrant111-tracker-dashboard-9212",
       "id": "vikrant111-tracker-dashboard-9212",
       "repoId": "vikrant111-tracker-dashboard",
@@ -899,7 +903,7 @@
           "at": "2026-09-14T09:51:51.763Z"
         }
       },
-      "movedToScope": false,
+      "movedToScope": true,
       "returned": {
         "at": "",
         "by": "",

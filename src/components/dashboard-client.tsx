@@ -20,13 +20,13 @@ import { Leaderboard } from "./leaderboard";
 import { agedPhrase } from "@/lib/metrics/threshold";
 import { useScrollToTopOnScopeChange } from "./use-scroll-to-top";
 import { Footer } from "./footer";
-import { PodPurgePanel } from "./pod-purge";
 import { ParallaxBackdrop } from "./parallax-backdrop";
 import { SkyBackdrop } from "./sky-backdrop";
 import { StatRail } from "./stat-rail";
 import { TeamRollup } from "./team-rollup";
 import { Topbar, type TeamOption } from "./topbar";
 import { TrendChart } from "./trend-chart";
+import { useTrendView } from "./use-trend-view";
 import { Empty, Panel } from "./ui";
 
 type Payload = Dashboard & {
@@ -41,7 +41,6 @@ export function DashboardClient({
   userName,
   weather,
   isAdmin,
-  canClearData,
   authEnabled,
   initialTeamId,
   canSeeDevOps,
@@ -51,7 +50,6 @@ export function DashboardClient({
   weather: Weather | null;
   isAdmin: boolean;
   /** May clear data by date: an admin, or an account one has allowed. */
-  canClearData: boolean;
   authEnabled: boolean;
   initialTeamId: string;
   canSeeDevOps: boolean;
@@ -67,6 +65,12 @@ export function DashboardClient({
   const [rangeId, setRangeId] = useState(ranges[0].id);
   const range = ranges.find((r) => r.id === rangeId) ?? ranges[0];
   const [search, setSearch] = useState("");
+  /*
+   * The closure trend's own slice and window, kept apart from the board's.
+   * Asking how Production bugs are flowing must not re-scope the tiles beside
+   * the chart — see `Filters.trendFrom`.
+   */
+  const trend = useTrendView();
   const [toast, setToast] = useState<{ text: string; tone: "ok" | "bad" } | null>(null);
   // The health card, once it exists. A callback ref in state rather than a
   // `useRef` object: the backdrop must re-measure when the card mounts, and a
@@ -86,8 +90,8 @@ export function DashboardClient({
      */
     if (range.from) q.createdFrom = range.from;
     if (range.to) q.createdTo = range.to;
-    return q;
-  }, [teamId, kind, search, range.from, range.to]);
+    return { ...q, ...trend.params };
+  }, [teamId, kind, search, range.from, range.to, trend.params]);
 
   /*
    * Whether the board is narrowed. An empty result then reads as "nothing
@@ -207,7 +211,12 @@ export function DashboardClient({
               ))}
             </div>
 
-            <TrendChart daily={data.trend.daily} weekly={data.trend.weekly} />
+            <TrendChart
+              daily={data.trend.daily}
+              weekly={data.trend.weekly}
+              window={{ from: data.trend.from, to: data.trend.to, clipped: data.trend.clipped }}
+              controls={trend.controls}
+            />
 
             {!teamId && (
               <TeamRollup
@@ -219,7 +228,6 @@ export function DashboardClient({
           </div>
         ) : null}
 
-        {canClearData && <PodPurgePanel teams={teams} flash={flash} onDone={refreshEverything} />}
 
         {data && !data.error && (
           <Footer totals={data.totals} lastSyncedAt={data.lastSyncedAt ?? null} podCount={teams.length} isAdmin={isAdmin} />

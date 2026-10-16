@@ -1,7 +1,7 @@
 {
   "version": 1,
   "collection": "deployments",
-  "updatedAt": "2026-09-13T19:33:33.843Z",
+  "updatedAt": "2026-10-16T10:27:16.376Z",
   "rows": [
     {
       "_id": "conzumex-3in1cms-01788965030194",
@@ -578,6 +578,26 @@
       "deployedOn": "2027-01-03",
       "createdAt": "2026-12-31T00:00:00.000Z",
       "updatedAt": "2026-12-31T00:00:00.000Z"
+    },
+    {
+      "_id": "vikrant111-tracker-dashboard-01792146436374",
+      "id": "vikrant111-tracker-dashboard-01792146436374",
+      "repoId": "vikrant111-tracker-dashboard",
+      "teamId": "tes",
+      "cycleId": "vikrant111-tracker-dashboard-2026-06",
+      "branch": "master",
+      "environment": "CUG",
+      "kind": "bug",
+      "state": "deployed",
+      "ticket": "41212",
+      "title": "[41212] master — missing QA — a risk",
+      "prUrl": "https://github.com/vikrant111/tracker-dashboard/pull/9212",
+      "pullId": "vikrant111-tracker-dashboard-9212",
+      "author": "admin@example.com",
+      "notes": "Moved from pull request #9212.",
+      "deployedOn": "2027-01-03",
+      "createdAt": "2026-10-16T10:27:16.374Z",
+      "updatedAt": "2026-10-16T10:27:16.374Z"
     }
   ]
 }

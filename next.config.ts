@@ -6,33 +6,39 @@ import type { NextConfig } from "next";
  *
  * | Value | Fetches at build | Ships font files |
  * |---|---|---|
- * | `google` (default) | yes, from Google | yes, self-hosted after download |
- * | `local` | **no** | yes, from `src/fonts/files/` |
+ * | `local` (default) | **no** | yes, from `src/fonts/files/` |
  * | `system` | **no** | no — the reader's own fonts |
  *
+ * **Nothing downloads a font, at build time or at run time.** There was a
+ * `google` mode; it is gone. A build that reaches `fonts.googleapis.com` dies
+ * on a machine behind a TLS-inspecting proxy with `unable to get local issuer
+ * certificate`, and the ~140 KB of `.woff2` committed under `src/fonts/files/`
+ * makes the download pointless anyway. The script that once fetched them is
+ * gone too: replacing a face means dropping a new `.woff2` into that folder
+ * and naming it in `src/fonts/local.ts`.
+ *
  * The choice has to be made here rather than in application code, because
- * `next/font/google` downloads whatever it can see at compile time. A runtime
- * `if` would compile all three branches and fetch anyway.
+ * `next/font` resolves whatever it can see at compile time. A runtime `if`
+ * would compile both branches.
  *
  * **The modules live in `src/fonts/`, deliberately not under `src/app/`.** Next
  * processes font loaders for every file in the app tree, whether or not the
  * module graph reaches it — so while they sat in `src/app/fonts/`, the Google
- * branch was compiled and fetched in *all three* modes. Moving them one
- * directory out is what actually makes `local` and `system` offline. Do not
- * move them back.
- *
- * Those two are the modes for a machine behind a TLS-inspecting proxy, where
- * the build otherwise dies on `unable to get local issuer certificate`. See
- * `docs/restricted-environments.md`.
+ * branch was compiled and fetched in *every* mode. Moving them one directory
+ * out is what makes this actually offline. Do not move them back.
  */
-const FONT_SOURCES = ["google", "local", "system"] as const;
-const requested = process.env.FONT_SOURCE?.trim().toLowerCase() || "google";
+const FONT_SOURCES = ["local", "system"] as const;
+const requested = process.env.FONT_SOURCE?.trim().toLowerCase() || "local";
 
 if (!FONT_SOURCES.includes(requested as (typeof FONT_SOURCES)[number])) {
-  // Loudly, at config load — a typo here would otherwise silently ship Google.
+  /*
+   * Loudly, at config load. `google` is gone rather than deprecated: a value
+   * that quietly fell back would be a build reaching the internet on a machine
+   * chosen for not having to.
+   */
   throw new Error(
     `FONT_SOURCE is "${requested}". Use one of: ${FONT_SOURCES.join(", ")}. ` +
-      `"local" and "system" need no network at build time.`,
+      `The typefaces ship with the repository; nothing is downloaded.`,
   );
 }
 

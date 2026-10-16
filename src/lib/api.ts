@@ -3,6 +3,13 @@ import { HttpError, canSeeTeam, type SessionUser } from "./session";
 import { getTeam, listTeams } from "./teams";
 import { KINDS, clampSeverityThresholds, clampThreshold, type Kind } from "./types";
 import { LIMITS } from "./constants";
+import { splitFacet } from "./contracts/trend-view";
+
+/** The trend's slice, as the two fields `Filters` carries it in. */
+const splitFacetParams = (key: string | null) => {
+  const { environment, status } = splitFacet(key);
+  return { trendEnvironment: environment, trendStatus: status };
+};
 
 /**
  * Read a whole-number param, or undefined when absent or unusable. Query strings
@@ -70,6 +77,15 @@ export async function filtersFromRequest(req: Request, user: SessionUser): Promi
     maxAgeDays: intParam(p, "maxAgeDays", { min: 0, max: 36500 }),
     createdFrom: isoParam(p, "createdFrom"),
     createdTo: isoParam(p, "createdTo"),
+    /*
+     * The trend's own window and slice. The slice arrives as one key —
+     * `environment:Production` — and `splitFacet` checks it against the
+     * vocabulary, so an unknown value widens the chart rather than filtering it
+     * to nothing and reading as "no bugs".
+     */
+    trendFrom: isoParam(p, "trendFrom"),
+    trendTo: isoParam(p, "trendTo"),
+    ...splitFacetParams(p.get("trendFacet")),
     // A team saved before validation existed could still hold a bad threshold,
     // so clamp on the way out too rather than trusting the stored value.
     thresholdDays: clampThreshold(team?.ageingThresholdDays),

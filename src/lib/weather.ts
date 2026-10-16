@@ -54,8 +54,12 @@ function coords(): { lat: number; lon: number } | null {
   const rawLon = process.env.WEATHER_LON?.trim();
   if (!rawLat || !rawLon) return null;
 
-  const lat = Number(rawLat);
-  const lon = Number(rawLon);
+  // Google Maps and most phone apps copy a point as "12.910286°". Number()
+  // reads that as NaN, which switches the sky off without saying so, so the
+  // degree sign is stripped before parsing — and nothing else is, so "north"
+  // is still rejected rather than guessed at.
+  const lat = Number(rawLat.replace(/°/g, ""));
+  const lon = Number(rawLon.replace(/°/g, ""));
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
   return { lat, lon };

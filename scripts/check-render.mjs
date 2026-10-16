@@ -948,6 +948,209 @@ console.log("\n\x1b[1mIn a browser\x1b[0m \x1b[2m— mounted, then clicked\x1b[0
   check("it is a native select", /<select/.test(markup), "a hand-built dropdown re-implements the platform");
 }
 
+
+
+/* ---------------------------------------------- what the trend readout says */
+
+/*
+ * The hover card gives the **net** for the bucket, not just the two counts.
+ * Rendered rather than grepped: a source check for the expression also matched
+ * the colour rule beside it, and passed with the number itself deleted.
+ */
+{
+  const { TrendTooltip } = await load("components/trend-tooltip.js");
+  const at = (raised, closed) =>
+    render(h(TrendTooltip, { point: { date: "2026-10-16", raised, closed }, left: 0, top: 0, label: "16 Oct" }));
+
+  const behind = at(5, 2);
+  check("the readout names the bucket", /16 Oct/.test(behind));
+  check("...both counts", />5</.test(behind) && />2</.test(behind), behind.replace(/<[^>]+>/g, " ").slice(0, 120));
+  check("...and the net, worked out for the reader", /-3/.test(behind),
+    "arithmetic the reader should not have to do");
+
+  const ahead = at(2, 5);
+  check("a surplus is signed, so the direction is unmistakable", /\+3/.test(ahead),
+    ahead.replace(/<[^>]+>/g, " ").slice(0, 120));
+  check("a level bucket reads as zero, not blank", /Net/.test(at(2, 2)) && />0</.test(at(2, 2)));
+}
+
+/* ------------------------------------------- the trend's own filter row */
+
+/*
+ * Source checks prove the controls are *written*. Only mounting them proves a
+ * reader can change the window and the bug type, and that the callback carries
+ * the value the server expects rather than the label a human reads.
+ */
+{
+  const { JSDOM } = await import("jsdom");
+  const dom = globalThis.window.document ? { window: globalThis.window } : new JSDOM("<!doctype html><html><body></body></html>");
+  const { createRoot } = await import("react-dom/client");
+  const { act } = await import("react");
+  const { TrendControls } = await load("components/trend-controls.js");
+  const { trendFacets } = await load("lib/contracts/trend-view.js");
+
+  const host = dom.window.document.createElement("div");
+  dom.window.document.body.appendChild(host);
+  const root = createRoot(host);
+  const doc = dom.window.document;
+
+  let facet = "";
+  let period = "";
+  /*
+   * `TrendControls` is controlled, so a callback that only records the value
+   * leaves the component showing the old one. Every callback re-renders with
+   * what it was just told, which is what the board does.
+   */
+  const draw = () => {
+    root.render(h(TrendControls, {
+      facet, period,
+      onFacet: (v) => { facet = v; draw(); },
+      onPeriod: (v) => { period = v; draw(); },
+    }));
+  };
+  await act(async () => draw());
+
+  // -- the bug-type dropdown ----------------------------------------------
+  const select = host.querySelector("#trend-facet");
+  check("the bug type is a native select", select?.tagName === "SELECT", "a hand-built dropdown re-implements the platform");
+  check("...that is labelled", Boolean(host.querySelector('label[for="trend-facet"]')),
+    "a select with no label is announced as nothing");
+  check("...and opens on every bug", select?.value === "", select?.value);
+
+  const groups = [...host.querySelectorAll("optgroup")].map((g) => g.getAttribute("label"));
+  check("its options are grouped", groups.includes("Environment") && groups.includes("Status"), groups.join(","));
+  /*
+   * `CR` is a *status*, not an environment — it was asked for alongside PROD
+   * and the UATs, and putting it in the environment group would be a quiet lie
+   * about what the board holds.
+   */
+  const inGroup = (label) => [...host.querySelectorAll("optgroup")]
+    .find((g) => g.getAttribute("label") === label)?.textContent ?? "";
+  check("Production is offered as an environment", inGroup("Environment").includes("Production"));
+  check("IT-UAT and BIZ-UAT too", inGroup("Environment").includes("IT-UAT") && inGroup("Environment").includes("BIZ-UAT"));
+  check("CR is offered as a status, not an environment",
+    inGroup("Status").includes("CR") && !inGroup("Environment").includes("CR"),
+    "CR is a Bug Status on the board");
+
+  const options = [...host.querySelectorAll("option")].map((o) => o.value).filter(Boolean);
+  check("every facet the contract offers is in the markup",
+    trendFacets().every((f) => options.includes(f.key)), `${options.length} options`);
+
+  /* Choosing one hands back the *key*, which is what the URL carries. */
+  await act(async () => {
+    select.value = "environment:Production";
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+  check("picking a type reports its key, not its label", facet === "environment:Production", facet);
+
+  // -- the period, via the shared picker -----------------------------------
+  /*
+   * `PeriodPicker` — the same control the DevOps board clears work items with.
+   * These checks prove it is wired here and that a reader can drive it; the
+   * picker's own behaviour is covered where it lives.
+   */
+  const periodButton = [...host.querySelectorAll("button")].find((b) => /Pick a period/.test(b.textContent));
+  check("the period is one button", Boolean(periodButton), "no period control on the card");
+  const typedSel = '[aria-label="Type a year, month, date or range"]';
+  check("...closed to start with", !doc.querySelector(typedSel), "the panel was open before anybody asked");
+
+  await act(async () => { periodButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  const typed = doc.querySelector(typedSel);
+  check("...which opens the shared panel", Boolean(typed));
+  /*
+   * Rendered into the body, not into the card. `Panel` is `overflow-hidden`
+   * for its glass and sheen, so a panel inside one is cut off at the card's
+   * edge and painted under the chart — which is what this did at first.
+   */
+  check("...outside the card, so nothing clips it", Boolean(typed) && !host.contains(typed),
+    "the panel renders inside an overflow-hidden card");
+  check("...offering the forms it understands", /sep 2026/.test(typed.getAttribute("placeholder") ?? ""),
+    typed.getAttribute("placeholder"));
+
+  /*
+   * Through the native setter and an `input` event. React tracks a controlled
+   * input's value on the node, so assigning `.value` directly is invisible to
+   * it — and `onChange` on an input is the native `input` event, not `change`.
+   */
+  const type = async (input, value) => {
+    const set = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set;
+    await act(async () => {
+      set.call(input, value);
+      input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+  };
+  await type(typed, "sep 2026");
+  await act(async () => { typed.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  check("typing a month sets the card's period", period === "2026-09", JSON.stringify(period));
+  check("...and the button then names it",
+    [...host.querySelectorAll("button")].some((b) => /September 2026/.test(b.textContent)),
+    [...host.querySelectorAll("button")].map((b) => b.textContent).join(" | "));
+
+  /*
+   * One string in, two dates out. `periodBounds` is the only place that
+   * converts, so the chart and the filter beside it cannot be a day apart.
+   */
+  const { periodBounds } = await load("lib/devops/period-bounds.js");
+  const bounds = periodBounds(period);
+  check("...which becomes the window the server is asked for",
+    bounds.from === "2026-09-01" && bounds.to === "2026-09-30", JSON.stringify(bounds));
+
+  await act(async () => root.unmount());
+}
+
+/*
+ * And the card above them: what it claims to be showing has to match the
+ * window it was handed. A title still reading "last 30 days" over a picked
+ * range is the kind of quiet lie a dashboard does not recover from.
+ */
+{
+  const { TrendChart } = await load("components/trend-chart.js");
+  const controls = { facet: "", period: "", onFacet: () => {}, onPeriod: () => {} };
+  const daily = [
+    { date: "2026-10-14", raised: 2, closed: 1 },
+    { date: "2026-10-15", raised: 0, closed: 3 },
+    { date: "2026-10-16", raised: 1, closed: 0 },
+  ];
+  const card = (c = {}) =>
+    render(h(TrendChart, { daily, weekly: daily, window: { from: "2026-10-14", to: "2026-10-16" }, controls: { ...controls, ...c } }));
+
+  const plain = card();
+  check("the untouched card names the default window", /last 30 days/.test(plain), plain.slice(0, 200));
+  check("...and counts what it plots", /3 raised, 4 closed/.test(plain), "the readout disagrees with the series");
+
+  const picked = card({ period: "2026-10" });
+  check("a picked window is named instead of the default",
+    /2026-10-14 to 2026-10-16/.test(picked) && !/last 30 days/.test(picked), "the title still claimed 30 days");
+
+  const sliced = card({ facet: "environment:Production" });
+  check("a chosen bug type is named in the title", /Production raised vs closed/.test(sliced));
+
+  /* A facet the vocabulary does not know must not be echoed into the page. */
+  const junk = card({ facet: "status:<script>alert(1)</script>" });
+  check("an unknown bug type is not echoed into the title", !/alert\(1\)/.test(junk), "a reflected value in the heading");
+  check("...and the card falls back to naming no slice", /Raised vs closed, last 30 days/.test(junk));
+
+  /* The Daily/Weekly toggle is gone; the grain follows the window instead. */
+  check("no Daily/Weekly toggle remains", !/>Daily</.test(plain) && !/>Weekly</.test(plain),
+    "two ways to answer the same question");
+
+  /*
+   * In the header's corner, where that toggle used to sit — not on a row of
+   * their own under the title, which is where they landed first and where they
+   * pushed the chart down and overlapped it.
+   */
+  const head = plain.slice(plain.indexOf("<header"), plain.indexOf("</header>"));
+  check("the controls sit in the card header", head.includes("trend-facet") && /Pick a period/.test(head),
+    "the controls sit below the title");
+  /*
+   * And the header stacks on a phone rather than squeezing: the title column
+   * is `min-w-0 flex-1` and the row only goes horizontal from `sm`.
+   */
+  check("...with a header that stacks on a narrow screen", /flex-col[^"]*sm:flex-row/.test(head),
+    "two controls beside a title with nowhere to go");
+  check("...and both controls are in it", /trend-facet/.test(head) && /Pick a period/.test(head));
+}
+
 rmSync(OUT, { recursive: true, force: true });
 
 console.log("\n" + "─".repeat(60));

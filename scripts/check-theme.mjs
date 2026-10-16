@@ -564,7 +564,7 @@ section("the font switch survives a machine with no network");
  */
 {
   const fontsDir = join(here, "../src/fonts");
-  const MODES = ["google", "local", "system"];
+  const MODES = ["local", "system"];
 
   /*
    * The single most important rule here, and the least obvious.
@@ -596,10 +596,12 @@ section("the font switch survives a machine with no network");
   }
 
   /*
-   * The two offline modes must not reach Google — which is the whole point of
-   * them, and exactly the sort of thing a well-meaning edit undoes.
+   * **No mode may reach Google.** There used to be one that did, and it was
+   * the default; it is gone, because a build that downloads a typeface dies on
+   * a machine behind a TLS-inspecting proxy and the faces are committed anyway.
+   * This is the check that stops it coming back.
    */
-  for (const mode of ["local", "system"]) {
+  for (const mode of MODES) {
     const src = readFileSync(join(fontsDir, mode + ".ts"), "utf8");
     check("fonts/" + mode + ".ts imports nothing from next/font/google", !/from ["']next\/font\/google["']/.test(src));
   }
@@ -636,7 +638,7 @@ section("the font switch survives a machine with no network");
       re.test("/somewhere/src/fonts/index.ts") && re.test("C:\\x\\src\\fonts\\index.ts"),
       pattern,
     );
-    check("...without also matching a sibling mode module", !re.test("/somewhere/src/fonts/google.ts"));
+    check("...without also matching a sibling mode module", !re.test("/somewhere/src/fonts/local.ts"));
   }
 
   /*
@@ -664,24 +666,45 @@ section("the font switch survives a machine with no network");
   check("every file local.ts names is present", missing.length === 0, missing.join(" "));
 
   /*
-   * The vendor script and the Google module must ask for the same families. If
-   * they drift, `fonts:vendor` downloads one set and the build declares
-   * another, and local renders differently from google for a reason nobody
-   * would think to look for.
+   * The three families the page asks for all have files, and every file has a
+   * family asking for it. Nothing downloads them any more — they are committed
+   * — so this is the only thing keeping the two in step.
    */
-  const googleSrc = readFileSync(join(fontsDir, "google.ts"), "utf8");
-  const vendorSrc = readFileSync(join(here, "../scripts/vendor-fonts.mjs"), "utf8");
-  const squash = (t) => t.replace(/[ _+]/g, "");
-  for (const family of ["Bricolage", "IBM Plex Sans", "IBM Plex Mono"]) {
-    const key = squash(family);
-    const inGoogle = squash(googleSrc).includes(key);
-    const inVendor = squash(vendorSrc).includes(key);
-    check(
-      family + " is named in both google.ts and the vendor script",
-      inGoogle && inVendor,
-      "google=" + inGoogle + " vendor=" + inVendor,
-    );
+  const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  for (const family of ["Bricolage Grotesque", "IBM Plex Sans", "IBM Plex Mono"]) {
+    const stem = slug(family);
+    check(family + " has committed files", woff2.some((f) => f.startsWith(stem)), "nothing in files/ starts with " + stem);
+    check(family + " is declared in local.ts", referenced.some((f) => f.startsWith(stem)), "local.ts names no file starting with " + stem);
   }
+  const orphans = woff2.filter((f) => !referenced.includes(f));
+  check("no committed font file is unused", orphans.length === 0, orphans.join(" "));
+
+  /* Nothing anywhere in the project reaches a font CDN any more. */
+  for (const file of ["index.ts", "local.ts", "system.ts"]) {
+    const src = readFileSync(join(fontsDir, file), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    check(file + " names no font CDN", !/fonts\.(googleapis|gstatic)\.com/.test(src));
+    check(file + " does not import next/font/google", !/next\/font\/google/.test(src));
+  }
+  check("the google font module is gone", !readdirSync(fontsDir).includes("google.ts"));
+  /*
+   * And so is the script that downloaded them. It was the last thing in the
+   * project that reached Google; the faces are committed, so there is nothing
+   * left to fetch.
+   */
+  check("nothing in scripts/ fetches a font", !readdirSync(join(here, "..", "scripts")).includes("vendor-fonts.mjs"));
+
+  /*
+   * And the config does not offer the mode. Leaving it listed is how it comes
+   * back: the module would be missing, the alias would resolve to nothing, and
+   * the failure would be at build time on somebody else's machine.
+   */
+  const modes = config.match(/const FONT_SOURCES = \[([^\]]*)\]/)?.[1] ?? "";
+  check("the config offers no google mode", !/google/.test(modes), modes.trim());
+  check("...and defaults to one that needs no network", /FONT_SOURCE\?\.trim\(\)\.toLowerCase\(\) \|\| "local"/.test(config));
+  check("the config names every mode that exists",
+    MODES.every((m) => modes.includes(`"${m}"`)), `${modes.trim()} vs ${MODES.join(", ")}`);
 }
 
 section("a status colour used as a word uses the ink, not the fill");

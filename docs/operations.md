@@ -192,26 +192,20 @@ day, or a **from/to range** — use the screen instead:
 
 | Board | Where | Clears |
 |---|---|---|
-| POD | **Dashboard → Clear work items** | work items, by the day they were raised |
 | DevOps | **DevOps board → Clear a period** | scope rows, pull requests, announcements |
 
-Both sit on the board itself, admin-only — not tucked into a separate admin
-screen.
+It sits on the board itself, admin-only — not tucked into a separate admin
+screen — and uses `purge-panel`, with a picker, a count-then-confirm flow and
+its own safety rules.
 
-Both are the same component (`purge-panel`) — the POD side wraps it as
-`pod-purge` to fix its targets and scope — with the same picker, the same
-count-then-confirm flow and the same safety rules — one implementation rather
-than two that drift. Each screen passes its own target group, so neither can
-offer the other's data: a POD admin cannot delete release announcements from
-the POD screen, and the DevOps board cannot touch work items.
+**The POD dashboard has no clear control.** It used to carry one
+(`pod-purge`, "Clear work items — every POD"); it was removed, so the bug board
+is a reading surface and destructive work lives on one screen rather than two.
+The `canClearData` grant stays — the DevOps board and the purge API still use
+it — and `pnpm delete` still clears a whole board from the command line.
 
-The POD one has **its own POD picker** — "Every POD", or one of them — and the
-choice is shown in the title. It deliberately does *not* follow the board's
-filter: deleting is not filtering, and the scope of a delete has to be stated
-rather than inherited from a control somebody set for a different reason and has
-since forgotten about. "Every POD" is offered and says so, because a
-clear-everything that looks like a clear-one is the worst version of this
-control.
+`purge-panel` still passes its own target group, so it can only offer the data
+of the board it is on.
 
 Changing the POD **drops the count and releases the arming**. A count belongs to
 the scope it was taken for; showing one team's number above a button that
@@ -315,9 +309,16 @@ pnpm exec tsc --noEmit      # must be clean
 pnpm build         # must pass
 
 pnpm dev           # in one terminal
-pnpm check         # in another — 691 end-to-end checks
-pnpm check:theme   # static, no server needed — 1372 theme-token checks
-pnpm check:ui      # static — 3183 checks on client-side pure logic
+pnpm check         # in another — 765 end-to-end checks
+
+# `pnpm check` WRITES: it creates PODs, plants pull requests and deletes by
+# date. It refuses to run against the repository's own DB_store/ for that
+# reason — `pnpm test` hands it a throwaway store. Give it one yourself if you
+# run it directly:
+#
+#     DB_STORE_DIR=$(mktemp -d) pnpm check
+pnpm check:theme   # static, no server needed — 1413 theme-token checks
+pnpm check:ui      # static — 3579 checks on client-side pure logic
 pnpm check:docs    # static — the knowledgebase still matches the code
 ```
 

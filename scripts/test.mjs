@@ -12,7 +12,7 @@
  * shuts down only the server it started.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, openSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,20 +66,40 @@ const aliveAt = async (url) => {
 
 const alive = () => aliveAt(base);
 
-/** The first port from 3000 up that nothing is already answering on. */
+/**
+ * The first port from 3000 up that this process can actually **bind**.
+ *
+ * It used to ask over HTTP and call a port free when nothing answered within
+ * two seconds. A dev server that was merely slow to reply — cold, compiling,
+ * busy — was declared absent; the suite then spawned a server that could not
+ * bind, `waitForServer` saw *the other one* answer, and the whole writing
+ * suite ran against somebody's real store. It created a POD and deleted
+ * fifty-two work items before anyone noticed, and the run looked like an
+ * ordinary failure.
+ *
+ * Binding is the only answer that cannot be wrong: either the port is ours or
+ * it is not.
+ */
 async function freePort() {
+  const { createServer } = await import("node:net");
+  /*
+   * Bound on **every** interface, with no host argument, because that is how
+   * Next binds. Probing `127.0.0.1` succeeded against a server already holding
+   * `:::3000`, so the port looked free and the spawn then died on
+   * `EADDRINUSE` — which is the whole failure this is here to stop.
+   */
+  const canBind = (port) =>
+    new Promise((resolve) => {
+      const probe = createServer();
+      probe.once("error", () => resolve(false));
+      probe.once("listening", () => probe.close(() => resolve(true)));
+      probe.listen(port);
+    });
+
   for (let port = 3000; port < 3040; port++) {
-    if (!(await aliveAt(`http://localhost:${port}`))) return port;
+    if (await canBind(port)) return port;
   }
   return 0;
-}
-
-async function waitForServer(deadline) {
-  while (Date.now() < deadline) {
-    if (await alive()) return true;
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  return false;
 }
 
 let devServer = null;
@@ -144,12 +164,44 @@ async function startServer(port) {
   });
   devServer.unref?.();
 
-  if (!(await waitForServer(Date.now() + READY_TIMEOUT_MS))) {
-    console.log(red(`\nThe dev server did not come up within ${READY_TIMEOUT_MS / 1000}s.`));
-    console.log(dim(readFileSync(devLog, "utf8").split("\n").slice(-25).join("\n")));
-    return false;
+  /*
+   * A server that died on startup — a port taken between the bind test and the
+   * spawn is the way that happens — must not be mistaken for a healthy one.
+   * Without this the suite would find *something* answering on that port and
+   * run against it, which is exactly how it reached a real store.
+   */
+  let died = false;
+  devServer.on("exit", () => { died = true; });
+
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (died) {
+      console.log(red("\nThe dev server exited while starting — most likely the port was taken."));
+      console.log(dim(readFileSync(devLog, "utf8").split("\n").slice(-25).join("\n")));
+      return false;
+    }
+    if (await alive()) {
+      /*
+       * Something is answering — but is it *ours*? A server already on this
+       * port answers instantly while our own is still dying on EADDRINUSE,
+       * and the exit event has not arrived yet. Settling first is what tells
+       * the two apart; without it the suite runs against a stranger's server
+       * and, last time, a stranger's data.
+       */
+      await new Promise((r) => setTimeout(r, 1500));
+      if (died) {
+        console.log(red("\nSomething else is already serving that port — our server exited."));
+        console.log(dim(readFileSync(devLog, "utf8").split("\n").slice(-10).join("\n")));
+        return false;
+      }
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
   }
-  return true;
+
+  console.log(red(`\nThe dev server did not come up within ${READY_TIMEOUT_MS / 1000}s.`));
+  console.log(dim(readFileSync(devLog, "utf8").split("\n").slice(-25).join("\n")));
+  return false;
 }
 
 function stopServer() {
@@ -232,7 +284,21 @@ for (const [name, script] of [
    * `ChunkLoadError` on a page that had worked a minute earlier. It reads as a
    * code fault and is not one, so the suite no longer causes it.
    */
-  const { code, out } = await capture("node_modules/.bin/next", ["build", "--no-lint"], { NEXT_DIST_DIR: ".next-check" });
+  /*
+   * Into a store of its own as well as a dist of its own.
+   *
+   * Belt and braces: `startPoller` now refuses during a build, but this step
+   * imports every route module in the app, and a future one calling out at
+   * import time must not be able to reach the developer's `DB_store/`. The
+   * build compiles — it has no business fetching anything.
+   */
+  const buildStore = mkdtempSync(join(tmpdir(), "tracker-build-"));
+  const { code, out } = await capture("node_modules/.bin/next", ["build", "--no-lint"], {
+    NEXT_DIST_DIR: ".next-check",
+    DB_STORE_DIR: buildStore,
+    SYNC_POLL_SECONDS: "0",
+  });
+  rmSync(buildStore, { recursive: true, force: true });
   const trouble = out
     .split("\n")
     .filter((l) => /Module not found|Can't resolve|Failed to compile/.test(l))

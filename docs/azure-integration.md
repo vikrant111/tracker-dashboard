@@ -152,12 +152,96 @@ A POD can skip the store entirely: its items are fetched from Azure on the
 request that needs them, filtered in memory, and never written down. Accounts,
 PODs, permissions and tokens are the only durable records left.
 
-Two files decide all of it, and no query-building code has to be touched again:
+Three files decide all of it, and no query-building code has to be touched
+again:
 
 | File | Holds |
 |---|---|
-| [`contracts/azure-sources.ts`](../src/lib/contracts/azure-sources.ts) | which PODs read live, from which projects, under which field filters |
+| [`contracts/filter-values.ts`](../src/lib/contracts/filter-values.ts) | **the arrays to edit** — one per thing a board is filtered on |
+| [`contracts/azure-sources.ts`](../src/lib/contracts/azure-sources.ts) | which PODs read live, from which projects, and which arrays apply to each |
 | [`contracts/item-filters.ts`](../src/lib/contracts/item-filters.ts) | the vocabulary, the allowlists, the window and the cache |
+
+### Which PODs, and the tags that find them
+
+```ts
+export const POD_TAG: Record<string, string | string[]> = {
+  AMC: ["AMC_POD", "Investment Mall"],   // two tags, one POD
+  "Trading mall": "Trading_mall",        // one tag, written plainly
+};
+```
+
+The key is the POD **as the dashboard names it** — it is what the POD switcher
+offers. The value is the tag, or tags, its work carries on Azure. Adding a POD
+is a line; giving a POD a second tag is a word. Both boards are then searched
+for it, with nothing else to wire up: the tag clause is built per POD by
+`sourcesFor`, which is why no source names a POD of its own.
+
+The key is matched against the POD's name or id, ignoring case, spaces and
+punctuation, and **as a whole word** — so `AMC` finds the POD called `AMC POD`
+without also finding `AMCTrading`. A POD matching two keys is refused rather
+than guessed at, because picking one would put another POD's work on the board.
+
+### The other arrays
+
+```ts
+export const POD_NAME      = ["AMC"];                       // contains
+export const BFL_IT_SPOC   = ["Aravind I", "Aravind.i@…"];
+export const DELIVERY_SPOC = ["Aravind I", "Aravind.i@…"];
+```
+
+Each is a second way to find the same work — for items nobody tagged. Adding a
+SPOC is adding a line. Taking a filter off the board is emptying its array:
+**an empty array removes that filter**, it does not match everything, and the
+clauses beside it still bound the query. Emptying *every* array on a source is
+refused, because that would read the whole project.
+
+**Module Name is deliberately not a filter.** A real AMC_POD bug on the Agile
+board has module `Banners`; filtering on the module dropped the POD's own
+work.
+
+`pnpm check:ui` asserts that every array is wired to a board and that no source
+carries a list of its own, so a value added here cannot fail to reach the
+dashboard.
+
+### Fields are named the way the form names them
+
+The filters write **`POD Name`**, **`BFL IT Spoc`**, **`Module Name`** — the
+labels on the work item. WIQL needs `Custom.PODName`, which nobody can read off
+a screen and which fails the whole query if guessed wrong, so
+[`live/fields.ts`](../src/lib/live/fields.ts) asks the project what each label
+is really called and caches the answer for the life of the process.
+
+That is the difference between "fill in four reference names you cannot see"
+and "it works once a PAT is set". A reference name still works if you write
+one — anything with a dot and no spaces is passed through untouched, which is
+what to do when a project has two fields sharing a label. A name that matches
+nothing fails naming the near misses, which Azure's own `TF51005` does not.
+
+### `contains`, for a field holding several things
+
+Two values on the real boards would have made equality return nothing:
+
+| Field | What it actually holds |
+|---|---|
+| `POD Name` | `AMC, Investment mall, Learning Centre` |
+| `Tags` | `AMC_POD; App; Investment Mall; Production` |
+
+`= 'AMC POD'` matches neither, and an empty board looks exactly like a POD with
+no work. So a clause takes `op: "contains"`, each value becomes its own
+`CONTAINS` and they are ORed. The second pass checks the same thing
+word-bounded, so `AMC` finds `AMC, Investment mall` and not `AMCX`.
+
+### The environment is not a field
+
+Neither board has one. The IT Requests board carries it in the **tags**
+(`Production`); the Agile board only in the **first segment of the title** —
+`Biz UAT - Investment. CLP - Next js`. So `resolveEnvironment` tries, in order:
+the mapped field, each tag, the title's leading segment, then the area path.
+
+The title is matched **strictly**: it has to *be* an environment, not merely
+contain one. A loose match turns every *"Fix regression in login"* into
+Regression. `leadingSegment` also caps at 24 characters, because a title with
+no separator is a sentence.
 
 ### What a source is
 
@@ -187,6 +271,24 @@ project, which is the failure this design exists to prevent.
 
 An **empty value list throws** rather than being dropped. `Custom.ModuleName IN
 ()` quietly removed is a filter on one module becoming every module.
+
+### Both boards, or none
+
+A POD made of two projects is read from both on every request, and the results
+are merged and deduplicated by work item id. Four things are what stop one of
+them going quiet, each of which otherwise looks identical from outside — a
+board that is simply emptier than you expected:
+
+| | |
+|---|---|
+| **Every source is asked** | `sourcesFor` returns one per project; a check asserts the count matches the contract |
+| **A board with nothing in it is still asked** | an empty answer is an answer, not a reason to stop |
+| **A board that fails fails the POD** | half a dashboard is the worst outcome — every number plausible, every number wrong. The error names the project |
+| **Past the query ceiling it is refused** | this was `ids.slice(0, maxIds)`: one id past the cap vanished with nothing said |
+
+`pnpm check:ui` runs all four against a stub that gives each project its own
+ids, so "the second board's work arrived" is asserted on the ids themselves
+rather than on a total.
 
 ### The window
 
@@ -379,10 +481,16 @@ is the one thing that cannot be guessed:
 
 ```bash
 pnpm azure:probe --fields spoc     # reference names matching "spoc"
-pnpm azure:probe --days 365        # for a live POD: the exact WIQL, the ids it
-                                   # returns, what normalize() makes of them,
-                                   # and how many the allowlists drop
+pnpm azure:probe --days 365        # for a live POD: the exact WIQL, the labels
+                                   # it resolved, the ids it returns, what
+                                   # normalize() makes of them, and how many
+                                   # the filters drop
 ```
+
+The probe runs `planSource` — the same preparation the board does — so the
+query it prints is the query the dashboard sends. It used to build its own,
+which would have been rejected outright: a query naming `POD Name` rather than
+`Custom.PODName` is not a query Azure answers.
 
 A wrong name fails loudly — Azure answers WIQL with *"TF51005: The query
 references a field that does not exist"* and names it. That is deliberate; the

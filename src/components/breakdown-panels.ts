@@ -1,5 +1,6 @@
 import { AlertTriangle, Hourglass, ListChecks, Server } from "lucide-react";
 import { STATUS } from "@/lib/palette";
+import { agedPhrase } from "@/lib/metrics/threshold";
 import type { Dashboard } from "@/lib/metrics";
 
 /**
@@ -50,7 +51,12 @@ export function breakdownPanels(data: Dashboard) {
       hue: "var(--series-4)",
       eyebrow: "Ageing",
       title: "How long open items have waited",
-      note: `Open items only. Anything past ${data.thresholdDays} days counts as aged.`,
+      /*
+       * "Working days" said out loud. The buckets are counted Monday to Friday
+       * like every other age on this board, and a reader who assumes calendar
+       * days reads a bug as having sat half as long again as it has.
+       */
+      note: `Open items only, counted in working days — weekends do not count. Aged is ${agedPhrase(data)}.`,
       buckets: data.ageing,
     },
   ];
